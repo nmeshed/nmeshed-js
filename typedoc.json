@@ -1,0 +1,17 @@
+{
+    "$schema": "https://typedoc.org/schema.json",
+    "entryPoints": [
+        "./src/index.ts",
+        "./src/react/index.ts"
+    ],
+    "out": "../../apps/docs/docs/api/sdk",
+    "plugin": [
+        "typedoc-plugin-markdown"
+    ],
+    "hideBreadcrumbs": true,
+    "parametersFormat": "table",
+    "enumMembersFormat": "table",
+    "typeDeclarationFormat": "table",
+    "sanitizeComments": true,
+    "readme": "none"
+}

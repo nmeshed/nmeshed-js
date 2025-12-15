@@ -1,0 +1,83 @@
+{
+    "name": "nmeshed",
+    "version": "0.1.4",
+    "description": "nMeshed - Real-time sync infrastructure for multiplayer apps. Mesh n users together.",
+    "main": "dist/index.js",
+    "module": "dist/index.mjs",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.mjs",
+            "require": "./dist/index.js"
+        },
+        "./react": {
+            "types": "./dist/react/index.d.ts",
+            "import": "./dist/react/index.mjs",
+            "require": "./dist/react/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "test": "vitest",
+        "test:run": "vitest run",
+        "lint": "eslint src --ext .ts,.tsx",
+        "typecheck": "tsc --noEmit",
+        "docs:generate": "typedoc",
+        "prepublishOnly": "npm run build"
+    },
+    "keywords": [
+        "nmeshed",
+        "realtime",
+        "sync",
+        "crdt",
+        "collaborative",
+        "multiplayer",
+        "websocket",
+        "react",
+        "game",
+        "state-sync"
+    ],
+    "author": "nMeshed",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/nmeshed/nmeshed.git",
+        "directory": "packages/sdk-js"
+    },
+    "homepage": "https://nmeshed.com",
+    "bugs": {
+        "url": "https://github.com/nmeshed/nmeshed/issues"
+    },
+    "peerDependencies": {
+        "react": ">=17.0.0"
+    },
+    "peerDependenciesMeta": {
+        "react": {
+            "optional": true
+        }
+    },
+    "devDependencies": {
+        "@testing-library/jest-dom": "^6.9.1",
+        "@testing-library/react": "^15.0.7",
+        "@types/node": "^20.10.0",
+        "@types/react": "^18.3.27",
+        "eslint": "^8.55.0",
+        "jsdom": "^24.1.3",
+        "react": "^18.2.0",
+        "react-dom": "^18.3.1",
+        "tsup": "^8.0.0",
+        "typedoc": "^0.28.15",
+        "typedoc-plugin-markdown": "^4.9.0",
+        "typescript": "^5.3.0",
+        "vitest": "^4.0.15"
+    },
+    "dependencies": {
+        "zod": "^3.23.8"
+    }
+}
