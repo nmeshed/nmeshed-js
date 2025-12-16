@@ -1,4 +1,4 @@
-import { b as NMeshedConfig, C as ConnectionStatus, a as NMeshedClient, P as PresenceUser } from '../client-Cs0HhYm5.js';
+import { b as NMeshedConfig, C as ConnectionStatus, a as NMeshedClient, P as PresenceUser } from '../client-CrvzJ8_5.js';
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import { ReactNode } from 'react';
 
@@ -188,22 +188,43 @@ interface UseDocumentReturn<T> {
  */
 declare function useDocument<T = unknown>(options: UseDocumentOptions<T>): UseDocumentReturn<T>;
 
-interface UsePresenceOptions {
+type UsePresenceOptions = {
     /**
-     * Polling interval in milliseconds.
-     * Default: 10000 (10 seconds)
+     * @deprecated Polling is no longer needed; presence is real-time.
      */
     interval?: number;
-}
+};
 /**
  * Hook to get the current presence list for the workspace.
- *
- * Note: This currently uses polling every 10 seconds.
+ * Uses real-time WebSocket events.
  *
  * @param options - Configuration options
  * @returns Array of active users
  */
 declare function usePresence(options?: UsePresenceOptions): PresenceUser[];
+
+type BroadcastHandler = (payload: unknown) => void;
+/**
+ * Hook to consume and send ephemeral broadcast messages.
+ *
+ * @param handler - Optional callback for received messages.
+ * @returns Function to broadcast messages.
+ */
+declare function useBroadcast(handler?: BroadcastHandler): (payload: unknown) => void;
+
+/**
+ * A drop-in component that renders live multiplayer cursors.
+ * Optimized for 60fps+ by bypassing React render cycle for movement.
+ * Uses requestAnimationFrame and direct DOM manipulation.
+ */
+declare function LiveCursors({ selfId }: {
+    selfId?: string;
+}): react_jsx_runtime.JSX.Element;
+
+/**
+ * A horizontal stack of avatars showing online users.
+ */
+declare function AvatarStack(): react_jsx_runtime.JSX.Element | null;
 
 /**
  * Props for NMeshedProvider.
@@ -271,4 +292,4 @@ declare function NMeshedProvider({ config, children, autoConnect, }: NMeshedProv
  */
 declare function useNmeshedContext(): NMeshedClient;
 
-export { NMeshedProvider, type NMeshedProviderProps, type UseDocumentOptions, type UseDocumentReturn, type UseNmeshedOptions, type UseNmeshedReturn, type UsePresenceOptions, useDocument, useNmeshed, useNmeshedContext, usePresence };
+export { AvatarStack, LiveCursors, NMeshedProvider, type NMeshedProviderProps, type UseDocumentOptions, type UseDocumentReturn, type UseNmeshedOptions, type UseNmeshedReturn, type UsePresenceOptions, useBroadcast, useDocument, useNmeshed, useNmeshedContext, usePresence };

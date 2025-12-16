@@ -1,5 +1,5 @@
-import { N as NMeshedMessage } from './client-Cs0HhYm5.mjs';
-export { C as ConnectionStatus, I as InitMessage, M as MessageHandler, a as NMeshedClient, b as NMeshedConfig, O as Operation, c as OperationMessage, S as StatusHandler } from './client-Cs0HhYm5.mjs';
+import { N as NMeshedMessage } from './client-CrvzJ8_5.mjs';
+export { C as ConnectionStatus, I as InitMessage, M as MessageHandler, a as NMeshedClient, b as NMeshedConfig, O as Operation, c as OperationMessage, S as StatusHandler } from './client-CrvzJ8_5.mjs';
 
 /**
  * Error types for nMeshed SDK.

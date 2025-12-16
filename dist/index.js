@@ -152,6 +152,8 @@ var NMeshedClient = class {
     this.status = "IDLE";
     this.messageListeners = /* @__PURE__ */ new Set();
     this.statusListeners = /* @__PURE__ */ new Set();
+    this.ephemeralListeners = /* @__PURE__ */ new Set();
+    this.presenceListeners = /* @__PURE__ */ new Set();
     this.reconnectAttempts = 0;
     this.reconnectTimeout = null;
     this.connectionTimeout = null;
@@ -302,8 +304,20 @@ var NMeshedClient = class {
           reject(new ConnectionError("WebSocket connection failed", void 0, true));
         }
       };
+      this.ws.binaryType = "arraybuffer";
       this.ws.onmessage = (event) => {
-        this.handleMessage(event.data);
+        if (event.data instanceof ArrayBuffer) {
+          const listeners = Array.from(this.ephemeralListeners);
+          for (const listener of listeners) {
+            try {
+              listener(event.data);
+            } catch (error) {
+              this.warn("Binary listener threw error:", error);
+            }
+          }
+        } else {
+          this.handleMessage(event.data);
+        }
       };
     });
   }
@@ -355,6 +369,24 @@ var NMeshedClient = class {
         this.currentState = { ...message.data };
       } else if (message.type === "op") {
         this.currentState[message.payload.key] = message.payload.value;
+      } else if (message.type === "ephemeral") {
+        const listeners2 = Array.from(this.ephemeralListeners);
+        for (const listener of listeners2) {
+          try {
+            listener(message.payload);
+          } catch (error) {
+            this.warn("Ephemeral listener threw an error:", error);
+          }
+        }
+      } else if (message.type === "presence") {
+        const listeners2 = Array.from(this.presenceListeners);
+        for (const listener of listeners2) {
+          try {
+            listener(message.payload);
+          } catch (error) {
+            this.warn("Presence listener threw an error:", error);
+          }
+        }
       }
       const listeners = Array.from(this.messageListeners);
       for (const listener of listeners) {
@@ -489,6 +521,30 @@ var NMeshedClient = class {
     this.sendOperationInternal(key, value, timestamp);
   }
   /**
+   * Broadcasts an ephemeral message to all other connected clients.
+   * 
+   * @param payload - The data to broadcast (JSON object or Binary ArrayBuffer)
+   */
+  broadcast(payload) {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      this.warn("Cannot broadcast: not connected");
+      return;
+    }
+    try {
+      if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
+        this.ws.send(payload);
+        return;
+      }
+      const message = JSON.stringify({
+        type: "ephemeral",
+        payload
+      });
+      this.ws.send(message);
+    } catch (error) {
+      this.warn("Failed to broadcast message:", error);
+    }
+  }
+  /**
    * Internal method to send an operation (assumes connection is open).
    */
   sendOperationInternal(key, value, timestamp) {
@@ -548,6 +604,30 @@ var NMeshedClient = class {
    * @param handler - Function to call when status changes
    * @returns A cleanup function to unsubscribe
    */
+  /**
+   * Subscribes to ephemeral broadcasts.
+   */
+  onBroadcast(handler) {
+    if (typeof handler !== "function") {
+      throw new ConfigurationError("Broadcast handler must be a function");
+    }
+    this.ephemeralListeners.add(handler);
+    return () => {
+      this.ephemeralListeners.delete(handler);
+    };
+  }
+  /**
+   * Subscribes to presence updates.
+   */
+  onPresence(handler) {
+    if (typeof handler !== "function") {
+      throw new ConfigurationError("Presence handler must be a function");
+    }
+    this.presenceListeners.add(handler);
+    return () => {
+      this.presenceListeners.delete(handler);
+    };
+  }
   onStatusChange(handler) {
     if (typeof handler !== "function") {
       throw new ConfigurationError("Status handler must be a function");
@@ -637,6 +717,8 @@ var NMeshedClient = class {
     this.disconnect();
     this.messageListeners.clear();
     this.statusListeners.clear();
+    this.ephemeralListeners.clear();
+    this.presenceListeners.clear();
     this.operationQueue = [];
     this.currentState = {};
     this.isDestroyed = true;

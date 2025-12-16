@@ -1,6 +1,6 @@
 import { createContext, useRef, useState, useEffect, useCallback, useContext } from 'react';
 import { z } from 'zod';
-import { jsx } from 'react/jsx-runtime';
+import { jsx, jsxs } from 'react/jsx-runtime';
 
 // src/react/useNmeshed.tsx
 
@@ -139,6 +139,8 @@ var NMeshedClient = class {
     this.status = "IDLE";
     this.messageListeners = /* @__PURE__ */ new Set();
     this.statusListeners = /* @__PURE__ */ new Set();
+    this.ephemeralListeners = /* @__PURE__ */ new Set();
+    this.presenceListeners = /* @__PURE__ */ new Set();
     this.reconnectAttempts = 0;
     this.reconnectTimeout = null;
     this.connectionTimeout = null;
@@ -289,8 +291,20 @@ var NMeshedClient = class {
           reject(new ConnectionError("WebSocket connection failed", void 0, true));
         }
       };
+      this.ws.binaryType = "arraybuffer";
       this.ws.onmessage = (event) => {
-        this.handleMessage(event.data);
+        if (event.data instanceof ArrayBuffer) {
+          const listeners = Array.from(this.ephemeralListeners);
+          for (const listener of listeners) {
+            try {
+              listener(event.data);
+            } catch (error) {
+              this.warn("Binary listener threw error:", error);
+            }
+          }
+        } else {
+          this.handleMessage(event.data);
+        }
       };
     });
   }
@@ -342,6 +356,24 @@ var NMeshedClient = class {
         this.currentState = { ...message.data };
       } else if (message.type === "op") {
         this.currentState[message.payload.key] = message.payload.value;
+      } else if (message.type === "ephemeral") {
+        const listeners2 = Array.from(this.ephemeralListeners);
+        for (const listener of listeners2) {
+          try {
+            listener(message.payload);
+          } catch (error) {
+            this.warn("Ephemeral listener threw an error:", error);
+          }
+        }
+      } else if (message.type === "presence") {
+        const listeners2 = Array.from(this.presenceListeners);
+        for (const listener of listeners2) {
+          try {
+            listener(message.payload);
+          } catch (error) {
+            this.warn("Presence listener threw an error:", error);
+          }
+        }
       }
       const listeners = Array.from(this.messageListeners);
       for (const listener of listeners) {
@@ -476,6 +508,30 @@ var NMeshedClient = class {
     this.sendOperationInternal(key, value, timestamp);
   }
   /**
+   * Broadcasts an ephemeral message to all other connected clients.
+   * 
+   * @param payload - The data to broadcast (JSON object or Binary ArrayBuffer)
+   */
+  broadcast(payload) {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      this.warn("Cannot broadcast: not connected");
+      return;
+    }
+    try {
+      if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
+        this.ws.send(payload);
+        return;
+      }
+      const message = JSON.stringify({
+        type: "ephemeral",
+        payload
+      });
+      this.ws.send(message);
+    } catch (error) {
+      this.warn("Failed to broadcast message:", error);
+    }
+  }
+  /**
    * Internal method to send an operation (assumes connection is open).
    */
   sendOperationInternal(key, value, timestamp) {
@@ -535,6 +591,30 @@ var NMeshedClient = class {
    * @param handler - Function to call when status changes
    * @returns A cleanup function to unsubscribe
    */
+  /**
+   * Subscribes to ephemeral broadcasts.
+   */
+  onBroadcast(handler) {
+    if (typeof handler !== "function") {
+      throw new ConfigurationError("Broadcast handler must be a function");
+    }
+    this.ephemeralListeners.add(handler);
+    return () => {
+      this.ephemeralListeners.delete(handler);
+    };
+  }
+  /**
+   * Subscribes to presence updates.
+   */
+  onPresence(handler) {
+    if (typeof handler !== "function") {
+      throw new ConfigurationError("Presence handler must be a function");
+    }
+    this.presenceListeners.add(handler);
+    return () => {
+      this.presenceListeners.delete(handler);
+    };
+  }
   onStatusChange(handler) {
     if (typeof handler !== "function") {
       throw new ConfigurationError("Status handler must be a function");
@@ -624,6 +704,8 @@ var NMeshedClient = class {
     this.disconnect();
     this.messageListeners.clear();
     this.statusListeners.clear();
+    this.ephemeralListeners.clear();
+    this.presenceListeners.clear();
     this.operationQueue = [];
     this.currentState = {};
     this.isDestroyed = true;
@@ -759,46 +841,269 @@ function useDocument(options) {
   };
 }
 function usePresence(options = {}) {
-  const { interval = 1e4 } = options;
   const client = useNmeshedContext();
   const [users, setUsers] = useState([]);
-  const savedCallback = useRef();
   useEffect(() => {
-    let isMounted = true;
-    const fetchPresence = async () => {
-      if (client.getStatus() !== "CONNECTED") return;
-      try {
-        const data = await client.getPresence();
-        if (isMounted) {
-          setUsers(data);
-        }
-      } catch (err) {
-        if (isMounted) {
-          console.warn("Failed to fetch presence:", err);
+    let mounted = true;
+    const fetchInitial = async () => {
+      if (client.getStatus() === "CONNECTED") {
+        try {
+          const initialUsers = await client.getPresence();
+          if (mounted) {
+            setUsers(initialUsers);
+          }
+        } catch (e) {
+          console.warn("Failed to fetch initial presence:", e);
         }
       }
     };
-    savedCallback.current = fetchPresence;
-    fetchPresence();
+    fetchInitial();
+    const unsubscribe = client.onPresence((eventPayload) => {
+      setUsers((current) => {
+        if (eventPayload.status === "offline") {
+          return current.filter((u) => u.userId !== eventPayload.userId);
+        }
+        const index = current.findIndex((u) => u.userId === eventPayload.userId);
+        if (index !== -1) {
+          const newUsers = [...current];
+          newUsers[index] = { ...newUsers[index], ...eventPayload };
+          return newUsers;
+        } else {
+          return [...current, eventPayload];
+        }
+      });
+    });
     return () => {
-      isMounted = false;
+      mounted = false;
+      unsubscribe();
     };
   }, [client]);
-  useEffect(() => {
-    function tick() {
-      if (savedCallback.current) {
-        savedCallback.current();
-      }
-    }
-    if (interval !== null && interval !== void 0) {
-      const id = setInterval(tick, interval);
-      return () => clearInterval(id);
-    }
-    return void 0;
-  }, [interval]);
   return users;
 }
+function useBroadcast(handler) {
+  const client = useNmeshedContext();
+  const handlerRef = useRef(handler);
+  useEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
+  useEffect(() => {
+    if (!handlerRef.current) return;
+    const unsubscribe = client.onBroadcast((payload) => {
+      if (handlerRef.current) {
+        handlerRef.current(payload);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [client]);
+  const broadcast = useCallback((payload) => {
+    client.broadcast(payload);
+  }, [client]);
+  return broadcast;
+}
 
-export { NMeshedProvider, useDocument, useNmeshed, useNmeshedContext, usePresence };
+// src/sync/binary.ts
+var OP_CURSOR = 1;
+function packCursor(userId, x, y) {
+  const userIdBytes = new TextEncoder().encode(userId);
+  const buffer = new ArrayBuffer(1 + 2 + 2 + 1 + userIdBytes.length);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset++, OP_CURSOR);
+  view.setUint16(offset, Math.max(0, Math.min(65535, x)), false);
+  offset += 2;
+  view.setUint16(offset, Math.max(0, Math.min(65535, y)), false);
+  offset += 2;
+  view.setUint8(offset++, userIdBytes.length);
+  new Uint8Array(buffer).set(userIdBytes, offset);
+  return buffer;
+}
+function unpackCursor(buffer) {
+  const view = new DataView(buffer);
+  if (view.byteLength < 6) return null;
+  let offset = 0;
+  const op = view.getUint8(offset++);
+  if (op !== OP_CURSOR) return null;
+  const x = view.getUint16(offset, false);
+  offset += 2;
+  const y = view.getUint16(offset, false);
+  offset += 2;
+  const idLen = view.getUint8(offset++);
+  const idBytes = new Uint8Array(buffer, offset, idLen);
+  const userId = new TextDecoder().decode(idBytes);
+  return { x, y, userId };
+}
+function isBinaryCursor(data) {
+  return data instanceof ArrayBuffer || data instanceof Uint8Array;
+}
+var START_COLORS = ["#f87171", "#fb923c", "#fbbf24", "#a3e635", "#34d399", "#22d3ee", "#818cf8", "#e879f9"];
+function getColor(id) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
+  return START_COLORS[Math.abs(hash) % START_COLORS.length];
+}
+function CursorIcon({ color }) {
+  return /* @__PURE__ */ jsx(
+    "svg",
+    {
+      className: "w-5 h-5 drop-shadow-sm",
+      viewBox: "0 0 24 24",
+      fill: color,
+      xmlns: "http://www.w3.org/2000/svg",
+      children: /* @__PURE__ */ jsx("path", { d: "M5.65376 12.3673H5.46026L5.31717 12.4976L0.500002 16.8829L0.500002 1.19138L11.7841 12.3673H5.65376Z" })
+    }
+  );
+}
+function LiveCursors({ selfId }) {
+  const cursorState = useRef({});
+  const domRefs = useRef({});
+  const requestRef = useRef(0);
+  const [activeIds, setActiveIds] = useState([]);
+  const animate = useCallback(() => {
+    const LERP_FACTOR = 0.2;
+    for (const id of activeIds) {
+      const cursor = cursorState.current[id];
+      const el = domRefs.current[id];
+      if (cursor && el) {
+        const dx = cursor.targetX - cursor.x;
+        const dy = cursor.targetY - cursor.y;
+        if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
+          cursor.x = cursor.targetX;
+          cursor.y = cursor.targetY;
+        } else {
+          cursor.x += dx * LERP_FACTOR;
+          cursor.y += dy * LERP_FACTOR;
+        }
+        el.style.transform = `translate3d(${cursor.x}px, ${cursor.y}px, 0)`;
+      }
+    }
+    requestRef.current = requestAnimationFrame(animate);
+  }, [activeIds]);
+  useEffect(() => {
+    requestRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(requestRef.current);
+  }, [animate]);
+  const handleBroadcast = useCallback((payload) => {
+    let x, y, userId;
+    if (isBinaryCursor(payload)) {
+      const decoded = unpackCursor(payload);
+      if (!decoded) return;
+      x = decoded.x;
+      y = decoded.y;
+      userId = decoded.userId;
+    } else {
+      const data = payload;
+      if (data.type !== "cursor") return;
+      x = data.x;
+      y = data.y;
+      userId = data.userId;
+    }
+    if (userId === selfId) return;
+    const now = Date.now();
+    if (!cursorState.current[userId]) {
+      cursorState.current[userId] = {
+        x,
+        y,
+        targetX: x,
+        targetY: y,
+        lastUpdate: now,
+        color: getColor(userId)
+      };
+      setActiveIds((prev) => [...prev, userId]);
+    } else {
+      const c = cursorState.current[userId];
+      c.targetX = x;
+      c.targetY = y;
+      c.lastUpdate = now;
+    }
+  }, [selfId]);
+  const broadcast = useBroadcast(handleBroadcast);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      Object.entries(cursorState.current).forEach(([id, c]) => {
+        if (now - c.lastUpdate > 5e3) {
+          delete cursorState.current[id];
+          delete domRefs.current[id];
+          changed = true;
+        }
+      });
+      if (changed) {
+        setActiveIds(Object.keys(cursorState.current));
+      }
+    }, 1e3);
+    return () => clearInterval(interval);
+  }, []);
+  useEffect(() => {
+    let lastSent = 0;
+    const THROTTLE_MS = 30;
+    const handleMouseMove = (e) => {
+      const now = Date.now();
+      if (now - lastSent < THROTTLE_MS) return;
+      lastSent = now;
+      if (selfId) {
+        const buffer = packCursor(selfId, e.clientX, e.clientY);
+        broadcast(buffer);
+      }
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, [broadcast, selfId]);
+  return /* @__PURE__ */ jsx("div", { className: "pointer-events-none fixed inset-0 overflow-hidden z-[9999]", children: activeIds.map((id) => {
+    const state = cursorState.current[id];
+    if (!state) return null;
+    return /* @__PURE__ */ jsxs(
+      "div",
+      {
+        ref: (el) => {
+          domRefs.current[id] = el;
+        },
+        className: "absolute will-change-transform",
+        style: {
+          // Start position, implementation handles the rest
+          transform: `translate3d(${state.x}px, ${state.y}px, 0)`
+        },
+        children: [
+          /* @__PURE__ */ jsx(CursorIcon, { color: state.color }),
+          /* @__PURE__ */ jsx(
+            "div",
+            {
+              className: "ml-2 px-2 py-1 rounded-full text-xs font-semibold text-white shadow-md",
+              style: { backgroundColor: state.color },
+              children: id
+            }
+          )
+        ]
+      },
+      id
+    );
+  }) });
+}
+function AvatarStack() {
+  const users = usePresence();
+  if (users.length === 0) return null;
+  return /* @__PURE__ */ jsxs("div", { className: "flex -space-x-2 overflow-hidden items-center", children: [
+    users.map((user) => /* @__PURE__ */ jsxs(
+      "div",
+      {
+        className: "inline-block h-8 w-8 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-200 flex items-center justify-center text-xs font-medium text-gray-600 relative",
+        title: `${user.userId} (${user.status})`,
+        children: [
+          user.userId.slice(0, 2).toUpperCase(),
+          user.status === "online" && /* @__PURE__ */ jsx("span", { className: "absolute bottom-0 right-0 block h-2 w-2 rounded-full ring-2 ring-white bg-green-400" })
+        ]
+      },
+      user.userId
+    )),
+    /* @__PURE__ */ jsxs("div", { className: "ml-4 text-xs text-gray-500", children: [
+      users.length,
+      " active"
+    ] })
+  ] });
+}
+
+export { AvatarStack, LiveCursors, NMeshedProvider, useBroadcast, useDocument, useNmeshed, useNmeshedContext, usePresence };
 //# sourceMappingURL=index.mjs.map
 //# sourceMappingURL=index.mjs.map
