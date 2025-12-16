@@ -150,7 +150,7 @@ export class NMeshedClient {
     private generateUserId(): string {
         // Try crypto API first (more random)
         if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-            return `user - ${crypto.randomUUID().substring(0, 8)} `;
+            return `user-${crypto.randomUUID().substring(0, 8)}`;
         }
         // Fallback to Math.random
         return 'user-' + Math.random().toString(36).substring(2, 11);
@@ -204,7 +204,7 @@ export class NMeshedClient {
         });
         // Encode workspaceId to handle special characters
         const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
-        return `${base} /v1/sync / ${encodedWorkspace}?${params.toString()} `;
+        return `${base}/v1/sync/${encodedWorkspace}?${params.toString()}`;
     }
 
     /**

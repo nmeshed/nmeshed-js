@@ -115,15 +115,17 @@ function truncate(str, maxLength = 200) {
 }
 
 // src/sync/binary.ts
+var encoder = new TextEncoder();
+var decoder = new TextDecoder();
 var MSG_TYPE_OP = 1;
 function marshalOp(workspaceId, op) {
-  const keyBytes = new TextEncoder().encode(op.key);
+  const keyBytes = encoder.encode(op.key);
   let valBytes;
   if (op.value instanceof Uint8Array) {
     valBytes = op.value;
   } else {
     const jsonStr = JSON.stringify(op.value);
-    valBytes = new TextEncoder().encode(jsonStr);
+    valBytes = encoder.encode(jsonStr);
   }
   const uuidBytes = parseUUID(workspaceId);
   const size = 1 + 16 + 4 + keyBytes.length + 8 + 4 + valBytes.length;
@@ -162,7 +164,7 @@ function unmarshalOp(buffer) {
   offset += 4;
   if (offset + keyLen > byteView.length) return null;
   const keyBytes = byteView.subarray(offset, offset + keyLen);
-  const key = new TextDecoder().decode(keyBytes);
+  const key = decoder.decode(keyBytes);
   offset += keyLen;
   if (offset + 8 > byteView.length) return null;
   const timestamp = Number(view.getBigInt64(offset, true));
@@ -171,20 +173,14 @@ function unmarshalOp(buffer) {
   const valLen = view.getUint32(offset, true);
   offset += 4;
   if (offset + valLen > byteView.length) return null;
-  const valBytes = byteView.subarray(offset, offset + valLen);
-  let value;
-  try {
-    const jsonStr = new TextDecoder().decode(valBytes);
-    value = JSON.parse(jsonStr);
-  } catch {
-    value = valBytes;
-  }
+  const valBytes = new Uint8Array(byteView.subarray(offset, offset + valLen));
   offset += valLen;
   return {
     workspaceId,
     op: {
       key,
-      value,
+      value: valBytes,
+      // STRICT: Always return bytes
       timestamp
     }
   };
@@ -280,7 +276,7 @@ var NMeshedClient = class {
    */
   generateUserId() {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
-      return `user - ${crypto.randomUUID().substring(0, 8)} `;
+      return `user-${crypto.randomUUID().substring(0, 8)}`;
     }
     return "user-" + Math.random().toString(36).substring(2, 11);
   }
@@ -326,7 +322,7 @@ var NMeshedClient = class {
       userId: this.config.userId
     });
     const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
-    return `${base} /v1/sync / ${encodedWorkspace}?${params.toString()} `;
+    return `${base}/v1/sync/${encodedWorkspace}?${params.toString()}`;
   }
   /**
    * Connects to the nMeshed server.
@@ -402,10 +398,22 @@ var NMeshedClient = class {
           const op = unmarshalOp(event.data);
           if (op) {
             this.log("Received Binary Op:", op.op.key);
-            this.currentState[op.op.key] = op.op.value;
+            let decodedValue = op.op.value;
+            if (op.op.value instanceof Uint8Array) {
+              try {
+                const str = new TextDecoder().decode(op.op.value);
+                decodedValue = JSON.parse(str);
+              } catch {
+                decodedValue = op.op.value;
+              }
+            }
+            this.currentState[op.op.key] = decodedValue;
             const message = {
               type: "op",
-              payload: op.op
+              payload: {
+                ...op.op,
+                value: decodedValue
+              }
             };
             const listeners2 = Array.from(this.messageListeners);
             for (const listener of listeners2) {
