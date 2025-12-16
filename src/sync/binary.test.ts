@@ -1,6 +1,6 @@
 
 import { describe, it, expect } from 'vitest';
-import { marshalOp, unmarshalOp, MSG_TYPE_OP } from './binary';
+import { marshalOp, unmarshalOp } from './binary';
 import { Operation } from '../types';
 
 describe('Binary Protocol Packer', () => {
@@ -22,7 +22,9 @@ describe('Binary Protocol Packer', () => {
         expect(result?.workspaceId).toBe(workspaceId);
         expect(result?.op.key).toBe(op.key);
         expect(result?.op.timestamp).toBe(op.timestamp);
-        expect(result?.op.value).toEqual(op.value);
+        // Note: unmarshalOp now returns raw bytes. We must decode manually in tests if we want to check logic.
+        const decodedValue = JSON.parse(new TextDecoder().decode(result?.op.value as Uint8Array));
+        expect(decodedValue).toEqual(op.value);
     });
 
     it('should handle Uint8Array values (opaque bytes)', () => {
@@ -37,7 +39,26 @@ describe('Binary Protocol Packer', () => {
         const buffer = marshalOp(workspaceId, op);
         const result = unmarshalOp(buffer);
 
+        // Should return raw bytes strictly
+        expect(result?.op.value).toBeInstanceOf(Uint8Array);
         expect(result?.op.value).toEqual(rawBytes);
-        // Should NOT try to parse as JSON if it fails
+    });
+
+    it('should NOT strictly cast ambiguous binaries to JSON numbers automatically', () => {
+        // The "Magic 12" test
+        const workspaceId = 'aabbccdd-1122-3344-5566-77889900aabb';
+        const ambiguousBytes = new Uint8Array([0x31, 0x32]); // "12"
+        const op: Operation = {
+            key: 'ambiguous',
+            value: ambiguousBytes,
+            timestamp: 1000
+        };
+
+        const buffer = marshalOp(workspaceId, op);
+        const result = unmarshalOp(buffer);
+
+        // Strict behavior: It remains bytes.
+        expect(result?.op.value).toBeInstanceOf(Uint8Array);
+        expect(result?.op.value).toEqual(ambiguousBytes);
     });
 });

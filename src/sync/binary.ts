@@ -40,23 +40,7 @@ export function marshalOp(workspaceId: string, op: Operation): ArrayBuffer {
     const uuidBytes = parseUUID(workspaceId);
 
     // Calculate Size
-    // 1 (Type) + 16 (UUID) + 4 (KeyLen - Wait, Spec said 1 byte KeyLen? Let's check spec again. 
-    // Spec: [4 bytes] Key Length (uint32) in one place, but [1 byte] in "Op Payload".
-    // Server implementation used LittleEndian.PutUint32 for Key Length.
-    // Let's stick to Server Implementation: 4 bytes.
-    // Spec line 31 in `packer.go` (Server) uses `binary.LittleEndian.PutUint32(buf[offset:], uint32(len(keyBytes)))`
-    // So 4 bytes it is.
-    // Spec text said "[4 bytes] Key Length" in main block, checking `packer.go`:
-    // `size := 16 + 4 + len(keyBytes) + 8 + 4 + len(valBytes)`
-    // So Key Length is 4 bytes.
-
-    // But wait, the Spec Markdown I read in Step 222 said:
-    // `[1 byte] Key Length (K)` in the "Op Payload" section (Line 19).
-    // BUT the Server code (Step 92, `packer.go`) implemented:
-    // `size := 16 + 4 + len(keyBytes) + 8 + 4 + len(valBytes)`
-    // `binary.LittleEndian.PutUint32(buf[offset:], uint32(len(keyBytes)))`
-    // So the server implements 4 bytes. I must follow the SERVER implementation, not the markdown typo.
-
+    // 1 (Type) + 16 (UUID) + 4 (KeyLen) + KeyBytes + 8 (Timestamp) + 4 (ValLen) + ValBytes
     const size = 1 + 16 + 4 + keyBytes.length + 8 + 4 + valBytes.length;
     const buffer = new ArrayBuffer(size);
     const view = new DataView(buffer);
@@ -99,6 +83,7 @@ export function marshalOp(workspaceId: string, op: Operation): ArrayBuffer {
 
 /**
  * Unmarshals a binary buffer into an Operation.
+ * Returns the value as a raw Uint8Array. The caller is responsible for processing/parsing the value.
  */
 export function unmarshalOp(buffer: ArrayBuffer): { workspaceId: string, op: Operation } | null {
     const view = new DataView(buffer);
@@ -139,24 +124,15 @@ export function unmarshalOp(buffer: ArrayBuffer): { workspaceId: string, op: Ope
 
     // Value
     if (offset + valLen > byteView.length) return null;
-    const valBytes = byteView.subarray(offset, offset + valLen);
-    // Try to parse as JSON, fallback to raw bytes?
-    // "Value is opaque bytes". Server expects JSON if it's structural.
-    // Client usually receives JSON.
-    let value: unknown;
-    try {
-        const jsonStr = decoder.decode(valBytes);
-        value = JSON.parse(jsonStr);
-    } catch {
-        value = valBytes; // Fallback to bytes if not JSON
-    }
+    // Copy the subarray to ensure data safety (avoid buffer reuse issues)
+    const valBytes = new Uint8Array(byteView.subarray(offset, offset + valLen));
     offset += valLen;
 
     return {
         workspaceId,
         op: {
             key,
-            value,
+            value: valBytes, // STRICT: Always return bytes
             timestamp
         }
     };

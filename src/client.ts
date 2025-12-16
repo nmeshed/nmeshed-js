@@ -294,13 +294,31 @@ export class NMeshedClient {
                     const op = unmarshalOp(event.data);
                     if (op) {
                         this.log('Received Binary Op:', op.op.key);
+
+                        // DECODE VALUE (Application Layer)
+                        // Binary protocol blindly returns bytes. We assume JSON for compatibility.
+                        // Ideally, the protocol would have a type flag.
+                        let decodedValue: unknown = op.op.value;
+                        if (op.op.value instanceof Uint8Array) {
+                            try {
+                                const str = new TextDecoder().decode(op.op.value);
+                                decodedValue = JSON.parse(str);
+                            } catch {
+                                // Keep as bytes if not JSON
+                                decodedValue = op.op.value;
+                            }
+                        }
+
                         // Update local state
-                        this.currentState[op.op.key] = op.op.value;
+                        this.currentState[op.op.key] = decodedValue;
 
                         // Notify listeners as if it was a standard Op message
                         const message: any = {
                             type: 'op',
-                            payload: op.op
+                            payload: {
+                                ...op.op,
+                                value: decodedValue
+                            }
                         };
 
                         const listeners = Array.from(this.messageListeners);
