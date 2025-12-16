@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { nMeshedClient } from './client';
+import { NMeshedClient } from './client';
 import { ConfigurationError, ConnectionError } from './errors';
 
 // Mock WebSocket with all static constants
@@ -57,7 +57,7 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-describe('nMeshedClient', () => {
+describe('NMeshedClient', () => {
     const defaultConfig = {
         workspaceId: 'test-workspace',
         token: 'test-token',
@@ -65,17 +65,17 @@ describe('nMeshedClient', () => {
 
     describe('constructor', () => {
         it('throws ConfigurationError if workspaceId is missing', () => {
-            expect(() => new nMeshedClient({ workspaceId: '', token: 'token' }))
+            expect(() => new NMeshedClient({ workspaceId: '', token: 'token' }))
                 .toThrow(ConfigurationError);
         });
 
         it('throws ConfigurationError if token is missing', () => {
-            expect(() => new nMeshedClient({ workspaceId: 'workspace', token: '' }))
+            expect(() => new NMeshedClient({ workspaceId: 'workspace', token: '' }))
                 .toThrow(ConfigurationError);
         });
 
         it('throws ConfigurationError for invalid config', () => {
-            expect(() => new nMeshedClient({
+            expect(() => new NMeshedClient({
                 workspaceId: 'workspace',
                 token: 'token',
                 maxReconnectAttempts: -1,
@@ -83,14 +83,14 @@ describe('nMeshedClient', () => {
         });
 
         it('creates client with valid config', () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             expect(client.getStatus()).toBe('IDLE');
         });
     });
 
     describe('connect', () => {
         it('establishes WebSocket connection', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
@@ -98,7 +98,7 @@ describe('nMeshedClient', () => {
         });
 
         it('resolves immediately if already connected', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const promise1 = client.connect();
             MockWebSocket.instances[0].simulateOpen();
             await promise1;
@@ -107,14 +107,14 @@ describe('nMeshedClient', () => {
         });
 
         it('rejects with ConnectionError on error', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             MockWebSocket.instances[0].simulateError();
             await expect(connectPromise).rejects.toThrow(ConnectionError);
         });
 
         it('times out if connection takes too long', async () => {
-            const client = new nMeshedClient({
+            const client = new NMeshedClient({
                 ...defaultConfig,
                 connectionTimeout: 1000,
             });
@@ -126,7 +126,7 @@ describe('nMeshedClient', () => {
 
     describe('messaging', () => {
         it('handles init message and updates state', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
@@ -140,7 +140,7 @@ describe('nMeshedClient', () => {
         });
 
         it('handles op message and updates state', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
@@ -152,7 +152,7 @@ describe('nMeshedClient', () => {
         });
 
         it('notifies message listeners', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const listener = vi.fn();
             client.onMessage(listener);
             const connectPromise = client.connect();
@@ -166,7 +166,7 @@ describe('nMeshedClient', () => {
         });
 
         it('allows unsubscribing from messages', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const listener = vi.fn();
             const unsubscribe = client.onMessage(listener);
             const connectPromise = client.connect();
@@ -183,7 +183,7 @@ describe('nMeshedClient', () => {
 
     describe('sendOperation', () => {
         it('sends operation when connected', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
@@ -193,14 +193,14 @@ describe('nMeshedClient', () => {
         });
 
         it('queues operations when disconnected', () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             client.set('queued', 'value');
             expect(client.get('queued')).toBe('value');
             expect(client.getQueueSize()).toBe(1);
         });
 
         it('flushes queue on connect', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             client.set('key1', 'value1');
             client.set('key2', 'value2');
             const connectPromise = client.connect();
@@ -212,7 +212,7 @@ describe('nMeshedClient', () => {
         });
 
         it('handles circular JSON gracefully', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
@@ -231,7 +231,7 @@ describe('nMeshedClient', () => {
 
     describe('status changes', () => {
         it('notifies status listeners', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const listener = vi.fn();
             client.onStatusChange(listener);
             expect(listener).toHaveBeenCalledWith('IDLE');
@@ -245,7 +245,7 @@ describe('nMeshedClient', () => {
 
     describe('disconnect', () => {
         it('closes WebSocket connection', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
@@ -258,7 +258,7 @@ describe('nMeshedClient', () => {
 
     describe('destroy', () => {
         it('cleans up all resources', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
@@ -278,7 +278,7 @@ describe('nMeshedClient', () => {
             });
             vi.stubGlobal('fetch', mockFetch);
 
-            const client = new nMeshedClient({
+            const client = new NMeshedClient({
                 ...defaultConfig,
                 serverUrl: 'wss://api.example.com/socket'
             });
@@ -300,7 +300,7 @@ describe('nMeshedClient', () => {
             });
             vi.stubGlobal('fetch', mockFetch);
 
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
 
             await expect(client.getPresence()).rejects.toThrow('Failed to fetch presence: Not Found');
 
@@ -310,7 +310,7 @@ describe('nMeshedClient', () => {
 
     describe('getState', () => {
         it('returns a copy of the state', async () => {
-            const client = new nMeshedClient(defaultConfig);
+            const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();

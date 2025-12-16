@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { nMeshedClient } from '../client';
-import type { nMeshedConfig, ConnectionStatus, nMeshedMessage } from '../types';
+import { NMeshedClient } from '../client';
+import type { NMeshedConfig, ConnectionStatus, NMeshedMessage } from '../types';
 
 /**
  * Options for the useNmeshed hook.
  */
-export interface UseNmeshedOptions extends nMeshedConfig {
+export interface UseNmeshedOptions extends NMeshedConfig {
     /**
      * Callback when connected.
      */
@@ -54,7 +54,7 @@ export interface UseNmeshedReturn {
     /**
      * The underlying nMeshed client instance.
      */
-    client: nMeshedClient;
+    client: NMeshedClient;
 
     /**
      * Manually connect to the server.
@@ -111,9 +111,9 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
     const { onConnect, onDisconnect, onError, ...config } = options;
 
     // Create client once
-    const clientRef = useRef<nMeshedClient | null>(null);
+    const clientRef = useRef<NMeshedClient | null>(null);
     if (!clientRef.current) {
-        clientRef.current = new nMeshedClient(config);
+        clientRef.current = new NMeshedClient(config);
     }
     const client = clientRef.current;
 
@@ -139,7 +139,7 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
         });
 
         // Subscribe to messages
-        const unsubscribeMessage = currentClient.onMessage((message: nMeshedMessage) => {
+        const unsubscribeMessage = currentClient.onMessage((message: NMeshedMessage) => {
             if (message.type === 'init') {
                 setState(message.data);
             } else if (message.type === 'op') {

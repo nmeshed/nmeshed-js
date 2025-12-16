@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MessageError } from './errors';
-import type { nMeshedMessage } from './types';
+import type { NMeshedMessage } from './types';
 
 /**
  * Zod schemas for message validation.
@@ -63,7 +63,7 @@ export const MessageSchema = z.discriminatedUnion('type', [
  * @returns Validated nMeshedMessage
  * @throws {MessageError} If message is invalid
  */
-export function parseMessage(raw: string): nMeshedMessage {
+export function parseMessage(raw: string): NMeshedMessage {
     let json: unknown;
     try {
         json = JSON.parse(raw);
@@ -87,7 +87,7 @@ export function parseMessage(raw: string): nMeshedMessage {
         );
     }
 
-    return result.data as nMeshedMessage;
+    return result.data as NMeshedMessage;
 }
 
 /**

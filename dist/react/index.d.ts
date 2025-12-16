@@ -1,11 +1,11 @@
-import { b as nMeshedConfig, C as ConnectionStatus, a as nMeshedClient, P as PresenceUser } from '../client-BAB1wtLZ.js';
+import { b as NMeshedConfig, C as ConnectionStatus, a as NMeshedClient, P as PresenceUser } from '../client-Cs0HhYm5.js';
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import { ReactNode } from 'react';
 
 /**
  * Options for the useNmeshed hook.
  */
-interface UseNmeshedOptions extends nMeshedConfig {
+interface UseNmeshedOptions extends NMeshedConfig {
     /**
      * Callback when connected.
      */
@@ -46,7 +46,7 @@ interface UseNmeshedReturn {
     /**
      * The underlying nMeshed client instance.
      */
-    client: nMeshedClient;
+    client: NMeshedClient;
     /**
      * Manually connect to the server.
      */
@@ -206,13 +206,13 @@ interface UsePresenceOptions {
 declare function usePresence(options?: UsePresenceOptions): PresenceUser[];
 
 /**
- * Props for nMeshedProvider.
+ * Props for NMeshedProvider.
  */
-interface nMeshedProviderProps {
+interface NMeshedProviderProps {
     /**
      * Configuration for the nMeshed client.
      */
-    config: nMeshedConfig;
+    config: NMeshedConfig;
     /**
      * Child components that will have access to the client.
      */
@@ -231,30 +231,30 @@ interface nMeshedProviderProps {
  *
  * @example
  * ```tsx
- * import { nMeshedProvider } from 'nmeshed/react';
+ * import { NMeshedProvider } from 'nmeshed/react';
  *
  * function App() {
  *   return (
- *     <nMeshedProvider
+ *     <NMeshedProvider
  *       config={{
  *         workspaceId: 'my-workspace',
  *         token: 'jwt-token'
  *       }}
  *     >
  *       <MyCollaborativeApp />
- *     </nMeshedProvider>
+ *     </NMeshedProvider>
  *   );
  * }
  * ```
  */
-declare function nMeshedProvider({ config, children, autoConnect, }: nMeshedProviderProps): react_jsx_runtime.JSX.Element;
+declare function NMeshedProvider({ config, children, autoConnect, }: NMeshedProviderProps): react_jsx_runtime.JSX.Element;
 /**
  * Hook to access the nMeshed client from context.
  *
- * Must be used within an nMeshedProvider.
+ * Must be used within an NMeshedProvider.
  *
  * @returns The nMeshed client instance
- * @throws {Error} If used outside of nMeshedProvider
+ * @throws {Error} If used outside of NMeshedProvider
  *
  * @example
  * ```tsx
@@ -269,6 +269,6 @@ declare function nMeshedProvider({ config, children, autoConnect, }: nMeshedProv
  * }
  * ```
  */
-declare function useNmeshedContext(): nMeshedClient;
+declare function useNmeshedContext(): NMeshedClient;
 
-export { type UseDocumentOptions, type UseDocumentReturn, type UseNmeshedOptions, type UseNmeshedReturn, type UsePresenceOptions, nMeshedProvider, type nMeshedProviderProps, useDocument, useNmeshed, useNmeshedContext, usePresence };
+export { NMeshedProvider, type NMeshedProviderProps, type UseDocumentOptions, type UseDocumentReturn, type UseNmeshedOptions, type UseNmeshedReturn, type UsePresenceOptions, useDocument, useNmeshed, useNmeshedContext, usePresence };

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 import { useNmeshed } from './useNmeshed';
-import { nMeshedProvider, useNmeshedContext } from './context';
+import { NMeshedProvider, useNmeshedContext } from './context';
 import { useDocument } from './useDocument';
 
 // Mock WebSocket
@@ -164,7 +164,7 @@ describe('nMeshedProvider', () => {
 
     it('provides client to children via context', async () => {
         const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-            return React.createElement(nMeshedProvider, { config: defaultConfig, children });
+            return React.createElement(NMeshedProvider, { config: defaultConfig, children });
         };
 
         const { result } = renderHook(() => useNmeshedContext(), { wrapper });
@@ -180,14 +180,14 @@ describe('nMeshedProvider', () => {
 
         expect(() => {
             renderHook(() => useNmeshedContext());
-        }).toThrow('useNmeshedContext must be used within an nMeshedProvider');
+        }).toThrow('useNmeshedContext must be used within an NMeshedProvider');
 
         consoleSpy.mockRestore();
     });
 
     it('auto-connects when autoConnect is true', async () => {
         const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-            return React.createElement(nMeshedProvider, { config: defaultConfig, autoConnect: true, children });
+            return React.createElement(NMeshedProvider, { config: defaultConfig, autoConnect: true, children });
         };
 
         renderHook(() => useNmeshedContext(), { wrapper });
@@ -205,7 +205,7 @@ describe('useDocument', () => {
     };
 
     const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-        return React.createElement(nMeshedProvider, { config: defaultConfig, children });
+        return React.createElement(NMeshedProvider, { config: defaultConfig, children });
     };
 
     it('returns initial value before server data', async () => {

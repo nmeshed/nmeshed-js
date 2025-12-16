@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext } from './context';
-import type { nMeshedMessage } from '../types';
+import type { NMeshedMessage } from '../types';
 
 /**
  * Options for the useDocument hook.
@@ -113,7 +113,7 @@ export function useDocument<T = unknown>(
         }
 
         // Subscribe to updates
-        const unsubscribe = client.onMessage((message: nMeshedMessage) => {
+        const unsubscribe = client.onMessage((message: NMeshedMessage) => {
             if (message.type === 'init' && key in message.data) {
                 setLocalValue(message.data[key] as T);
                 setIsLoaded(true);

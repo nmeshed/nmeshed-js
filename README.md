@@ -26,7 +26,7 @@ npm install nmeshed
 ### Vanilla JavaScript/TypeScript
 
 ```typescript
-import { nMeshedClient } from 'nmeshed';
+import { NMeshedClient } from 'nmeshed';
 
 // 1. Create a client
 const client = new NMeshedClient({
@@ -77,18 +77,18 @@ function MultiplayerGame() {
 ### React with Context (Recommended)
 
 ```tsx
-import { nMeshedProvider, useDocument } from 'nmeshed/react';
+import { NMeshedProvider, useDocument } from 'nmeshed/react';
 
 function App() {
   return (
-    <nMeshedProvider
+    <NMeshedProvider
       config={{
         workspaceId: 'my-game',
         token: 'your-jwt-token'
       }}
     >
       <GameUI />
-    </nMeshedProvider>
+    </NMeshedProvider>
   );
 }
 
@@ -108,7 +108,7 @@ function GameUI() {
 
 ## API Reference
 
-### `nMeshedClient`
+### `NMeshedClient`
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|

@@ -7,23 +7,23 @@ var jsxRuntime = require('react/jsx-runtime');
 // src/react/useNmeshed.tsx
 
 // src/errors.ts
-var nMeshedError = class _nMeshedError extends Error {
+var NMeshedError = class _NMeshedError extends Error {
   constructor(message, code) {
     super(message);
     this.code = code;
-    this.name = "nMeshedError";
+    this.name = "NMeshedError";
     if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, _nMeshedError);
+      Error.captureStackTrace(this, _NMeshedError);
     }
   }
 };
-var ConfigurationError = class extends nMeshedError {
+var ConfigurationError = class extends NMeshedError {
   constructor(message) {
     super(message, "CONFIGURATION_ERROR");
     this.name = "ConfigurationError";
   }
 };
-var ConnectionError = class extends nMeshedError {
+var ConnectionError = class extends NMeshedError {
   constructor(message, cause, isRetryable = true) {
     super(message, "CONNECTION_ERROR");
     this.cause = cause;
@@ -31,7 +31,7 @@ var ConnectionError = class extends nMeshedError {
     this.name = "ConnectionError";
   }
 };
-var MessageError = class extends nMeshedError {
+var MessageError = class extends NMeshedError {
   constructor(message, rawMessage) {
     super(message, "MESSAGE_ERROR");
     this.rawMessage = rawMessage;
@@ -129,7 +129,7 @@ var DEFAULT_CONFIG = {
   maxQueueSize: 1e3,
   debug: false
 };
-var nMeshedClient = class {
+var NMeshedClient = class {
   /**
    * Creates a new nMeshed client instance.
    *
@@ -637,7 +637,7 @@ function useNmeshed(options) {
   const { onConnect, onDisconnect, onError, ...config } = options;
   const clientRef = react.useRef(null);
   if (!clientRef.current) {
-    clientRef.current = new nMeshedClient(config);
+    clientRef.current = new NMeshedClient(config);
   }
   const client = clientRef.current;
   const [state, setState] = react.useState({});
@@ -693,15 +693,15 @@ function useNmeshed(options) {
     disconnect
   };
 }
-var nMeshedContext = react.createContext(null);
-function nMeshedProvider({
+var NMeshedContext = react.createContext(null);
+function NMeshedProvider({
   config,
   children,
   autoConnect = true
 }) {
   const clientRef = react.useRef(null);
   if (!clientRef.current) {
-    clientRef.current = new nMeshedClient(config);
+    clientRef.current = new NMeshedClient(config);
   }
   react.useEffect(() => {
     const client = clientRef.current;
@@ -715,13 +715,13 @@ function nMeshedProvider({
       client.disconnect();
     };
   }, [autoConnect]);
-  return /* @__PURE__ */ jsxRuntime.jsx(nMeshedContext.Provider, { value: clientRef.current, children });
+  return /* @__PURE__ */ jsxRuntime.jsx(NMeshedContext.Provider, { value: clientRef.current, children });
 }
 function useNmeshedContext() {
-  const client = react.useContext(nMeshedContext);
+  const client = react.useContext(NMeshedContext);
   if (!client) {
     throw new Error(
-      "useNmeshedContext must be used within an nMeshedProvider. Wrap your component tree with <nMeshedProvider>."
+      "useNmeshedContext must be used within an NMeshedProvider. Wrap your component tree with <NMeshedProvider>."
     );
   }
   return client;
@@ -801,7 +801,7 @@ function usePresence(options = {}) {
   return users;
 }
 
-exports.nMeshedProvider = nMeshedProvider;
+exports.NMeshedProvider = NMeshedProvider;
 exports.useDocument = useDocument;
 exports.useNmeshed = useNmeshed;
 exports.useNmeshedContext = useNmeshedContext;

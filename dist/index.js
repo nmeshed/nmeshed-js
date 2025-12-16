@@ -3,23 +3,23 @@
 var zod = require('zod');
 
 // src/errors.ts
-var nMeshedError = class _nMeshedError extends Error {
+var NMeshedError = class _NMeshedError extends Error {
   constructor(message, code) {
     super(message);
     this.code = code;
-    this.name = "nMeshedError";
+    this.name = "NMeshedError";
     if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, _nMeshedError);
+      Error.captureStackTrace(this, _NMeshedError);
     }
   }
 };
-var ConfigurationError = class extends nMeshedError {
+var ConfigurationError = class extends NMeshedError {
   constructor(message) {
     super(message, "CONFIGURATION_ERROR");
     this.name = "ConfigurationError";
   }
 };
-var ConnectionError = class extends nMeshedError {
+var ConnectionError = class extends NMeshedError {
   constructor(message, cause, isRetryable = true) {
     super(message, "CONNECTION_ERROR");
     this.cause = cause;
@@ -27,20 +27,20 @@ var ConnectionError = class extends nMeshedError {
     this.name = "ConnectionError";
   }
 };
-var AuthenticationError = class extends nMeshedError {
+var AuthenticationError = class extends NMeshedError {
   constructor(message = "Authentication failed") {
     super(message, "AUTHENTICATION_ERROR");
     this.name = "AuthenticationError";
   }
 };
-var MessageError = class extends nMeshedError {
+var MessageError = class extends NMeshedError {
   constructor(message, rawMessage) {
     super(message, "MESSAGE_ERROR");
     this.rawMessage = rawMessage;
     this.name = "MessageError";
   }
 };
-var QueueOverflowError = class extends nMeshedError {
+var QueueOverflowError = class extends NMeshedError {
   constructor(maxSize) {
     super(
       `Operation queue exceeded maximum capacity of ${maxSize}. Consider increasing maxQueueSize or reducing send frequency.`,
@@ -140,7 +140,7 @@ var DEFAULT_CONFIG = {
   maxQueueSize: 1e3,
   debug: false
 };
-var nMeshedClient = class {
+var NMeshedClient = class {
   /**
    * Creates a new nMeshed client instance.
    *
@@ -647,9 +647,9 @@ exports.AuthenticationError = AuthenticationError;
 exports.ConfigurationError = ConfigurationError;
 exports.ConnectionError = ConnectionError;
 exports.MessageError = MessageError;
+exports.NMeshedClient = NMeshedClient;
+exports.NMeshedError = NMeshedError;
 exports.QueueOverflowError = QueueOverflowError;
-exports.nMeshedClient = nMeshedClient;
-exports.nMeshedError = nMeshedError;
 exports.parseMessage = parseMessage;
 exports.truncate = truncate;
 //# sourceMappingURL=index.js.map
