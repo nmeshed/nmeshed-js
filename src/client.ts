@@ -12,6 +12,7 @@ import {
     ConnectionError,
 } from './errors';
 import { parseMessage, truncate } from './validation';
+import { marshalOp, unmarshalOp } from './sync/binary';
 import { z } from 'zod';
 
 /**
@@ -288,8 +289,32 @@ export class NMeshedClient {
 
             this.ws.onmessage = (event) => {
                 if (event.data instanceof ArrayBuffer) {
-                    // Fast Path: Dispatch raw binary to ephemeral listeners
-                    // We treat all binary as "ephemeral" for now to bypass JSON parsing overhead
+                    // Binary Path (Fast Lane)
+                    // Check if it's a known binary Op or just ephemeral
+                    const op = unmarshalOp(event.data);
+                    if (op) {
+                        this.log('Received Binary Op:', op.op.key);
+                        // Update local state
+                        this.currentState[op.op.key] = op.op.value;
+
+                        // Notify listeners as if it was a standard Op message
+                        const message: any = {
+                            type: 'op',
+                            payload: op.op
+                        };
+
+                        const listeners = Array.from(this.messageListeners);
+                        for (const listener of listeners) {
+                            try {
+                                listener(message);
+                            } catch (error) {
+                                this.warn('Message listener threw an error:', error);
+                            }
+                        }
+                        return;
+                    }
+
+                    // If not an Op, assume Ephemeral/Cursor (Legacy or Spec v2)
                     const listeners = Array.from(this.ephemeralListeners);
                     for (const listener of listeners) {
                         try {
@@ -590,25 +615,26 @@ export class NMeshedClient {
             return;
         }
 
-        let message: string;
+        // Binary Path: ALWAYS prefer binary for Ops if possible
         try {
-            message = JSON.stringify({
-                type: 'op',
-                payload: { key, value, timestamp },
-            });
+            const binaryOp = marshalOp(this.config.workspaceId, { key, value, timestamp });
+            this.ws.send(binaryOp);
+            this.log('Sent binary operation:', key);
         } catch (error) {
-            this.warn('Failed to serialize operation, dropping:', error);
-            // Do NOT queue un-serializable operations, as they will never succeed
-            return;
-        }
+            this.warn('Failed to send binary operation, falling back to JSON:', error);
 
-        try {
-            this.ws.send(message);
-            this.log('Sent operation:', key);
-        } catch (error) {
-            this.warn('Failed to send operation:', error);
-            // Re-queue the operation only if sending failed (network issue), not serialization
-            this.queueOperation(key, value, timestamp);
+            // Fallback to JSON if binary fails (shouldn't happen unless value is circular etc)
+            try {
+                const message = JSON.stringify({
+                    type: 'op',
+                    payload: { key, value, timestamp },
+                });
+                this.ws.send(message);
+                this.log('Sent JSON operation:', key);
+            } catch (jsonError) {
+                this.warn('Failed to send JSON operation:', jsonError);
+                this.queueOperation(key, value, timestamp);
+            }
         }
     }
 

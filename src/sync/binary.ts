@@ -1,20 +1,169 @@
 /**
- * Zero-Overhead Binary Protocol
- * 
- * "JSON is for config files, not wire protocols."
- * 
- * Schema (Cursor Update):
- * [0:1]   OpCode (0x01 = Cursor)
- * [1:9]   Timestamp (Double - 64 bit) - for interpolation
- * [9:13]  X (Uint16) - 0-65535 normalized coordinates or screen space? 
- *         Screen space is risky for resizing. Normalized (0-1) * 65535 is safer for responsive design.
- *         Let's stick to Float32 (4 bytes) for generic coordinates to avoid casting issues for now, or Int16 if we want extreme compression.
- *         Let's use Int16 for screen space (Screen pixels usually < 32k).
- * [13:17] Y (Uint16)
- * [17:N]  UserId (String - Length Prefixed or Null Terminated? Length byte is safer).
+ * Binary Protocol Packer (v1)
+ * Match spec in internal-docs/binary_spec.md
  */
 
-const OP_CURSOR = 0x01;
+import { Operation } from '../types';
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+// Constants
+export const MSG_TYPE_OP = 0x01;
+export const MSG_TYPE_EPHEMERAL = 0x02;
+export const MSG_TYPE_CURSOR = 0x03; // Legacy/Cursor specific
+
+/**
+ * Encodes an Operation into the custom binary format.
+ * Format:
+ * [1 byte]  MsgType (0x01)
+ * [16 bytes] WorkspaceUUID (Binary)
+ * [1 byte]   Key Length (K)
+ * [K bytes]  Key String (UTF-8)
+ * [8 bytes]  Timestamp (int64, Unix Micro)
+ * [4 bytes]  Value Length (V)
+ * [V bytes]  Value (JSON/Bytes)
+ */
+export function marshalOp(workspaceId: string, op: Operation): ArrayBuffer {
+    const keyBytes = encoder.encode(op.key);
+
+    // Value handling: If it's already Uint8Array, use it. Else JSON stringify.
+    let valBytes: Uint8Array;
+    if (op.value instanceof Uint8Array) {
+        valBytes = op.value;
+    } else {
+        const jsonStr = JSON.stringify(op.value);
+        valBytes = encoder.encode(jsonStr);
+    }
+
+    // UUID Handling: Need to parse 36-char string to 16-byte array
+    const uuidBytes = parseUUID(workspaceId);
+
+    // Calculate Size
+    // 1 (Type) + 16 (UUID) + 4 (KeyLen - Wait, Spec said 1 byte KeyLen? Let's check spec again. 
+    // Spec: [4 bytes] Key Length (uint32) in one place, but [1 byte] in "Op Payload".
+    // Server implementation used LittleEndian.PutUint32 for Key Length.
+    // Let's stick to Server Implementation: 4 bytes.
+    // Spec line 31 in `packer.go` (Server) uses `binary.LittleEndian.PutUint32(buf[offset:], uint32(len(keyBytes)))`
+    // So 4 bytes it is.
+    // Spec text said "[4 bytes] Key Length" in main block, checking `packer.go`:
+    // `size := 16 + 4 + len(keyBytes) + 8 + 4 + len(valBytes)`
+    // So Key Length is 4 bytes.
+
+    // But wait, the Spec Markdown I read in Step 222 said:
+    // `[1 byte] Key Length (K)` in the "Op Payload" section (Line 19).
+    // BUT the Server code (Step 92, `packer.go`) implemented:
+    // `size := 16 + 4 + len(keyBytes) + 8 + 4 + len(valBytes)`
+    // `binary.LittleEndian.PutUint32(buf[offset:], uint32(len(keyBytes)))`
+    // So the server implements 4 bytes. I must follow the SERVER implementation, not the markdown typo.
+
+    const size = 1 + 16 + 4 + keyBytes.length + 8 + 4 + valBytes.length;
+    const buffer = new ArrayBuffer(size);
+    const view = new DataView(buffer);
+    const byteView = new Uint8Array(buffer);
+
+    let offset = 0;
+
+    // MsgType
+    view.setUint8(offset++, MSG_TYPE_OP);
+
+    // WorkspaceID (16 bytes)
+    byteView.set(uuidBytes, offset);
+    offset += 16;
+
+    // Key Length (4 bytes, Little Endian)
+    view.setUint32(offset, keyBytes.length, true);
+    offset += 4;
+
+    // Key
+    byteView.set(keyBytes, offset);
+    offset += keyBytes.length;
+
+    // Timestamp (8 bytes, Little Endian)
+    // Javascript numbers are doubles (53 bit integer precision).
+    // UnixMicro might exceed 53 bits (2^53 is ~9007 trillion, today is ~1.7 billion * 1e6 = 1.7e15. 2^53 is 9e15. Safe.)
+    // We can use BigInt for safety.
+    view.setBigInt64(offset, BigInt(op.timestamp), true);
+    offset += 8;
+
+    // Value Length (4 bytes, Little Endian)
+    view.setUint32(offset, valBytes.length, true);
+    offset += 4;
+
+    // Value
+    byteView.set(valBytes, offset);
+    offset += valBytes.length;
+
+    return buffer;
+}
+
+/**
+ * Unmarshals a binary buffer into an Operation.
+ */
+export function unmarshalOp(buffer: ArrayBuffer): { workspaceId: string, op: Operation } | null {
+    const view = new DataView(buffer);
+    const byteView = new Uint8Array(buffer);
+    if (byteView.length < 1) return null;
+
+    let offset = 0;
+
+    const type = view.getUint8(offset++);
+    if (type !== MSG_TYPE_OP) return null;
+
+    // WorkspaceID
+    if (offset + 16 > byteView.length) return null;
+    const uuidBytes = byteView.subarray(offset, offset + 16);
+    const workspaceId = stringifyUUID(uuidBytes);
+    offset += 16;
+
+    // Key Length
+    if (offset + 4 > byteView.length) return null;
+    const keyLen = view.getUint32(offset, true);
+    offset += 4;
+
+    // Key
+    if (offset + keyLen > byteView.length) return null;
+    const keyBytes = byteView.subarray(offset, offset + keyLen);
+    const key = decoder.decode(keyBytes);
+    offset += keyLen;
+
+    // Timestamp
+    if (offset + 8 > byteView.length) return null;
+    const timestamp = Number(view.getBigInt64(offset, true));
+    offset += 8;
+
+    // Value Length
+    if (offset + 4 > byteView.length) return null;
+    const valLen = view.getUint32(offset, true);
+    offset += 4;
+
+    // Value
+    if (offset + valLen > byteView.length) return null;
+    const valBytes = byteView.subarray(offset, offset + valLen);
+    // Try to parse as JSON, fallback to raw bytes?
+    // "Value is opaque bytes". Server expects JSON if it's structural.
+    // Client usually receives JSON.
+    let value: unknown;
+    try {
+        const jsonStr = decoder.decode(valBytes);
+        value = JSON.parse(jsonStr);
+    } catch {
+        value = valBytes; // Fallback to bytes if not JSON
+    }
+    offset += valLen;
+
+    return {
+        workspaceId,
+        op: {
+            key,
+            value,
+            timestamp
+        }
+    };
+}
+
+
+// --- Legacy Cursor Helpers (Restored) ---
 
 export function packCursor(userId: string, x: number, y: number): ArrayBuffer {
     const userIdBytes = new TextEncoder().encode(userId);
@@ -24,21 +173,16 @@ export function packCursor(userId: string, x: number, y: number): ArrayBuffer {
 
     let offset = 0;
 
-    // OpCode
-    view.setUint8(offset++, OP_CURSOR);
+    view.setUint8(offset++, MSG_TYPE_CURSOR);
 
     // Coordinates (Clamped to Uint16 range 0-65535)
-    // We assume pixels, if negative or > 65k, we clamp.
     view.setUint16(offset, Math.max(0, Math.min(65535, x)), false); // Big Endian
     offset += 2;
 
     view.setUint16(offset, Math.max(0, Math.min(65535, y)), false);
     offset += 2;
 
-    // UserId Length
     view.setUint8(offset++, userIdBytes.length);
-
-    // UserId Body
     new Uint8Array(buffer).set(userIdBytes, offset);
 
     return buffer;
@@ -46,12 +190,12 @@ export function packCursor(userId: string, x: number, y: number): ArrayBuffer {
 
 export function unpackCursor(buffer: ArrayBuffer): { x: number, y: number, userId: string } | null {
     const view = new DataView(buffer);
-    if (view.byteLength < 6) return null; // Min size
+    if (view.byteLength < 6) return null;
 
     let offset = 0;
     const op = view.getUint8(offset++);
 
-    if (op !== OP_CURSOR) return null;
+    if (op !== MSG_TYPE_CURSOR) return null;
 
     const x = view.getUint16(offset, false);
     offset += 2;
@@ -67,5 +211,30 @@ export function unpackCursor(buffer: ArrayBuffer): { x: number, y: number, userI
 }
 
 export function isBinaryCursor(data: unknown): boolean {
-    return data instanceof ArrayBuffer || data instanceof Uint8Array;
+    if (!(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) return false;
+    // Check first byte
+    const view = new DataView(data instanceof Uint8Array ? data.buffer : data);
+    return view.byteLength > 0 && view.getUint8(0) === MSG_TYPE_CURSOR;
+}
+
+// Helpers
+
+function parseUUID(uuid: string): Uint8Array {
+    const hex = uuid.replace(/-/g, '');
+    const arr = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) {
+        arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+    }
+    return arr;
+}
+
+function stringifyUUID(bytes: Uint8Array): string {
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    return [
+        hex.substr(0, 8),
+        hex.substr(8, 4),
+        hex.substr(12, 4),
+        hex.substr(16, 4),
+        hex.substr(20, 12)
+    ].join('-');
 }

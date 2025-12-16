@@ -113,6 +113,100 @@ function truncate(str, maxLength = 200) {
   if (str.length <= maxLength) return str;
   return str.substring(0, maxLength) + `... (${str.length - maxLength} more chars)`;
 }
+
+// src/sync/binary.ts
+var MSG_TYPE_OP = 1;
+function marshalOp(workspaceId, op) {
+  const keyBytes = new TextEncoder().encode(op.key);
+  let valBytes;
+  if (op.value instanceof Uint8Array) {
+    valBytes = op.value;
+  } else {
+    const jsonStr = JSON.stringify(op.value);
+    valBytes = new TextEncoder().encode(jsonStr);
+  }
+  const uuidBytes = parseUUID(workspaceId);
+  const size = 1 + 16 + 4 + keyBytes.length + 8 + 4 + valBytes.length;
+  const buffer = new ArrayBuffer(size);
+  const view = new DataView(buffer);
+  const byteView = new Uint8Array(buffer);
+  let offset = 0;
+  view.setUint8(offset++, MSG_TYPE_OP);
+  byteView.set(uuidBytes, offset);
+  offset += 16;
+  view.setUint32(offset, keyBytes.length, true);
+  offset += 4;
+  byteView.set(keyBytes, offset);
+  offset += keyBytes.length;
+  view.setBigInt64(offset, BigInt(op.timestamp), true);
+  offset += 8;
+  view.setUint32(offset, valBytes.length, true);
+  offset += 4;
+  byteView.set(valBytes, offset);
+  offset += valBytes.length;
+  return buffer;
+}
+function unmarshalOp(buffer) {
+  const view = new DataView(buffer);
+  const byteView = new Uint8Array(buffer);
+  if (byteView.length < 1) return null;
+  let offset = 0;
+  const type = view.getUint8(offset++);
+  if (type !== MSG_TYPE_OP) return null;
+  if (offset + 16 > byteView.length) return null;
+  const uuidBytes = byteView.subarray(offset, offset + 16);
+  const workspaceId = stringifyUUID(uuidBytes);
+  offset += 16;
+  if (offset + 4 > byteView.length) return null;
+  const keyLen = view.getUint32(offset, true);
+  offset += 4;
+  if (offset + keyLen > byteView.length) return null;
+  const keyBytes = byteView.subarray(offset, offset + keyLen);
+  const key = new TextDecoder().decode(keyBytes);
+  offset += keyLen;
+  if (offset + 8 > byteView.length) return null;
+  const timestamp = Number(view.getBigInt64(offset, true));
+  offset += 8;
+  if (offset + 4 > byteView.length) return null;
+  const valLen = view.getUint32(offset, true);
+  offset += 4;
+  if (offset + valLen > byteView.length) return null;
+  const valBytes = byteView.subarray(offset, offset + valLen);
+  let value;
+  try {
+    const jsonStr = new TextDecoder().decode(valBytes);
+    value = JSON.parse(jsonStr);
+  } catch {
+    value = valBytes;
+  }
+  offset += valLen;
+  return {
+    workspaceId,
+    op: {
+      key,
+      value,
+      timestamp
+    }
+  };
+}
+function parseUUID(uuid) {
+  const hex = uuid.replace(/-/g, "");
+  const arr = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return arr;
+}
+function stringifyUUID(bytes) {
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [
+    hex.substr(0, 8),
+    hex.substr(8, 4),
+    hex.substr(12, 4),
+    hex.substr(16, 4),
+    hex.substr(20, 12)
+  ].join("-");
+}
 var ConfigSchema = z.object({
   workspaceId: z.string().min(1, "workspaceId is required and must be a non-empty string"),
   token: z.string().min(1, "token is required and must be a non-empty string"),
@@ -305,6 +399,24 @@ var NMeshedClient = class {
       this.ws.binaryType = "arraybuffer";
       this.ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
+          const op = unmarshalOp(event.data);
+          if (op) {
+            this.log("Received Binary Op:", op.op.key);
+            this.currentState[op.op.key] = op.op.value;
+            const message = {
+              type: "op",
+              payload: op.op
+            };
+            const listeners2 = Array.from(this.messageListeners);
+            for (const listener of listeners2) {
+              try {
+                listener(message);
+              } catch (error) {
+                this.warn("Message listener threw an error:", error);
+              }
+            }
+            return;
+          }
           const listeners = Array.from(this.ephemeralListeners);
           for (const listener of listeners) {
             try {
@@ -550,22 +662,23 @@ var NMeshedClient = class {
       this.queueOperation(key, value, timestamp);
       return;
     }
-    let message;
     try {
-      message = JSON.stringify({
-        type: "op",
-        payload: { key, value, timestamp }
-      });
+      const binaryOp = marshalOp(this.config.workspaceId, { key, value, timestamp });
+      this.ws.send(binaryOp);
+      this.log("Sent binary operation:", key);
     } catch (error) {
-      this.warn("Failed to serialize operation, dropping:", error);
-      return;
-    }
-    try {
-      this.ws.send(message);
-      this.log("Sent operation:", key);
-    } catch (error) {
-      this.warn("Failed to send operation:", error);
-      this.queueOperation(key, value, timestamp);
+      this.warn("Failed to send binary operation, falling back to JSON:", error);
+      try {
+        const message = JSON.stringify({
+          type: "op",
+          payload: { key, value, timestamp }
+        });
+        this.ws.send(message);
+        this.log("Sent JSON operation:", key);
+      } catch (jsonError) {
+        this.warn("Failed to send JSON operation:", jsonError);
+        this.queueOperation(key, value, timestamp);
+      }
     }
   }
   /**
