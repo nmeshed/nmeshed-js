@@ -29,7 +29,7 @@ npm install nmeshed
 import { nMeshedClient } from 'nmeshed';
 
 // 1. Create a client
-const client = new nMeshedClient({
+const client = new NMeshedClient({
   workspaceId: 'my-game-room',
   token: 'your-jwt-token'
 });
