@@ -1,5 +1,5 @@
 import type {
-    nMeshedConfig,
+    NMeshedConfig,
     ConnectionStatus,
     MessageHandler,
     StatusHandler,
@@ -72,7 +72,7 @@ interface QueuedOperation {
  *
  * @example Basic Usage
  * ```typescript
-    * const client = new nMeshedClient({
+ * const client = new NMeshedClient({
         *   workspaceId: 'my-workspace',
         *   token: 'jwt-token'
  * });
@@ -88,7 +88,7 @@ interface QueuedOperation {
  * client.set('greeting', 'Hello!');
  * ```
  */
-export class nMeshedClient {
+export class NMeshedClient {
     private readonly config: ResolvedConfig;
     private ws: WebSocket | null = null;
     private status: ConnectionStatus = 'IDLE';
@@ -108,7 +108,7 @@ export class nMeshedClient {
      * @param config - Configuration options
      * @throws {ConfigurationError} If workspaceId or token is missing
      */
-    constructor(config: nMeshedConfig) {
+    constructor(config: NMeshedConfig) {
         // Zod at the Gates: Trust no one.
         const result = ConfigSchema.safeParse(config);
 

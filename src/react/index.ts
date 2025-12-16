@@ -30,8 +30,8 @@
 export { useNmeshed } from './useNmeshed';
 export { useDocument } from './useDocument';
 export { usePresence } from './usePresence';
-export { nMeshedProvider, useNmeshedContext } from './context';
+export { NMeshedProvider, useNmeshedContext } from './context';
 export type { UseNmeshedOptions, UseNmeshedReturn } from './useNmeshed';
 export type { UseDocumentOptions, UseDocumentReturn } from './useDocument';
 export type { UsePresenceOptions } from './usePresence';
-export type { nMeshedProviderProps } from './context';
+export type { NMeshedProviderProps } from './context';

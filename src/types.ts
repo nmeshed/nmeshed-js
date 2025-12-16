@@ -1,7 +1,7 @@
 /**
  * Configuration options for the nMeshed client.
  */
-export interface nMeshedConfig {
+export interface NMeshedConfig {
     /**
      * The workspace ID to connect to.
      * A workspace is a collaborative room or document.
@@ -151,12 +151,12 @@ export interface PresenceUser {
 /**
  * Union of all possible messages from the server.
  */
-export type nMeshedMessage = InitMessage | OperationMessage | PresenceMessage;
+export type NMeshedMessage = InitMessage | OperationMessage | PresenceMessage;
 
 /**
  * Handler function for incoming messages.
  */
-export type MessageHandler = (message: nMeshedMessage) => void;
+export type MessageHandler = (message: NMeshedMessage) => void;
 
 /**
  * Handler function for connection status changes.
@@ -166,4 +166,4 @@ export type StatusHandler = (status: ConnectionStatus) => void;
 /**
  * Internal resolved configuration with all defaults applied.
  */
-export interface ResolvedConfig extends Required<nMeshedConfig> { }
+export interface ResolvedConfig extends Required<NMeshedConfig> { }

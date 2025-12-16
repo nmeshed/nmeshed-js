@@ -4,7 +4,7 @@
         "./src/index.ts",
         "./src/react/index.ts"
     ],
-    "out": "../../apps/docs/docs/api/sdk",
+    "out": "../../platform/web/src/content/docs/api/sdk",
     "plugin": [
         "typedoc-plugin-markdown"
     ],

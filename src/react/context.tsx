@@ -1,20 +1,20 @@
 import { createContext, useContext, useRef, useEffect, type ReactNode } from 'react';
-import { nMeshedClient } from '../client';
-import type { nMeshedConfig } from '../types';
+import { NMeshedClient } from '../client';
+import type { NMeshedConfig } from '../types';
 
 /**
  * Context for sharing an nMeshed client across components.
  */
-const nMeshedContext = createContext<nMeshedClient | null>(null);
+const NMeshedContext = createContext<NMeshedClient | null>(null);
 
 /**
- * Props for nMeshedProvider.
+ * Props for NMeshedProvider.
  */
-export interface nMeshedProviderProps {
+export interface NMeshedProviderProps {
     /**
      * Configuration for the nMeshed client.
      */
-    config: nMeshedConfig;
+    config: NMeshedConfig;
 
     /**
      * Child components that will have access to the client.
@@ -36,32 +36,32 @@ export interface nMeshedProviderProps {
  * 
  * @example
  * ```tsx
- * import { nMeshedProvider } from 'nmeshed/react';
+ * import { NMeshedProvider } from 'nmeshed/react';
  * 
  * function App() {
  *   return (
- *     <nMeshedProvider
+ *     <NMeshedProvider
  *       config={{
  *         workspaceId: 'my-workspace',
  *         token: 'jwt-token'
  *       }}
  *     >
  *       <MyCollaborativeApp />
- *     </nMeshedProvider>
+ *     </NMeshedProvider>
  *   );
  * }
  * ```
  */
-export function nMeshedProvider({
+export function NMeshedProvider({
     config,
     children,
     autoConnect = true,
-}: nMeshedProviderProps) {
-    const clientRef = useRef<nMeshedClient | null>(null);
+}: NMeshedProviderProps) {
+    const clientRef = useRef<NMeshedClient | null>(null);
 
     // Create client on first render
     if (!clientRef.current) {
-        clientRef.current = new nMeshedClient(config);
+        clientRef.current = new NMeshedClient(config);
     }
 
     useEffect(() => {
@@ -80,19 +80,19 @@ export function nMeshedProvider({
     }, [autoConnect]);
 
     return (
-        <nMeshedContext.Provider value={clientRef.current}>
+        <NMeshedContext.Provider value={clientRef.current}>
             {children}
-        </nMeshedContext.Provider>
+        </NMeshedContext.Provider>
     );
 }
 
 /**
  * Hook to access the nMeshed client from context.
  * 
- * Must be used within an nMeshedProvider.
+ * Must be used within an NMeshedProvider.
  * 
  * @returns The nMeshed client instance
- * @throws {Error} If used outside of nMeshedProvider
+ * @throws {Error} If used outside of NMeshedProvider
  * 
  * @example
  * ```tsx
@@ -107,13 +107,13 @@ export function nMeshedProvider({
  * }
  * ```
  */
-export function useNmeshedContext(): nMeshedClient {
-    const client = useContext(nMeshedContext);
+export function useNmeshedContext(): NMeshedClient {
+    const client = useContext(NMeshedContext);
 
     if (!client) {
         throw new Error(
-            'useNmeshedContext must be used within an nMeshedProvider. ' +
-            'Wrap your component tree with <nMeshedProvider>.'
+            'useNmeshedContext must be used within an NMeshedProvider. ' +
+            'Wrap your component tree with <NMeshedProvider>.'
         );
     }
 

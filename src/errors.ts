@@ -7,13 +7,13 @@
 /**
  * Base class for all nMeshed errors.
  */
-export class nMeshedError extends Error {
+export class NMeshedError extends Error {
     constructor(message: string, public readonly code: string) {
         super(message);
-        this.name = 'nMeshedError';
+        this.name = 'NMeshedError';
         // Maintains proper stack trace for where error was thrown (V8 only)
         if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, nMeshedError);
+            Error.captureStackTrace(this, NMeshedError);
         }
     }
 }
@@ -21,7 +21,7 @@ export class nMeshedError extends Error {
 /**
  * Thrown when configuration is invalid.
  */
-export class ConfigurationError extends nMeshedError {
+export class ConfigurationError extends NMeshedError {
     constructor(message: string) {
         super(message, 'CONFIGURATION_ERROR');
         this.name = 'ConfigurationError';
@@ -31,7 +31,7 @@ export class ConfigurationError extends nMeshedError {
 /**
  * Thrown when connection fails or times out.
  */
-export class ConnectionError extends nMeshedError {
+export class ConnectionError extends NMeshedError {
     constructor(
         message: string,
         public readonly cause?: Error,
@@ -45,7 +45,7 @@ export class ConnectionError extends nMeshedError {
 /**
  * Thrown when authentication fails.
  */
-export class AuthenticationError extends nMeshedError {
+export class AuthenticationError extends NMeshedError {
     constructor(message: string = 'Authentication failed') {
         super(message, 'AUTHENTICATION_ERROR');
         this.name = 'AuthenticationError';
@@ -55,7 +55,7 @@ export class AuthenticationError extends nMeshedError {
 /**
  * Thrown when a message fails to parse or validate.
  */
-export class MessageError extends nMeshedError {
+export class MessageError extends NMeshedError {
     constructor(
         message: string,
         public readonly rawMessage?: string
@@ -68,7 +68,7 @@ export class MessageError extends nMeshedError {
 /**
  * Thrown when the operation queue exceeds capacity.
  */
-export class QueueOverflowError extends nMeshedError {
+export class QueueOverflowError extends NMeshedError {
     constructor(maxSize: number) {
         super(
             `Operation queue exceeded maximum capacity of ${maxSize}. ` +

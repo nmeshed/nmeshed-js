@@ -5,9 +5,9 @@
  * 
  * @example
  * ```typescript
- * import { nMeshedClient } from 'nmeshed';
+ * import { NMeshedClient } from 'nmeshed';
  * 
- * const client = new nMeshedClient({
+ * const client = new NMeshedClient({
  *   workspaceId: 'my-workspace',
  *   token: 'your-jwt-token'
  * });
@@ -19,23 +19,23 @@
  * @packageDocumentation
  */
 
-export { nMeshedClient } from './client';
+export { NMeshedClient } from './client';
 
 // Types
 export type {
-    nMeshedConfig,
+    NMeshedConfig,
     ConnectionStatus,
     MessageHandler,
     StatusHandler,
     Operation,
     InitMessage,
     OperationMessage,
-    nMeshedMessage,
+    NMeshedMessage,
 } from './types';
 
 // Errors
 export {
-    nMeshedError,
+    NMeshedError,
     ConfigurationError,
     ConnectionError,
     AuthenticationError,
