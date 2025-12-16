@@ -1,69 +1,70 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useNmeshedContext } from './context';
 import type { PresenceUser } from '../types';
 
-export interface UsePresenceOptions {
+export type UsePresenceOptions = {
     /**
-     * Polling interval in milliseconds.
-     * Default: 10000 (10 seconds)
+     * @deprecated Polling is no longer needed; presence is real-time.
      */
     interval?: number;
-}
+};
 
 /**
  * Hook to get the current presence list for the workspace.
- * 
- * Note: This currently uses polling every 10 seconds.
+ * Uses real-time WebSocket events.
  * 
  * @param options - Configuration options
  * @returns Array of active users
  */
 export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
-    const { interval = 10000 } = options;
+    void options; // Silence unused warning (deprecated)
     const client = useNmeshedContext();
     const [users, setUsers] = useState<PresenceUser[]>([]);
 
-    // Polling ref to avoid effect depending on interval changing frequently
-    const savedCallback = useRef<() => void>();
-
     useEffect(() => {
-        let isMounted = true;
+        let mounted = true;
 
-        const fetchPresence = async () => {
-            if (client.getStatus() !== 'CONNECTED') return;
-            try {
-                const data = await client.getPresence();
-                if (isMounted) {
-                    setUsers(data);
-                }
-            } catch (err) {
-                if (isMounted) {
-                    console.warn('Failed to fetch presence:', err);
+        // 1. Initial Fetch (HTTP)
+        const fetchInitial = async () => {
+            if (client.getStatus() === 'CONNECTED') {
+                try {
+                    const initialUsers = await client.getPresence();
+                    if (mounted) {
+                        setUsers(initialUsers);
+                    }
+                } catch (e) {
+                    console.warn('Failed to fetch initial presence:', e);
                 }
             }
         };
-        savedCallback.current = fetchPresence;
 
-        // Initial fetch
-        fetchPresence();
+        fetchInitial();
+
+        // 2. Subscribe to Real-time Updates (WS)
+        const unsubscribe = client.onPresence((eventPayload) => {
+            setUsers((current) => {
+                // If offline, remove from list
+                if (eventPayload.status === 'offline') {
+                    return current.filter(u => u.userId !== eventPayload.userId);
+                }
+
+                // Otherwise update or add
+                const index = current.findIndex(u => u.userId === eventPayload.userId);
+                if (index !== -1) {
+                    const newUsers = [...current];
+                    newUsers[index] = { ...newUsers[index], ...eventPayload };
+                    return newUsers;
+                } else {
+                    return [...current, eventPayload];
+                }
+            });
+        });
 
         return () => {
-            isMounted = false;
+            mounted = false;
+            unsubscribe();
         };
     }, [client]);
-
-    useEffect(() => {
-        function tick() {
-            if (savedCallback.current) {
-                savedCallback.current();
-            }
-        }
-        if (interval !== null && interval !== undefined) {
-            const id = setInterval(tick, interval);
-            return () => clearInterval(id);
-        }
-        return undefined;
-    }, [interval]);
 
     return users;
 }

@@ -3,6 +3,8 @@ import type {
     ConnectionStatus,
     MessageHandler,
     StatusHandler,
+    EphemeralHandler,
+    PresenceHandler,
     ResolvedConfig,
 } from './types';
 import {
@@ -94,6 +96,8 @@ export class NMeshedClient {
     private status: ConnectionStatus = 'IDLE';
     private readonly messageListeners = new Set<MessageHandler>();
     private readonly statusListeners = new Set<StatusHandler>();
+    private readonly ephemeralListeners = new Set<EphemeralHandler>();
+    private readonly presenceListeners = new Set<PresenceHandler>();
     private reconnectAttempts = 0;
     private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     private connectionTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -280,8 +284,24 @@ export class NMeshedClient {
                 }
             };
 
+            this.ws.binaryType = 'arraybuffer'; // Crucial for performance
+
             this.ws.onmessage = (event) => {
-                this.handleMessage(event.data);
+                if (event.data instanceof ArrayBuffer) {
+                    // Fast Path: Dispatch raw binary to ephemeral listeners
+                    // We treat all binary as "ephemeral" for now to bypass JSON parsing overhead
+                    const listeners = Array.from(this.ephemeralListeners);
+                    for (const listener of listeners) {
+                        try {
+                            listener(event.data);
+                        } catch (error) {
+                            this.warn('Binary listener threw error:', error);
+                        }
+                    }
+                } else {
+                    // Slow Path: Text/JSON
+                    this.handleMessage(event.data);
+                }
             };
         });
     }
@@ -343,10 +363,30 @@ export class NMeshedClient {
                 this.currentState = { ...message.data };
             } else if (message.type === 'op') {
                 this.currentState[message.payload.key] = message.payload.value;
+            } else if (message.type === 'ephemeral') {
+                // Dispatch to ephemeral listeners
+                const listeners = Array.from(this.ephemeralListeners);
+                for (const listener of listeners) {
+                    try {
+                        listener(message.payload);
+                    } catch (error) {
+                        this.warn('Ephemeral listener threw an error:', error);
+                    }
+                }
+            } else if (message.type === 'presence') {
+                // Dispatch to presence listeners
+                const listeners = Array.from(this.presenceListeners);
+                for (const listener of listeners) {
+                    try {
+                        listener(message.payload);
+                    } catch (error) {
+                        this.warn('Presence listener threw an error:', error);
+                    }
+                }
             }
             // Ignore pong messages (heartbeat responses)
 
-            // Notify listeners
+            // Notify generic listeners
             const listeners = Array.from(this.messageListeners);
             for (const listener of listeners) {
                 try {
@@ -513,6 +553,35 @@ export class NMeshedClient {
     }
 
     /**
+     * Broadcasts an ephemeral message to all other connected clients.
+     * 
+     * @param payload - The data to broadcast (JSON object or Binary ArrayBuffer)
+     */
+    broadcast(payload: unknown): void {
+        if (this.ws?.readyState !== WebSocket.OPEN) {
+            this.warn('Cannot broadcast: not connected');
+            return;
+        }
+
+        try {
+            // Binary Path (Fast Lane)
+            if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
+                this.ws.send(payload);
+                return;
+            }
+
+            // JSON Path (Slow Lane)
+            const message = JSON.stringify({
+                type: 'ephemeral',
+                payload
+            });
+            this.ws.send(message);
+        } catch (error) {
+            this.warn('Failed to broadcast message:', error);
+        }
+    }
+
+    /**
      * Internal method to send an operation (assumes connection is open).
      */
     private sendOperationInternal(key: string, value: unknown, timestamp: number): void {
@@ -583,6 +652,32 @@ export class NMeshedClient {
      * @param handler - Function to call when status changes
      * @returns A cleanup function to unsubscribe
      */
+    /**
+     * Subscribes to ephemeral broadcasts.
+     */
+    onBroadcast(handler: EphemeralHandler): () => void {
+        if (typeof handler !== 'function') {
+            throw new ConfigurationError('Broadcast handler must be a function');
+        }
+        this.ephemeralListeners.add(handler);
+        return () => {
+            this.ephemeralListeners.delete(handler);
+        };
+    }
+
+    /**
+     * Subscribes to presence updates.
+     */
+    onPresence(handler: PresenceHandler): () => void {
+        if (typeof handler !== 'function') {
+            throw new ConfigurationError('Presence handler must be a function');
+        }
+        this.presenceListeners.add(handler);
+        return () => {
+            this.presenceListeners.delete(handler);
+        };
+    }
+
     onStatusChange(handler: StatusHandler): () => void {
         if (typeof handler !== 'function') {
             throw new ConfigurationError('Status handler must be a function');
@@ -691,6 +786,8 @@ export class NMeshedClient {
         this.disconnect();
         this.messageListeners.clear();
         this.statusListeners.clear();
+        this.ephemeralListeners.clear();
+        this.presenceListeners.clear();
         this.operationQueue = [];
         this.currentState = {};
         this.isDestroyed = true;

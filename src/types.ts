@@ -131,14 +131,6 @@ export interface OperationMessage {
 }
 
 /**
- * Presence update message.
- */
-export interface PresenceMessage {
-    type: 'presence';
-    users: PresenceUser[];
-}
-
-/**
  * A user in the presence list.
  */
 export interface PresenceUser {
@@ -149,9 +141,25 @@ export interface PresenceUser {
 }
 
 /**
+ * Presence update message (single user event).
+ */
+export interface PresenceMessage {
+    type: 'presence';
+    payload: PresenceUser;
+}
+
+/**
+ * Ephemeral message (broadcast-only, not persisted).
+ */
+export interface EphemeralMessage {
+    type: 'ephemeral';
+    payload: unknown;
+}
+
+/**
  * Union of all possible messages from the server.
  */
-export type NMeshedMessage = InitMessage | OperationMessage | PresenceMessage;
+export type NMeshedMessage = InitMessage | OperationMessage | PresenceMessage | EphemeralMessage;
 
 /**
  * Handler function for incoming messages.
@@ -162,6 +170,16 @@ export type MessageHandler = (message: NMeshedMessage) => void;
  * Handler function for connection status changes.
  */
 export type StatusHandler = (status: ConnectionStatus) => void;
+
+/**
+ * Handler function for ephemeral broadcast messages.
+ */
+export type EphemeralHandler = (payload: unknown) => void;
+
+/**
+ * Handler function for presence updates.
+ */
+export type PresenceHandler = (user: PresenceMessage['payload']) => void;
 
 /**
  * Internal resolved configuration with all defaults applied.

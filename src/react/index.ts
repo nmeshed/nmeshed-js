@@ -30,6 +30,9 @@
 export { useNmeshed } from './useNmeshed';
 export { useDocument } from './useDocument';
 export { usePresence } from './usePresence';
+export { useBroadcast } from './useBroadcast';
+export { LiveCursors } from './LiveCursors';
+export { AvatarStack } from './AvatarStack';
 export { NMeshedProvider, useNmeshedContext } from './context';
 export type { UseNmeshedOptions, UseNmeshedReturn } from './useNmeshed';
 export type { UseDocumentOptions, UseDocumentReturn } from './useDocument';
