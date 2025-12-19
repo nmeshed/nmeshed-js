@@ -100,6 +100,7 @@ export class NMeshedClient {
     private readonly statusListeners = new Set<StatusHandler>();
     private readonly ephemeralListeners = new Set<EphemeralHandler>();
     private readonly presenceListeners = new Set<PresenceHandler>();
+    private readonly queueListeners = new Set<(size: number) => void>();
     private reconnectAttempts = 0;
     private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     private connectionTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -145,6 +146,8 @@ export class NMeshedClient {
             ...(validConfig.maxQueueSize !== undefined && { maxQueueSize: validConfig.maxQueueSize }),
             ...(validConfig.debug !== undefined && { debug: validConfig.debug }),
         } as ResolvedConfig; // Cast is safe because we merged defaults
+
+        this.loadQueue();
     }
 
     /**
@@ -560,6 +563,8 @@ export class NMeshedClient {
         // Process a snapshot of the queue to prevent infinite loops if operations are re-queued
         const queueToProcess = [...this.operationQueue];
         this.operationQueue = [];
+        this.saveQueue();
+        this.notifyQueueListeners();
 
         for (const op of queueToProcess) {
             this.sendOperationInternal(op.key, op.value, op.timestamp);
@@ -693,6 +698,8 @@ export class NMeshedClient {
         }
 
         this.operationQueue.push({ key, value, timestamp });
+        this.saveQueue();
+        this.notifyQueueListeners();
         this.log(`Queued operation: ${key} (queue size: ${this.operationQueue.length})`);
     }
 
@@ -801,5 +808,86 @@ export class NMeshedClient {
      */
     close(): void {
         this.disconnect();
+    }
+
+    /**
+     * Subscribe to queue size changes.
+     */
+    onQueueChange(handler: (size: number) => void): () => void {
+        this.queueListeners.add(handler);
+        handler(this.operationQueue.length);
+        return () => {
+            this.queueListeners.delete(handler);
+        };
+    }
+
+    private notifyQueueListeners(): void {
+        const size = this.operationQueue.length;
+        for (const handler of this.queueListeners) {
+            try {
+                handler(size);
+            } catch (e) {
+                this.warn("Queue listener error", e);
+            }
+        }
+    }
+
+    private loadQueue(): void {
+        if (typeof localStorage === 'undefined') return;
+        const key = `nmeshed_queue_${this.config.workspaceId}`;
+        try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+                this.operationQueue = JSON.parse(raw);
+                this.notifyQueueListeners();
+                this.log(`Loaded ${this.operationQueue.length} operations from storage`);
+            }
+        } catch (e) {
+            this.warn("Failed to load queue", e);
+        }
+    }
+
+    private saveQueue(): void {
+        if (typeof localStorage === 'undefined') return;
+        const key = `nmeshed_queue_${this.config.workspaceId}`;
+        try {
+            if (this.operationQueue.length === 0) {
+                localStorage.removeItem(key);
+            } else {
+                localStorage.setItem(key, JSON.stringify(this.operationQueue));
+            }
+        } catch (e) {
+            this.warn("Failed to save queue", e);
+        }
+    }
+
+    close(): void {
+        this.disconnect();
+    }
+
+    destroy(): void {
+        this.disconnect();
+        this.isDestroyed = true;
+        this.preConnectState = {};
+        this.operationQueue = [];
+        this.core = null;
+    }
+
+    async getPresence(): Promise<unknown> {
+        const base = this.config.serverUrl.replace(/\/+$/, '').replace(/^ws/, 'http');
+        const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
+        const url = `${base}/v1/presence/${encodedWorkspace}`;
+
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${this.config.token}`,
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch presence: ${response.statusText}`);
+        }
+
+        return response.json();
     }
 }

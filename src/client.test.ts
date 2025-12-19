@@ -363,4 +363,36 @@ describe('NMeshedClient', () => {
             expect(client.get('c')).toBeUndefined();
         });
     });
+
+    describe('persistence', () => {
+        let store: Record<string, string> = {};
+
+        beforeEach(() => {
+            store = {};
+            vi.stubGlobal('localStorage', {
+                getItem: vi.fn((key) => store[key] || null),
+                setItem: vi.fn((key, value) => { store[key] = value; }),
+                removeItem: vi.fn((key) => { delete store[key]; }),
+            });
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+        });
+
+        it('saves queued operations', () => {
+            const client = new NMeshedClient(defaultConfig);
+            client.set('key', 'value');
+            expect(localStorage.setItem).toHaveBeenCalled();
+        });
+
+        it('loads queued operations on init', () => {
+            const key = `nmeshed_queue_${defaultConfig.workspaceId}`;
+            const op = { key: 'saved', value: 'old', timestamp: 123 };
+            store[key] = JSON.stringify([op]);
+
+            const client = new NMeshedClient(defaultConfig);
+            expect(client.getQueueSize()).toBe(1);
+        });
+    });
 });

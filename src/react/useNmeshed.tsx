@@ -65,6 +65,11 @@ export interface UseNmeshedReturn {
      * Manually disconnect from the server.
      */
     disconnect: () => void;
+
+    /**
+     * Number of queued operations.
+     */
+    queueSize: number;
 }
 
 /**
@@ -120,6 +125,7 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
     // Reactive state
     const [state, setState] = useState<Record<string, unknown>>({});
     const [status, setStatus] = useState<ConnectionStatus>('IDLE');
+    const [queueSize, setQueueSize] = useState(0);
 
     // Connect on mount
     useEffect(() => {
@@ -136,6 +142,11 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
             } else if (newStatus === 'ERROR') {
                 onError?.(new Error('Connection error'));
             }
+        });
+
+        // Subscribe to queue changes
+        const unsubscribeQueue = currentClient.onQueueChange((size) => {
+            setQueueSize(size);
         });
 
         // Subscribe to messages
@@ -158,6 +169,7 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
         // Cleanup
         return () => {
             unsubscribeStatus();
+            unsubscribeQueue();
             unsubscribeMessage();
             currentClient.disconnect();
         };
@@ -187,5 +199,6 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
         client,
         connect,
         disconnect,
+        queueSize,
     };
 }
