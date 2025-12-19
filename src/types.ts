@@ -17,6 +17,13 @@ export interface NMeshedConfig {
     token: string;
 
     /**
+     * Synchronization strategy.
+     * - 'crdt': (Default) Collaborative document editing (Automerge). Strong consistency.
+     * - 'lww': Real-time ephemeral data (cursors, gaming). Last-Write-Wins.
+     */
+    syncMode?: 'crdt' | 'lww';
+
+    /**
      * Optional user identifier for presence tracking.
      * If not provided, a random ID will be generated.
      */

@@ -21,6 +21,7 @@ import { z } from 'zod';
 const ConfigSchema = z.object({
     workspaceId: z.string().min(1, 'workspaceId is required and must be a non-empty string'),
     token: z.string().min(1, 'token is required and must be a non-empty string'),
+    syncMode: z.enum(['crdt', 'lww']).optional(),
     userId: z.string().optional(),
     serverUrl: z.string().optional(),
     autoReconnect: z.boolean().optional(),
@@ -37,7 +38,7 @@ const ConfigSchema = z.object({
 /**
  * Default configuration values.
  */
-const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId'> = {
+const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId' | 'syncMode'> = {
     serverUrl: 'wss://api.nmeshed.com',
     autoReconnect: true,
     maxReconnectAttempts: 10,
@@ -132,6 +133,7 @@ export class NMeshedClient {
             ...DEFAULT_CONFIG,
             workspaceId: validConfig.workspaceId.trim(),
             token: validConfig.token,
+            syncMode: validConfig.syncMode || 'crdt',
             userId: validConfig.userId?.trim() || this.generateUserId(),
             ...(validConfig.serverUrl && { serverUrl: validConfig.serverUrl }),
             ...(validConfig.autoReconnect !== undefined && { autoReconnect: validConfig.autoReconnect }),
@@ -202,6 +204,7 @@ export class NMeshedClient {
         const params = new URLSearchParams({
             token: this.config.token,
             userId: this.config.userId,
+            sync_mode: this.config.syncMode,
         });
         // Encode workspaceId to handle special characters
         const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
@@ -235,7 +238,7 @@ export class NMeshedClient {
                 // Initialize WASM Core before connecting
                 if (!this.core) {
                     await init();
-                    this.core = new NMeshedClientCore(this.config.workspaceId);
+                    this.core = new NMeshedClientCore(this.config.workspaceId, this.config.syncMode);
 
                     // Merge pre-connect state into the new core
                     for (const [key, value] of Object.entries(this.preConnectState)) {
@@ -322,13 +325,30 @@ export class NMeshedClient {
                     // Check if it's a known binary Op or just ephemeral
                     try {
                         // 1. Merge into WASM Core
-                        this.core?.merge_remote_delta(new Uint8Array(event.data));
+                        const result = this.core?.merge_remote_delta(new Uint8Array(event.data)) as any;
 
                         // 2. State is now updated in Core. 
-                        // We still notify listeners for backward compatibility.
-                        // For now we get the key/value from the unpacked op manually if we want to notify specific key listeners
-                        // But wait, the merge_remote_delta doesn't return the changed key.
-                        // We might need to keep a simpler notification system or update get_state.
+                        // Notify listeners if we have op details
+                        if (result && result.type === 'op') {
+                            const syntheticMsg = {
+                                type: 'op',
+                                payload: {
+                                    key: result.key,
+                                    value: result.value,
+                                    timestamp: 0 // Timestamp not needed for notification
+                                }
+                            };
+
+                            // Dispatch to listeners (e.g. useDocument)
+                            const listeners = Array.from(this.messageListeners);
+                            for (const listener of listeners) {
+                                try {
+                                    listener(syntheticMsg as any);
+                                } catch (error) {
+                                    this.warn('Message listener threw an error:', error);
+                                }
+                            }
+                        }
 
                         this.log('Received Binary Update');
                     } catch (error) {
@@ -781,64 +801,5 @@ export class NMeshedClient {
      */
     close(): void {
         this.disconnect();
-    }
-
-    /**
-     * Helper to convert WebSocket URL to HTTP URL.
-     */
-    private getHttpUrl(path: string): string {
-        try {
-            const url = new URL(this.config.serverUrl);
-            url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-            const base = url.toString().replace(/\/+$/, '');
-            return `${base}${path}`;
-        } catch (e) {
-            // Fallback if URL parsing fails
-            const base = this.config.serverUrl
-                .replace(/^wss:\/\//, 'https://')
-                .replace(/^ws:\/\//, 'http://')
-                .replace(/\/+$/, '');
-            return `${base}${path}`;
-        }
-    }
-
-    /**
-     * Fetches current presence information for the workspace.
-     * 
-     * @returns A promise resolving to a list of active users.
-     */
-    // Updated to match PresenceUser type in types.ts (with optional last_seen)
-    async getPresence(): Promise<Array<{ userId: string; status: 'online' | 'idle' | 'offline'; last_seen?: string; metadata?: Record<string, unknown> }>> {
-        const url = this.getHttpUrl(`/v1/presence/${this.config.workspaceId}`);
-
-        const response = await fetch(url, {
-            headers: {
-                'Authorization': `Bearer ${this.config.token}`
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`Failed to fetch presence: ${response.statusText}`);
-        }
-
-        return response.json();
-    }
-
-    /**
-     * Permanently destroys the client, releasing all resources.
-     * 
-     * After calling this, the client cannot be reconnected.
-     * Use this for cleanup in React useEffect or similar.
-     */
-    destroy(): void {
-        this.log('Destroying client');
-        this.disconnect();
-        this.messageListeners.clear();
-        this.statusListeners.clear();
-        this.ephemeralListeners.clear();
-        this.presenceListeners.clear();
-        this.operationQueue = [];
-        this.core = null;
-        this.isDestroyed = true;
     }
 }
