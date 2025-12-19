@@ -12,7 +12,7 @@ import {
     ConnectionError,
 } from './errors';
 import { parseMessage, truncate } from './validation';
-import { marshalOp, unmarshalOp } from './sync/binary';
+import init, { NMeshedClientCore } from './wasm/nmeshed_core';
 import { z } from 'zod';
 
 /**
@@ -104,7 +104,8 @@ export class NMeshedClient {
     private connectionTimeout: ReturnType<typeof setTimeout> | null = null;
     private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
     private operationQueue: QueuedOperation[] = [];
-    private currentState: Record<string, unknown> = {};
+    private core: NMeshedClientCore | null = null;
+    private preConnectState: Record<string, unknown> = {};
     private isDestroyed = false;
 
     /**
@@ -228,7 +229,35 @@ export class NMeshedClient {
             return Promise.resolve();
         }
 
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
+            this.setStatus('CONNECTING');
+            try {
+                // Initialize WASM Core before connecting
+                if (!this.core) {
+                    await init();
+                    this.core = new NMeshedClientCore(this.config.workspaceId);
+
+                    // Merge pre-connect state into the new core
+                    for (const [key, value] of Object.entries(this.preConnectState)) {
+                        try {
+                            const valBytes = new TextEncoder().encode(JSON.stringify(value));
+                            this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
+                        } catch (e) {
+                            this.warn('Failed to merge preConnectState for key:', key, e);
+                        }
+                    }
+                    this.preConnectState = {}; // Clear it
+                }
+            } catch (error) {
+                this.setStatus('ERROR');
+                reject(new ConnectionError(
+                    'Failed to initialize WASM core',
+                    error instanceof Error ? error : new Error(String(error)),
+                    false
+                ));
+                return;
+            }
+
             this.setStatus('CONNECTING');
             const url = this.buildUrl();
             this.log('Connecting to', url.replace(this.config.token, '[REDACTED]'));
@@ -291,45 +320,19 @@ export class NMeshedClient {
                 if (event.data instanceof ArrayBuffer) {
                     // Binary Path (Fast Lane)
                     // Check if it's a known binary Op or just ephemeral
-                    const op = unmarshalOp(event.data);
-                    if (op) {
-                        this.log('Received Binary Op:', op.op.key);
+                    try {
+                        // 1. Merge into WASM Core
+                        this.core?.merge_remote_delta(new Uint8Array(event.data));
 
-                        // DECODE VALUE (Application Layer)
-                        // Binary protocol blindly returns bytes. We assume JSON for compatibility.
-                        // Ideally, the protocol would have a type flag.
-                        let decodedValue: unknown = op.op.value;
-                        if (op.op.value instanceof Uint8Array) {
-                            try {
-                                const str = new TextDecoder().decode(op.op.value);
-                                decodedValue = JSON.parse(str);
-                            } catch {
-                                // Keep as bytes if not JSON
-                                decodedValue = op.op.value;
-                            }
-                        }
+                        // 2. State is now updated in Core. 
+                        // We still notify listeners for backward compatibility.
+                        // For now we get the key/value from the unpacked op manually if we want to notify specific key listeners
+                        // But wait, the merge_remote_delta doesn't return the changed key.
+                        // We might need to keep a simpler notification system or update get_state.
 
-                        // Update local state
-                        this.currentState[op.op.key] = decodedValue;
-
-                        // Notify listeners as if it was a standard Op message
-                        const message: any = {
-                            type: 'op',
-                            payload: {
-                                ...op.op,
-                                value: decodedValue
-                            }
-                        };
-
-                        const listeners = Array.from(this.messageListeners);
-                        for (const listener of listeners) {
-                            try {
-                                listener(message);
-                            } catch (error) {
-                                this.warn('Message listener threw an error:', error);
-                            }
-                        }
-                        return;
+                        this.log('Received Binary Update');
+                    } catch (error) {
+                        this.warn('Failed to merge remote delta:', error);
                     }
 
                     // If not an Op, assume Ephemeral/Cursor (Legacy or Spec v2)
@@ -403,9 +406,15 @@ export class NMeshedClient {
 
             // Update local state cache
             if (message.type === 'init') {
-                this.currentState = { ...message.data };
+                // Initialize core state from snapshot if provided
+                // For now, if init is just a JSON object, we apply each key
+                for (const [key, value] of Object.entries(message.data)) {
+                    const bytes = new TextEncoder().encode(JSON.stringify(value));
+                    this.core?.apply_local_op(key, bytes, BigInt(Date.now() * 1000));
+                }
             } else if (message.type === 'op') {
-                this.currentState[message.payload.key] = message.payload.value;
+                const bytes = new TextEncoder().encode(JSON.stringify(message.payload.value));
+                this.core?.apply_local_op(message.payload.key, bytes, BigInt(message.payload.timestamp));
             } else if (message.type === 'ephemeral') {
                 // Dispatch to ephemeral listeners
                 const listeners = Array.from(this.ephemeralListeners);
@@ -551,26 +560,27 @@ export class NMeshedClient {
         this.sendOperation(key, value);
     }
 
-    /**
-     * Gets the current value of a key from local state.
-     *
-     * Note: This returns the locally cached state, which may be
-     * momentarily out of sync with the server.
-     *
-     * @param key - The key to get
-     * @returns The value, or undefined if not found
-     */
     get<T = unknown>(key: string): T | undefined {
-        return this.currentState[key] as T | undefined;
+        if (!this.core) {
+            return this.preConnectState[key] as T | undefined;
+        }
+        const state = this.getState();
+        return state[key] as T | undefined;
     }
 
     /**
      * Gets the entire current state of the workspace.
      *
-     * @returns A shallow copy of the current state
+     * @returns The current state from the WASM core
      */
     getState(): Record<string, unknown> {
-        return { ...this.currentState };
+        if (!this.core) return { ...this.preConnectState };
+        try {
+            return this.core.get_state() as Record<string, unknown>;
+        } catch (error) {
+            this.warn('Failed to get state from WASM core:', error);
+            return {};
+        }
     }
 
     /**
@@ -584,8 +594,9 @@ export class NMeshedClient {
     sendOperation(key: string, value: unknown): void {
         const timestamp = Date.now() * 1000; // Unix microseconds
 
-        // Optimistic local update
-        this.currentState[key] = value;
+        if (!this.core) {
+            this.preConnectState[key] = value;
+        }
 
         if (this.ws?.readyState !== WebSocket.OPEN) {
             this.queueOperation(key, value, timestamp);
@@ -628,31 +639,25 @@ export class NMeshedClient {
      * Internal method to send an operation (assumes connection is open).
      */
     private sendOperationInternal(key: string, value: unknown, timestamp: number): void {
-        if (this.ws?.readyState !== WebSocket.OPEN) {
-            this.queueOperation(key, value, timestamp);
-            return;
-        }
-
-        // Binary Path: ALWAYS prefer binary for Ops if possible
+        // Binary Path: ALWAYS prefer binary for Ops
         try {
-            const binaryOp = marshalOp(this.config.workspaceId, { key, value, timestamp });
-            this.ws.send(binaryOp);
-            this.log('Sent binary operation:', key);
-        } catch (error) {
-            this.warn('Failed to send binary operation, falling back to JSON:', error);
+            if (!this.core) throw new Error('WASM core not initialized');
 
-            // Fallback to JSON if binary fails (shouldn't happen unless value is circular etc)
+            let valBytes: Uint8Array;
             try {
-                const message = JSON.stringify({
-                    type: 'op',
-                    payload: { key, value, timestamp },
-                });
-                this.ws.send(message);
-                this.log('Sent JSON operation:', key);
+                valBytes = new TextEncoder().encode(JSON.stringify(value));
             } catch (jsonError) {
-                this.warn('Failed to send JSON operation:', jsonError);
-                this.queueOperation(key, value, timestamp);
+                this.warn('Failed to serialize value, dropping operation:', key, jsonError);
+                return;
             }
+
+            const binaryOp = this.core.apply_local_op(key, valBytes, BigInt(timestamp));
+
+            this.ws.send(binaryOp);
+            this.log('Sent binary operation (WASM-packed):', key);
+        } catch (error) {
+            this.warn('Failed to send binary operation via WASM core:', error);
+            this.queueOperation(key, value, timestamp);
         }
     }
 
@@ -833,7 +838,7 @@ export class NMeshedClient {
         this.ephemeralListeners.clear();
         this.presenceListeners.clear();
         this.operationQueue = [];
-        this.currentState = {};
+        this.core = null;
         this.isDestroyed = true;
     }
 }

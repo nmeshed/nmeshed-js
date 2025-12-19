@@ -1,6 +1,6 @@
 # nMeshed JavaScript/TypeScript SDK
 
-The official browser-ready client for [nMeshed](https://nmeshed.com). Add multiplayer sync, live cursors, and collaborative state to any JavaScript application in minutes.
+The official browser-ready client for [nMeshed](https://nmeshed.com). Now powered by **nmeshed-core (WASM)**, providing industry-standard Automerge CRDTs for robust, offline-first multiplayer sync. Add collaborative state to any JavaScript application in minutes.
 
 [![npm version](https://img.shields.io/npm/v/nmeshed)](https://www.npmjs.com/package/nmeshed)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue)](https://www.typescriptlang.org/)

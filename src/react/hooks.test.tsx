@@ -5,6 +5,29 @@ import { useNmeshed } from './useNmeshed';
 import { NMeshedProvider, useNmeshedContext } from './context';
 import { useDocument } from './useDocument';
 
+// Mock the WASM core
+vi.mock('../wasm/nmeshed_core', () => {
+    class MockCore {
+        state: Record<string, string> = {};
+        constructor() { }
+        apply_local_op = vi.fn((key: string, value: Uint8Array) => {
+            const raw = new TextDecoder().decode(value);
+            try {
+                this.state[key] = JSON.parse(raw);
+            } catch {
+                this.state[key] = raw;
+            }
+            return new Uint8Array([1, 2, 3]); // Dummy binary op
+        });
+        merge_remote_delta = vi.fn();
+        get_state = vi.fn(() => ({ ...this.state }));
+    }
+    return {
+        default: vi.fn().mockResolvedValue(undefined),
+        NMeshedClientCore: MockCore,
+    };
+});
+
 // Mock WebSocket
 class MockWebSocket {
     static instances: MockWebSocket[] = [];
