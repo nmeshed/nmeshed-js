@@ -14,6 +14,7 @@ import {
 import { parseMessage, truncate } from './validation';
 import init, { NMeshedClientCore } from './wasm/nmeshed_core';
 import { z } from 'zod';
+import { loadQueue as dbLoadQueue, saveQueue as dbSaveQueue } from './persistence';
 
 /**
  * Configuration schema for validation.
@@ -832,38 +833,30 @@ export class NMeshedClient {
         }
     }
 
-    private loadQueue(): void {
-        if (typeof localStorage === 'undefined') return;
-        const key = `nmeshed_queue_${this.config.workspaceId}`;
+
+
+    private async loadQueue(): Promise<void> {
         try {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-                this.operationQueue = JSON.parse(raw);
+            const items = await dbLoadQueue(this.config.workspaceId);
+
+            if (items && items.length > 0) {
+                // Prepend loaded items to preserve order (oldest first)
+                this.operationQueue = [...items, ...this.operationQueue];
                 this.notifyQueueListeners();
-                this.log(`Loaded ${this.operationQueue.length} operations from storage`);
+                this.log(`Loaded ${items.length} operations from IndexedDB`);
             }
         } catch (e) {
-            this.warn("Failed to load queue", e);
+            this.warn("Failed to load queue from IndexedDB", e);
         }
     }
 
     private saveQueue(): void {
-        if (typeof localStorage === 'undefined') return;
-        const key = `nmeshed_queue_${this.config.workspaceId}`;
-        try {
-            if (this.operationQueue.length === 0) {
-                localStorage.removeItem(key);
-            } else {
-                localStorage.setItem(key, JSON.stringify(this.operationQueue));
-            }
-        } catch (e) {
-            this.warn("Failed to save queue", e);
-        }
+        dbSaveQueue(this.config.workspaceId, this.operationQueue).catch((e: unknown) => {
+            this.warn("Failed to save queue to IndexedDB", e);
+        });
     }
 
-    close(): void {
-        this.disconnect();
-    }
+
 
     destroy(): void {
         this.disconnect();

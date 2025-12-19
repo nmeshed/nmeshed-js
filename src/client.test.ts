@@ -2,7 +2,26 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NMeshedClient } from './client';
 import { ConfigurationError, ConnectionError } from './errors';
 
-// Mock the WASM core
+// Mock persistence
+vi.mock('./persistence', () => ({
+    loadQueue: vi.fn().mockReturnValue(Promise.resolve([])),
+    saveQueue: vi.fn().mockReturnValue(Promise.resolve()),
+}));
+
+import { loadQueue, saveQueue } from './persistence';
+
+const originalWebSocket = globalThis.WebSocket;
+
+// ... MockWebSocket class definition must be available here, or we need to move it up ...
+// Wait, MockWebSocket is defined further down in the file. Javascript hoisting works for classes? No.
+// We need to move MockWebSocket to the top or stub it differently. 
+// Given the previous structure, MockWebSocket was defined before usage.
+
+// Let's defer stubbing until inside setup to be safe, or assume MockWebSocket is available if I don't delete it.
+// I'll check where MockWebSocket is. It was around line 35.
+
+// I will just restore the imports for now and let the rest be.
+
 vi.mock('./wasm/nmeshed_core', () => {
     class MockCore {
         state: Record<string, string> = {};
@@ -67,16 +86,18 @@ class MockWebSocket {
     }
 }
 
-const originalWebSocket = global.WebSocket;
-
 beforeEach(() => {
     MockWebSocket.instances = [];
-    global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    vi.stubGlobal('WebSocket', MockWebSocket);
     vi.useFakeTimers();
 });
 
 afterEach(() => {
-    global.WebSocket = originalWebSocket;
+    if (originalWebSocket) {
+        vi.stubGlobal('WebSocket', originalWebSocket);
+    } else {
+        vi.unstubAllGlobals();
+    }
     vi.useRealTimers();
 });
 
@@ -365,33 +386,29 @@ describe('NMeshedClient', () => {
     });
 
     describe('persistence', () => {
-        let store: Record<string, string> = {};
-
         beforeEach(() => {
-            store = {};
-            vi.stubGlobal('localStorage', {
-                getItem: vi.fn((key) => store[key] || null),
-                setItem: vi.fn((key, value) => { store[key] = value; }),
-                removeItem: vi.fn((key) => { delete store[key]; }),
-            });
-        });
-
-        afterEach(() => {
-            vi.unstubAllGlobals();
+            vi.clearAllMocks();
+            (saveQueue as any).mockResolvedValue(undefined);
+            (loadQueue as any).mockResolvedValue([]);
         });
 
         it('saves queued operations', () => {
             const client = new NMeshedClient(defaultConfig);
             client.set('key', 'value');
-            expect(localStorage.setItem).toHaveBeenCalled();
+            expect(saveQueue).toHaveBeenCalled();
         });
 
-        it('loads queued operations on init', () => {
-            const key = `nmeshed_queue_${defaultConfig.workspaceId}`;
+        it('loads queued operations on init', async () => {
             const op = { key: 'saved', value: 'old', timestamp: 123 };
-            store[key] = JSON.stringify([op]);
+            (loadQueue as any).mockResolvedValue([op]);
 
             const client = new NMeshedClient(defaultConfig);
+
+            // Wait for async load (microtasks)
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+
             expect(client.getQueueSize()).toBe(1);
         });
     });
