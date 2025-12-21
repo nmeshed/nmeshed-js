@@ -22,7 +22,7 @@ import { loadQueue as dbLoadQueue, saveQueue as dbSaveQueue } from './persistenc
 const ConfigSchema = z.object({
     workspaceId: z.string().min(1, 'workspaceId is required and must be a non-empty string'),
     token: z.string().min(1, 'token is required and must be a non-empty string'),
-    syncMode: z.enum(['crdt', 'lww']).optional(),
+    syncMode: z.enum(['crdt', 'crdt_performance', 'crdt_strict', 'lww']).optional(),
     userId: z.string().optional(),
     serverUrl: z.string().optional(),
     autoReconnect: z.boolean().optional(),
@@ -242,7 +242,9 @@ export class NMeshedClient {
                 // Initialize WASM Core before connecting
                 if (!this.core) {
                     await init();
-                    this.core = new NMeshedClientCore(this.config.workspaceId, this.config.syncMode);
+                    // Map extended modes (performance/strict) to base 'crdt' for WASM
+                    const coreMode = (this.config.syncMode === 'lww') ? 'lww' : 'crdt';
+                    this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
 
                     // Merge pre-connect state into the new core
                     for (const [key, value] of Object.entries(this.preConnectState)) {
@@ -679,7 +681,9 @@ export class NMeshedClient {
 
             const binaryOp = this.core.apply_local_op(key, valBytes, BigInt(timestamp));
 
-            this.ws.send(binaryOp);
+            if (this.ws) {
+                this.ws.send(binaryOp);
+            }
             this.log('Sent binary operation (WASM-packed):', key);
         } catch (error) {
             this.warn('Failed to send binary operation via WASM core:', error);

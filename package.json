@@ -15,7 +15,8 @@
             "types": "./dist/react/index.d.ts",
             "import": "./dist/react/index.mjs",
             "require": "./dist/react/index.js"
-        }
+        },
+        "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
     },
     "files": [
         "dist",

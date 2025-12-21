@@ -19,9 +19,11 @@ export interface NMeshedConfig {
     /**
      * Synchronization strategy.
      * - 'crdt': (Default) Collaborative document editing (Automerge). Strong consistency.
+     * - 'crdt_performance': Optimized CRDT for high-frequency updates (Games). Relaxed durability.
+     * - 'crdt_strict': Immediate fsync for critical data (Financial). Highest durability.
      * - 'lww': Real-time ephemeral data (cursors, gaming). Last-Write-Wins.
      */
-    syncMode?: 'crdt' | 'lww';
+    syncMode?: 'crdt' | 'crdt_performance' | 'crdt_strict' | 'lww';
 
     /**
      * Optional user identifier for presence tracking.
