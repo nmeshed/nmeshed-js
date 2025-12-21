@@ -1,0 +1,269 @@
+/**
+ * @file MeshClient.ts
+ * @brief High-level P2P mesh client for real-time multiplayer applications.
+ *
+ * Provides a simple, event-driven API for building P2P mesh networks.
+ * Handles signaling, connection management, and peer coordination.
+ *
+ * @example
+ * ```typescript
+ * import { MeshClient } from 'nmeshed/mesh';
+ *
+ * const mesh = new MeshClient({
+ *     workspaceId: 'game-room-1',
+ *     token: 'jwt-token',
+ * });
+ *
+ * await mesh.connect();
+ *
+ * mesh.on('peerJoin', (peerId) => {
+ *     console.log(`${peerId} joined the mesh`);
+ * });
+ *
+ * mesh.on('message', (peerId, data) => {
+ *     // Handle incoming binary data from peer
+ * });
+ *
+ * mesh.broadcast(myGameState);
+ * ```
+ */
+
+import { SignalingClient } from './SignalingClient';
+import { ConnectionManager } from './ConnectionManager';
+import type {
+    MeshClientConfig,
+    ResolvedMeshConfig,
+    MeshConnectionStatus,
+    MeshEventMap,
+    SignalEnvelope,
+    OfferSignal,
+    AnswerSignal,
+    CandidateSignal,
+} from './types';
+import { logger } from '../utils/Logger';
+
+/**
+ * Default configuration values.
+ */
+const DEFAULT_CONFIG: Omit<ResolvedMeshConfig, 'workspaceId' | 'token'> = {
+    serverUrl: 'wss://api.nmeshed.com/v1/sync',
+    topology: 'mesh',
+    debug: false,
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+};
+
+/**
+ * High-level P2P mesh client.
+ */
+export class MeshClient {
+    private config: ResolvedMeshConfig;
+    private signaling: SignalingClient;
+    private connections: ConnectionManager;
+    private status: MeshConnectionStatus = 'IDLE';
+    private myId: string;
+
+    // Event listeners
+    private eventListeners: Map<keyof MeshEventMap, Set<Function>> = new Map();
+
+    constructor(config: MeshClientConfig) {
+        if (!config.workspaceId || !config.token) {
+            throw new Error('MeshClient requires workspaceId and token');
+        }
+
+        this.config = {
+            ...DEFAULT_CONFIG,
+            ...config,
+            iceServers: config.iceServers || DEFAULT_CONFIG.iceServers,
+        } as ResolvedMeshConfig;
+
+        if (this.config.debug) {
+            logger.enableDebug();
+        }
+
+        this.myId = this.generateId();
+
+        // Initialize signaling client
+        this.signaling = new SignalingClient({
+            url: `${this.config.serverUrl}/${encodeURIComponent(this.config.workspaceId)}`,
+            token: this.config.token,
+            workspaceId: this.config.workspaceId,
+            myId: this.myId,
+        });
+
+        // Initialize connection manager
+        this.connections = new ConnectionManager({
+            iceServers: this.config.iceServers,
+        });
+
+        this.setupListeners();
+    }
+
+    /**
+     * Connects to the mesh network.
+     */
+    public async connect(): Promise<void> {
+        if (this.status === 'CONNECTED' || this.status === 'CONNECTING') {
+            return;
+        }
+
+        this.setStatus('CONNECTING');
+        this.signaling.connect();
+    }
+
+    /**
+     * Disconnects from the mesh network.
+     */
+    public disconnect(): void {
+        this.connections.closeAll();
+        this.signaling.close();
+        this.setStatus('DISCONNECTED');
+        this.emit('disconnect');
+    }
+
+    /**
+     * Broadcasts binary data to all connected peers.
+     */
+    public broadcast(data: ArrayBuffer | Uint8Array): void {
+        this.connections.broadcast(data);
+    }
+
+    /**
+     * Sends binary data to a specific peer.
+     */
+    public sendToPeer(peerId: string, data: ArrayBuffer | Uint8Array): void {
+        this.connections.sendToPeer(peerId, data);
+    }
+
+    /**
+     * Gets the list of connected peer IDs.
+     */
+    public getPeers(): string[] {
+        return this.connections.getPeerIds();
+    }
+
+    /**
+     * Gets the current connection status.
+     */
+    public getStatus(): MeshConnectionStatus {
+        return this.status;
+    }
+
+    /**
+     * Gets this client's unique ID.
+     */
+    public getId(): string {
+        return this.myId;
+    }
+
+    /**
+     * Subscribes to mesh events.
+     */
+    public on<K extends keyof MeshEventMap>(event: K, handler: MeshEventMap[K]): () => void {
+        if (!this.eventListeners.has(event)) {
+            this.eventListeners.set(event, new Set());
+        }
+        this.eventListeners.get(event)!.add(handler);
+
+        // Return unsubscribe function
+        return () => {
+            this.eventListeners.get(event)?.delete(handler);
+        };
+    }
+
+    /**
+     * Removes an event listener.
+     */
+    public off<K extends keyof MeshEventMap>(event: K, handler: MeshEventMap[K]): void {
+        this.eventListeners.get(event)?.delete(handler);
+    }
+
+    private setupListeners(): void {
+        // Signaling events
+        this.signaling.setListeners({
+            onConnect: () => {
+                this.setStatus('CONNECTED');
+                this.emit('connect');
+            },
+            onDisconnect: () => {
+                if (this.status !== 'DISCONNECTED') {
+                    this.setStatus('RECONNECTING');
+                }
+            },
+            onSignal: (envelope) => this.handleSignal(envelope),
+            onPresence: (userId, status) => this.handlePresence(userId, status),
+            onError: (err) => this.emit('error', err),
+        });
+
+        // Connection events
+        this.connections.setListeners({
+            onSignal: (to, signal) => this.signaling.sendSignal(to, signal),
+            onMessage: (peerId, data) => this.emit('message', peerId, data),
+            onPeerJoin: (peerId) => this.emit('peerJoin', peerId),
+            onPeerDisconnect: (peerId) => this.emit('peerDisconnect', peerId),
+        });
+    }
+
+    private handleSignal(envelope: SignalEnvelope): void {
+        const { from, signal } = envelope;
+        if (from === this.myId) return;
+
+        logger.mesh(`Signal from ${from}: ${signal.type}`);
+
+        switch (signal.type) {
+            case 'join':
+                // New peer announced, initiate connection
+                if (this.config.topology !== 'star') {
+                    this.connections.initiateConnection(from);
+                }
+                break;
+            case 'offer':
+                this.connections.handleOffer(from, (signal as OfferSignal).sdp);
+                break;
+            case 'answer':
+                this.connections.handleAnswer(from, (signal as AnswerSignal).sdp);
+                break;
+            case 'candidate':
+                this.connections.handleCandidate(from, (signal as CandidateSignal).candidate);
+                break;
+        }
+    }
+
+    private handlePresence(userId: string, status: string): void {
+        logger.mesh(`Presence: ${userId} is ${status}`);
+
+        if (userId !== this.myId && status === 'online') {
+            // Deterministic connection initiation to avoid glare
+            if (this.myId > userId && this.config.topology !== 'star') {
+                this.connections.initiateConnection(userId);
+            }
+        }
+    }
+
+    private setStatus(newStatus: MeshConnectionStatus): void {
+        if (this.status !== newStatus) {
+            logger.mesh(`Status: ${this.status} -> ${newStatus}`);
+            this.status = newStatus;
+            this.emit('statusChange', newStatus);
+        }
+    }
+
+    private emit<K extends keyof MeshEventMap>(event: K, ...args: Parameters<MeshEventMap[K]>): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+            for (const handler of listeners) {
+                try {
+                    (handler as Function)(...args);
+                } catch (e) {
+                    logger.error(`Error in ${event} handler:`, e);
+                }
+            }
+        }
+    }
+
+    private generateId(): string {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            return crypto.randomUUID();
+        }
+        return 'mesh-' + Math.random().toString(36).substring(2, 11);
+    }
+}

@@ -16,6 +16,11 @@
             "import": "./dist/react/index.mjs",
             "require": "./dist/react/index.js"
         },
+        "./mesh": {
+            "types": "./dist/mesh/index.d.ts",
+            "import": "./dist/mesh/index.mjs",
+            "require": "./dist/mesh/index.js"
+        },
         "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
     },
     "files": [
