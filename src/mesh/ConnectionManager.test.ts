@@ -149,11 +149,39 @@ describe('ConnectionManager', () => {
     it('handles ICE candidates', async () => {
         await cm.initiateConnection('peer-1');
         const pc = MockRTCPeerConnection.instances[0];
+        // Ensure remote description is set so it doesn't buffer
+        pc.remoteDescription = { type: 'answer', sdp: 'sdp' };
+
         const spy = vi.spyOn(pc, 'addIceCandidate');
 
         await cm.handleCandidate('peer-1', { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 });
 
         expect(spy).toHaveBeenCalled();
+    });
+
+    it('buffers candidates until remote description is set', async () => {
+        await cm.initiateConnection('peer-1');
+        const pc = MockRTCPeerConnection.instances[0];
+        const spyAdd = vi.spyOn(pc, 'addIceCandidate');
+
+        // Simulate state where remote description is not set yet
+        pc.remoteDescription = null; // Mock property
+
+        const cand = { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 };
+        await cm.handleCandidate('peer-1', cand);
+
+        // Should NOT have called addIceCandidate yet
+        expect(spyAdd).not.toHaveBeenCalled();
+
+        // Now handle answer (which sets remote description)
+        await cm.handleAnswer('peer-1', 'sdp-answer');
+
+        // Should now flush buffer
+        // Note: addIceCandidate called with RTCIceCandidate instance
+        expect(spyAdd).toHaveBeenCalledWith(expect.any(MockRTCIceCandidate));
+        // Verify content
+        const arg = spyAdd.mock.calls[0][0]; // This is the MockRTCIceCandidate
+        expect(arg.candidate).toBe(cand.candidate);
     });
 
     it('emits local ICE candidates via signal', async () => {

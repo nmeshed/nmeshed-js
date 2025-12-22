@@ -4,6 +4,8 @@ import React from 'react';
 import { useNmeshed } from './useNmeshed';
 import { NMeshedProvider, useNmeshedContext } from './context';
 import { useDocument } from './useDocument';
+import { usePresence } from './usePresence';
+import { useBroadcast } from './useBroadcast';
 
 // Mock the WASM core - simulates binary protocol
 vi.mock('../wasm/nmeshed_core', () => {
@@ -107,6 +109,7 @@ beforeEach(() => {
 
 afterEach(() => {
     global.WebSocket = originalWebSocket;
+    vi.restoreAllMocks();
 });
 
 describe('useNmeshed', () => {
@@ -327,5 +330,147 @@ describe('useDocument', () => {
         });
 
         expect(result.current.value).toBe(100);
+    });
+
+    it('retains value when offline', async () => {
+        const { result } = renderHook(
+            () => useDocument<number>({ key: 'counter', initialValue: 0 }),
+            { wrapper }
+        );
+
+        // Load data
+        await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+        act(() => MockWebSocket.instances[0].simulateOpen());
+        act(() => {
+            const initPayload = JSON.stringify({ type: 'init', data: { counter: 42 } });
+            const bytes = new TextEncoder().encode(initPayload);
+            MockWebSocket.instances[0].simulateBinaryMessage(bytes.buffer);
+        });
+        await waitFor(() => expect(result.current.value).toBe(42));
+
+        // Go offline
+        act(() => MockWebSocket.instances[0].simulateClose());
+
+        // Value should persist
+        expect(result.current.value).toBe(42);
+        expect(result.current.isLoaded).toBe(true);
+    });
+});
+
+// Re-write usePresence test cleanly
+
+// Re-write usePresence test cleanly
+describe('usePresence Hooks', () => {
+    const defaultConfig = { workspaceId: 'ws-pres', token: 'tk' };
+
+    // Use top level imports
+
+    const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+        React.createElement(NMeshedProvider, { config: defaultConfig, children });
+
+    beforeEach(() => {
+        global.fetch = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => [{ userId: 'u1', status: 'online' }]
+        } as Response);
+    });
+
+    it('updates on real-time events', async () => {
+        const { result } = renderHook(() => usePresence({}), { wrapper });
+
+        // Connect
+        await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+        act(() => MockWebSocket.instances[0].simulateOpen());
+
+        // Wait for fetch (async) - hard to detect exact moment, but state should update
+        await waitFor(() => {
+            // Check if initial fetch happened
+            return result.current.length > 0;
+        });
+        expect(result.current).toEqual([{ userId: 'u1', status: 'online' }]);
+
+        // Send WS update (new user)
+        act(() => {
+            const presenceMsg = JSON.stringify({
+                type: 'presence',
+                payload: { userId: 'u2', status: 'online' }
+            });
+            // NB: The mock core logic for simple passing messages might need to be verified.
+            // In hooks.test.tsx MockCore logic handles "init" and "op".
+            // It does NOT handle "presence" type in merge_remote_delta.
+            // However, the CLIENT listens to WebSocket messages directly for control messages?
+            // No, client uses `this.socket.onmessage`.
+            // If binary, it goes to WASM.
+            // If text, it parses JSON. 
+            // MockWebSocket.simulateBinaryMessage sends arraybuffer.
+            // MockWebSocket needs a way to send TEXT message for presence if protocol uses text for presence?
+            // Wait, Presence IS broadcast via PubSub which is usually binary in current server?
+            // Actually, `client.ts` handleMessage parses text OR binary.
+            // Let's verify `client.ts` handleMessage logic.
+            // Assuming it handles text JSON for presence.
+            MockWebSocket.instances[0].onmessage?.({ data: presenceMsg });
+        });
+
+        await waitFor(() => {
+            expect(result.current.length).toBe(2);
+        });
+        expect(result.current).toContainEqual({ userId: 'u2', status: 'online' });
+
+        // Offline update
+        act(() => {
+            const presenceMsg = JSON.stringify({
+                type: 'presence',
+                payload: { userId: 'u1', status: 'offline' }
+            });
+            MockWebSocket.instances[0].onmessage?.({ data: presenceMsg });
+        });
+
+        await waitFor(() => {
+            expect(result.current.length).toBe(1);
+        });
+        expect(result.current[0].userId).toBe('u2');
+    });
+});
+
+describe('useBroadcast', () => {
+    const defaultConfig = { workspaceId: 'ws-bc', token: 'tk' };
+    // Use top level imports
+    const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+        React.createElement(NMeshedProvider, { config: defaultConfig, children });
+
+    it('receives messages', async () => {
+        const handler = vi.fn();
+        renderHook(() => useBroadcast(handler), { wrapper });
+
+        // Connect
+        await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+        act(() => MockWebSocket.instances[0].simulateOpen());
+
+        act(() => {
+            const msg = JSON.stringify({
+                type: 'ephemeral',
+                payload: { foo: 'bar' }
+            });
+            MockWebSocket.instances[0].onmessage?.({ data: msg });
+        });
+
+        await waitFor(() => {
+            expect(handler).toHaveBeenCalledWith({ foo: 'bar' });
+        });
+    });
+
+    it('sends messages', async () => {
+        const { result } = renderHook(() => useBroadcast(), { wrapper });
+
+        // Connect
+        await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+        const ws = MockWebSocket.instances[0];
+        act(() => ws.simulateOpen());
+
+        act(() => {
+            result.current({ baz: 'qux' });
+        });
+
+        expect(ws.send).toHaveBeenCalled();
     });
 });

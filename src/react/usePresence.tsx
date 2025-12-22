@@ -38,7 +38,15 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
             }
         };
 
+        // Fetch immediately if connected
         fetchInitial();
+
+        // Listen for status changes (e.g. if we connect late)
+        const unsubscribeStatus = client.onStatusChange((status) => {
+            if (status === 'CONNECTED') {
+                fetchInitial();
+            }
+        });
 
         // 2. Subscribe to Real-time Updates (WS)
         const unsubscribe = client.onPresence((eventPayload) => {
@@ -63,6 +71,7 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
         return () => {
             mounted = false;
             unsubscribe();
+            unsubscribeStatus();
         };
     }, [client]);
 

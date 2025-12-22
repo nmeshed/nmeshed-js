@@ -8,6 +8,7 @@ import { Join } from '../schema/nmeshed/join';
 import { Offer } from '../schema/nmeshed/offer';
 import { Answer } from '../schema/nmeshed/answer';
 import { Candidate } from '../schema/nmeshed/candidate';
+import { Relay } from '../schema/nmeshed/relay';
 import { ProtocolUtils } from './ProtocolUtils';
 import { logger } from '../utils/Logger';
 
@@ -231,6 +232,9 @@ export class SignalingClient {
                                     }
                                 };
                             }
+                        } else if (dataType === SignalData.Relay) {
+                            const relay = sig.data(new Relay());
+                            if (relay) parsed = { type: 'relay', data: relay.dataArray()! };
                         }
 
                         if (parsed) {

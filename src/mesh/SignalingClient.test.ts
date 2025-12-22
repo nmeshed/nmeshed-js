@@ -172,6 +172,40 @@ describe('SignalingClient', () => {
         });
     });
 
+    it('handles incoming binary SIGNAL (Relay)', () => {
+        client = new SignalingClient(config);
+        client.connect();
+        const ws = MockWebSocket.instances[0];
+        ws.open();
+
+        const onSignal = vi.fn();
+        client.setListeners({ onSignal });
+
+        // Generate a RELAY packet from "peer-relay"
+        // Relay payload is arbitrary bytes
+        const relayPayload = new Uint8Array([0xAA, 0xBB, 0xCC]);
+
+        const packet = ProtocolUtils.createSignalPacket(
+            config.myId,
+            'peer-relay',
+            { type: 'relay', data: relayPayload }
+        );
+
+        ws.message(packet.slice().buffer);
+
+        expect(onSignal).toHaveBeenCalledWith({
+            from: 'peer-relay',
+            signal: expect.objectContaining({
+                type: 'relay',
+                data: expect.any(Uint8Array)
+            })
+        });
+
+        const callArgs = onSignal.mock.calls[0][0];
+        const receivedData = callArgs.signal.data;
+        expect(new Uint8Array(receivedData)).toEqual(relayPayload);
+    });
+
     it('reconnects on abnormal close', () => {
         client = new SignalingClient(config);
         client.connect();

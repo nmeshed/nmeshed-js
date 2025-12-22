@@ -29,6 +29,7 @@ export interface ConnectionManagerConfig {
 export class ConnectionManager {
     private peers: Map<string, RTCPeerConnection> = new Map();
     private dataChannels: Map<string, RTCDataChannel> = new Map();
+    private pendingCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
     private listeners: Partial<ConnectionEvents> = {};
     private config: ConnectionManagerConfig;
 
@@ -113,6 +114,9 @@ export class ConnectionManager {
             } else {
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
             }
+            // Flush pending candidates
+            await this.flushCandidates(from, pc);
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             this.listeners.onSignal?.(from, { type: 'answer', sdp: answer.sdp! });
@@ -133,6 +137,7 @@ export class ConnectionManager {
         try {
             if (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-local-pranswer') {
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+                await this.flushCandidates(from, pc);
             } else {
                 logger.warn(`Ignored answer in state: ${pc.signalingState}`);
             }
@@ -147,10 +152,36 @@ export class ConnectionManager {
     public async handleCandidate(from: string, candidate: RTCIceCandidateInit) {
         const pc = this.peers.get(from);
         if (!pc) return;
+
+        if (!pc.remoteDescription) {
+            // Queue candidate
+            if (!this.pendingCandidates.has(from)) {
+                this.pendingCandidates.set(from, []);
+            }
+            this.pendingCandidates.get(from)!.push(candidate);
+            logger.conn(`Queued candidate from ${from} (no remote description)`);
+            return;
+        }
+
         try {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
             logger.warn('Candidate Error', e);
+        }
+    }
+
+    private async flushCandidates(peerId: string, pc: RTCPeerConnection) {
+        const queue = this.pendingCandidates.get(peerId);
+        if (queue && queue.length > 0) {
+            logger.conn(`Flushing ${queue.length} candidates for ${peerId}`);
+            for (const cand of queue) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(cand));
+                } catch (e) {
+                    logger.warn('Candidate Flush Error', e);
+                }
+            }
+            this.pendingCandidates.delete(peerId);
         }
     }
 
