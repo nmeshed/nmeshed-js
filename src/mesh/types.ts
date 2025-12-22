@@ -62,7 +62,10 @@ export interface MeshClientConfig {
     workspaceId: string;
 
     /** Authentication token */
-    token: string;
+    token?: string;
+
+    /** Dynamic authentication token provider (refreshes expired tokens) */
+    tokenProvider?: () => Promise<string>;
 
     /** Signaling server URL (defaults to wss://api.nmeshed.com) */
     serverUrl?: string;
@@ -77,7 +80,9 @@ export interface MeshClientConfig {
     iceServers?: RTCIceServer[];
 }
 
-export interface ResolvedMeshConfig extends Required<Omit<MeshClientConfig, 'iceServers'>> {
+export interface ResolvedMeshConfig extends Omit<Required<MeshClientConfig>, 'iceServers' | 'token' | 'tokenProvider'> {
+    token?: string;
+    tokenProvider?: () => Promise<string>;
     iceServers: RTCIceServer[];
 }
 
@@ -102,4 +107,13 @@ export interface MeshEventMap {
     message: (peerId: string, data: ArrayBuffer) => void;
     error: (error: Error) => void;
     statusChange: (status: MeshConnectionStatus) => void;
+
+    // Server Authority Messages (Sync/Persistence)
+    authorityMessage: (data: Uint8Array) => void;
+
+    // Legacy Init Message
+    init: (data: any) => void;
+
+    // Ephemeral
+    ephemeral: (payload: any) => void;
 }

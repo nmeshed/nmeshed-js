@@ -43,5 +43,8 @@ export {
     QueueOverflowError,
 } from './errors';
 
-// Utilities (for advanced users)
-export { parseMessage, truncate } from './validation';
+// Binary Codec (for performance-critical applications)
+export { encodeValue, decodeValue, isBinary } from './codec';
+
+// Debug Utilities (development only)
+export { debugPacket, hexDump, tryParseAsJson, formatBytes, startTimer } from './debug';

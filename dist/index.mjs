@@ -47,165 +47,509 @@ var QueueOverflowError = class extends NMeshedError {
     this.name = "QueueOverflowError";
   }
 };
-var PresenceUserSchema = z.object({
-  userId: z.string(),
-  // We allow string to handle future status types without crashing, 
-  // but we prefer the known union.
-  // We strictly enforce the union, but coerce unknown strings to 'offline'
-  // to prevent UI crashes ("Happy Path" resilience).
-  status: z.preprocess(
-    (val) => {
-      if (val === "online" || val === "idle" || val === "offline") return val;
-      return "offline";
-    },
-    z.union([
-      z.literal("online"),
-      z.literal("idle"),
-      z.literal("offline")
-    ])
-  ),
-  last_seen: z.string().optional(),
-  metadata: z.record(z.unknown()).optional()
-});
-var OperationSchema = z.object({
-  key: z.string().min(1),
-  value: z.unknown(),
-  timestamp: z.number()
-});
-var InitMessageSchema = z.object({
-  type: z.literal("init"),
-  data: z.record(z.unknown())
-});
-var OperationMessageSchema = z.object({
-  type: z.literal("op"),
-  payload: OperationSchema
-});
-var PresenceMessageSchema = z.object({
-  type: z.literal("presence"),
-  users: z.array(PresenceUserSchema)
-});
-var MessageSchema = z.discriminatedUnion("type", [
-  InitMessageSchema,
-  OperationMessageSchema,
-  PresenceMessageSchema
-]);
-function parseMessage(raw) {
-  let json;
+
+// src/codec.ts
+var textEncoder = new TextEncoder();
+var textDecoder = new TextDecoder();
+function encodeValue(value) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (typeof value === "string") {
+    return textEncoder.encode(value);
+  }
+  if (typeof value === "number") {
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setFloat64(0, value, true);
+    return new Uint8Array(buf);
+  }
+  if (typeof value === "boolean") {
+    return new Uint8Array([value ? 1 : 0]);
+  }
+  if (value === null || value === void 0) {
+    return new Uint8Array(0);
+  }
   try {
-    json = JSON.parse(raw);
+    const json = JSON.stringify(value);
+    return textEncoder.encode(json);
   } catch (error) {
-    throw new MessageError(
-      `Failed to parse message as JSON: ${error instanceof Error ? error.message : "Unknown error"}`,
-      raw
-    );
+    throw new Error(`Cannot encode value: ${error instanceof Error ? error.message : "JSON serialization failed"}`);
   }
-  const result = MessageSchema.safeParse(json);
-  if (!result.success) {
-    const errorMessages = result.error.issues.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ");
-    throw new MessageError(
-      `Validation failed: ${errorMessages}`,
-      raw
-    );
-  }
-  return result.data;
 }
-function truncate(str, maxLength = 200) {
-  if (str.length <= maxLength) return str;
-  return str.substring(0, maxLength) + `... (${str.length - maxLength} more chars)`;
+function decodeValue(bytes) {
+  const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+  if (data.length === 0) {
+    return null;
+  }
+  try {
+    const text = textDecoder.decode(data);
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  } catch {
+    return data;
+  }
+}
+function isBinary(value) {
+  return value instanceof Uint8Array || value instanceof ArrayBuffer;
 }
 
-// src/sync/binary.ts
-var encoder = new TextEncoder();
-var decoder = new TextDecoder();
-var MSG_TYPE_OP = 1;
-function marshalOp(workspaceId, op) {
-  const keyBytes = encoder.encode(op.key);
-  let valBytes;
-  if (op.value instanceof Uint8Array) {
-    valBytes = op.value;
-  } else {
-    const jsonStr = JSON.stringify(op.value);
-    valBytes = encoder.encode(jsonStr);
-  }
-  const uuidBytes = parseUUID(workspaceId);
-  const size = 1 + 16 + 4 + keyBytes.length + 8 + 4 + valBytes.length;
-  const buffer = new ArrayBuffer(size);
-  const view = new DataView(buffer);
-  const byteView = new Uint8Array(buffer);
-  let offset = 0;
-  view.setUint8(offset++, MSG_TYPE_OP);
-  byteView.set(uuidBytes, offset);
-  offset += 16;
-  view.setUint32(offset, keyBytes.length, true);
-  offset += 4;
-  byteView.set(keyBytes, offset);
-  offset += keyBytes.length;
-  view.setBigInt64(offset, BigInt(op.timestamp), true);
-  offset += 8;
-  view.setUint32(offset, valBytes.length, true);
-  offset += 4;
-  byteView.set(valBytes, offset);
-  offset += valBytes.length;
-  return buffer;
+// src/wasm/nmeshed_core.js
+var wasm;
+function addToExternrefTable0(obj) {
+  const idx = wasm.__externref_table_alloc();
+  wasm.__wbindgen_externrefs.set(idx, obj);
+  return idx;
 }
-function unmarshalOp(buffer) {
-  const view = new DataView(buffer);
-  const byteView = new Uint8Array(buffer);
-  if (byteView.length < 1) return null;
-  let offset = 0;
-  const type = view.getUint8(offset++);
-  if (type !== MSG_TYPE_OP) return null;
-  if (offset + 16 > byteView.length) return null;
-  const uuidBytes = byteView.subarray(offset, offset + 16);
-  const workspaceId = stringifyUUID(uuidBytes);
-  offset += 16;
-  if (offset + 4 > byteView.length) return null;
-  const keyLen = view.getUint32(offset, true);
-  offset += 4;
-  if (offset + keyLen > byteView.length) return null;
-  const keyBytes = byteView.subarray(offset, offset + keyLen);
-  const key = decoder.decode(keyBytes);
-  offset += keyLen;
-  if (offset + 8 > byteView.length) return null;
-  const timestamp = Number(view.getBigInt64(offset, true));
-  offset += 8;
-  if (offset + 4 > byteView.length) return null;
-  const valLen = view.getUint32(offset, true);
-  offset += 4;
-  if (offset + valLen > byteView.length) return null;
-  const valBytes = new Uint8Array(byteView.subarray(offset, offset + valLen));
-  offset += valLen;
-  return {
-    workspaceId,
-    op: {
-      key,
-      value: valBytes,
-      // STRICT: Always return bytes
-      timestamp
+function debugString(val) {
+  const type = typeof val;
+  if (type == "number" || type == "boolean" || val == null) {
+    return `${val}`;
+  }
+  if (type == "string") {
+    return `"${val}"`;
+  }
+  if (type == "symbol") {
+    const description = val.description;
+    if (description == null) {
+      return "Symbol";
+    } else {
+      return `Symbol(${description})`;
     }
+  }
+  if (type == "function") {
+    const name = val.name;
+    if (typeof name == "string" && name.length > 0) {
+      return `Function(${name})`;
+    } else {
+      return "Function";
+    }
+  }
+  if (Array.isArray(val)) {
+    const length = val.length;
+    let debug = "[";
+    if (length > 0) {
+      debug += debugString(val[0]);
+    }
+    for (let i = 1; i < length; i++) {
+      debug += ", " + debugString(val[i]);
+    }
+    debug += "]";
+    return debug;
+  }
+  const builtInMatches = /\[object ([^\]]+)\]/.exec(toString.call(val));
+  let className;
+  if (builtInMatches && builtInMatches.length > 1) {
+    className = builtInMatches[1];
+  } else {
+    return toString.call(val);
+  }
+  if (className == "Object") {
+    try {
+      return "Object(" + JSON.stringify(val) + ")";
+    } catch (_) {
+      return "Object";
+    }
+  }
+  if (val instanceof Error) {
+    return `${val.name}: ${val.message}
+${val.stack}`;
+  }
+  return className;
+}
+function getArrayU8FromWasm0(ptr, len) {
+  ptr = ptr >>> 0;
+  return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+var cachedDataViewMemory0 = null;
+function getDataViewMemory0() {
+  if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || cachedDataViewMemory0.buffer.detached === void 0 && cachedDataViewMemory0.buffer !== wasm.memory.buffer) {
+    cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
+  }
+  return cachedDataViewMemory0;
+}
+function getStringFromWasm0(ptr, len) {
+  ptr = ptr >>> 0;
+  return decodeText(ptr, len);
+}
+var cachedUint8ArrayMemory0 = null;
+function getUint8ArrayMemory0() {
+  if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+    cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
+  }
+  return cachedUint8ArrayMemory0;
+}
+function handleError(f, args) {
+  try {
+    return f.apply(this, args);
+  } catch (e) {
+    const idx = addToExternrefTable0(e);
+    wasm.__wbindgen_exn_store(idx);
+  }
+}
+function isLikeNone(x) {
+  return x === void 0 || x === null;
+}
+function passArray8ToWasm0(arg, malloc) {
+  const ptr = malloc(arg.length * 1, 1) >>> 0;
+  getUint8ArrayMemory0().set(arg, ptr / 1);
+  WASM_VECTOR_LEN = arg.length;
+  return ptr;
+}
+function passStringToWasm0(arg, malloc, realloc) {
+  if (realloc === void 0) {
+    const buf = cachedTextEncoder.encode(arg);
+    const ptr2 = malloc(buf.length, 1) >>> 0;
+    getUint8ArrayMemory0().subarray(ptr2, ptr2 + buf.length).set(buf);
+    WASM_VECTOR_LEN = buf.length;
+    return ptr2;
+  }
+  let len = arg.length;
+  let ptr = malloc(len, 1) >>> 0;
+  const mem = getUint8ArrayMemory0();
+  let offset = 0;
+  for (; offset < len; offset++) {
+    const code = arg.charCodeAt(offset);
+    if (code > 127) break;
+    mem[ptr + offset] = code;
+  }
+  if (offset !== len) {
+    if (offset !== 0) {
+      arg = arg.slice(offset);
+    }
+    ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
+    const view = getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
+    const ret = cachedTextEncoder.encodeInto(arg, view);
+    offset += ret.written;
+    ptr = realloc(ptr, len, offset, 1) >>> 0;
+  }
+  WASM_VECTOR_LEN = offset;
+  return ptr;
+}
+function takeFromExternrefTable0(idx) {
+  const value = wasm.__wbindgen_externrefs.get(idx);
+  wasm.__externref_table_dealloc(idx);
+  return value;
+}
+var cachedTextDecoder = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
+cachedTextDecoder.decode();
+var MAX_SAFARI_DECODE_BYTES = 2146435072;
+var numBytesDecoded = 0;
+function decodeText(ptr, len) {
+  numBytesDecoded += len;
+  if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
+    cachedTextDecoder = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
+    cachedTextDecoder.decode();
+    numBytesDecoded = len;
+  }
+  return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+}
+var cachedTextEncoder = new TextEncoder();
+if (!("encodeInto" in cachedTextEncoder)) {
+  cachedTextEncoder.encodeInto = function(arg, view) {
+    const buf = cachedTextEncoder.encode(arg);
+    view.set(buf);
+    return {
+      read: arg.length,
+      written: buf.length
+    };
   };
 }
-function parseUUID(uuid) {
-  const hex = uuid.replace(/-/g, "");
-  const arr = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) {
-    arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+var WASM_VECTOR_LEN = 0;
+var NMeshedClientCoreFinalization = typeof FinalizationRegistry === "undefined" ? { register: () => {
+}, unregister: () => {
+} } : new FinalizationRegistry((ptr) => wasm.__wbg_nmeshedclientcore_free(ptr >>> 0, 1));
+var NMeshedClientCore = class {
+  __destroy_into_raw() {
+    const ptr = this.__wbg_ptr;
+    this.__wbg_ptr = 0;
+    NMeshedClientCoreFinalization.unregister(this);
+    return ptr;
   }
-  return arr;
+  free() {
+    const ptr = this.__destroy_into_raw();
+    wasm.__wbg_nmeshedclientcore_free(ptr, 0);
+  }
+  /**
+   * @param {string} key
+   * @param {Uint8Array} value
+   * @param {bigint} timestamp
+   * @returns {Uint8Array}
+   */
+  apply_local_op(key, value, timestamp) {
+    const ptr0 = passStringToWasm0(key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(value, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.nmeshedclientcore_apply_local_op(this.__wbg_ptr, ptr0, len0, ptr1, len1, timestamp);
+    if (ret[3]) {
+      throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+  }
+  /**
+   * @param {Uint8Array} packet_data
+   * @returns {any}
+   */
+  merge_remote_delta(packet_data) {
+    const ptr0 = passArray8ToWasm0(packet_data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.nmeshedclientcore_merge_remote_delta(this.__wbg_ptr, ptr0, len0);
+    if (ret[2]) {
+      throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+  }
+  /**
+   * @returns {Uint8Array}
+   */
+  get_binary_snapshot() {
+    const ret = wasm.nmeshedclientcore_get_binary_snapshot(this.__wbg_ptr);
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+  }
+  /**
+   * Initializes the client.
+   * `sync_mode`: "collaborative" (default) or "realtime" (fast, lossy).
+   * @param {string} workspace_uuid_str
+   * @param {string | null} [sync_mode]
+   */
+  constructor(workspace_uuid_str, sync_mode) {
+    const ptr0 = passStringToWasm0(workspace_uuid_str, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    var ptr1 = isLikeNone(sync_mode) ? 0 : passStringToWasm0(sync_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len1 = WASM_VECTOR_LEN;
+    const ret = wasm.nmeshedclientcore_new(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+      throw takeFromExternrefTable0(ret[1]);
+    }
+    this.__wbg_ptr = ret[0] >>> 0;
+    NMeshedClientCoreFinalization.register(this, this.__wbg_ptr, this);
+    return this;
+  }
+  /**
+   * @returns {any}
+   */
+  get_state() {
+    const ret = wasm.nmeshedclientcore_get_state(this.__wbg_ptr);
+    if (ret[2]) {
+      throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+  }
+};
+if (Symbol.dispose) NMeshedClientCore.prototype[Symbol.dispose] = NMeshedClientCore.prototype.free;
+var EXPECTED_RESPONSE_TYPES = /* @__PURE__ */ new Set(["basic", "cors", "default"]);
+async function __wbg_load(module, imports) {
+  if (typeof Response === "function" && module instanceof Response) {
+    if (typeof WebAssembly.instantiateStreaming === "function") {
+      try {
+        return await WebAssembly.instantiateStreaming(module, imports);
+      } catch (e) {
+        const validResponse = module.ok && EXPECTED_RESPONSE_TYPES.has(module.type);
+        if (validResponse && module.headers.get("Content-Type") !== "application/wasm") {
+          console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);
+        } else {
+          throw e;
+        }
+      }
+    }
+    const bytes = await module.arrayBuffer();
+    return await WebAssembly.instantiate(bytes, imports);
+  } else {
+    const instance = await WebAssembly.instantiate(module, imports);
+    if (instance instanceof WebAssembly.Instance) {
+      return { instance, module };
+    } else {
+      return instance;
+    }
+  }
 }
-function stringifyUUID(bytes) {
-  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return [
-    hex.substr(0, 8),
-    hex.substr(8, 4),
-    hex.substr(12, 4),
-    hex.substr(16, 4),
-    hex.substr(20, 12)
-  ].join("-");
+function __wbg_get_imports() {
+  const imports = {};
+  imports.wbg = {};
+  imports.wbg.__wbg_Error_52673b7de5a0ca89 = function(arg0, arg1) {
+    const ret = Error(getStringFromWasm0(arg0, arg1));
+    return ret;
+  };
+  imports.wbg.__wbg_String_8f0eb39a4a4c2f66 = function(arg0, arg1) {
+    const ret = String(arg1);
+    const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+  };
+  imports.wbg.__wbg___wbindgen_debug_string_adfb662ae34724b6 = function(arg0, arg1) {
+    const ret = debugString(arg1);
+    const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+  };
+  imports.wbg.__wbg___wbindgen_is_string_704ef9c8fc131030 = function(arg0) {
+    const ret = typeof arg0 === "string";
+    return ret;
+  };
+  imports.wbg.__wbg___wbindgen_throw_dd24417ed36fc46e = function(arg0, arg1) {
+    throw new Error(getStringFromWasm0(arg0, arg1));
+  };
+  imports.wbg.__wbg_getRandomValues_9b655bdd369112f2 = function() {
+    return handleError(function(arg0, arg1) {
+      globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
+    }, arguments);
+  };
+  imports.wbg.__wbg_new_1ba21ce319a06297 = function() {
+    const ret = new Object();
+    return ret;
+  };
+  imports.wbg.__wbg_new_25f239778d6112b9 = function() {
+    const ret = new Array();
+    return ret;
+  };
+  imports.wbg.__wbg_new_b546ae120718850e = function() {
+    const ret = /* @__PURE__ */ new Map();
+    return ret;
+  };
+  imports.wbg.__wbg_new_from_slice_f9c22b9153b26992 = function(arg0, arg1) {
+    const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
+    return ret;
+  };
+  imports.wbg.__wbg_set_3f1d0b984ed272ed = function(arg0, arg1, arg2) {
+    arg0[arg1] = arg2;
+  };
+  imports.wbg.__wbg_set_781438a03c0c3c81 = function() {
+    return handleError(function(arg0, arg1, arg2) {
+      const ret = Reflect.set(arg0, arg1, arg2);
+      return ret;
+    }, arguments);
+  };
+  imports.wbg.__wbg_set_7df433eea03a5c14 = function(arg0, arg1, arg2) {
+    arg0[arg1 >>> 0] = arg2;
+  };
+  imports.wbg.__wbg_set_efaaf145b9377369 = function(arg0, arg1, arg2) {
+    const ret = arg0.set(arg1, arg2);
+    return ret;
+  };
+  imports.wbg.__wbindgen_cast_2241b6af4c4b2941 = function(arg0, arg1) {
+    const ret = getStringFromWasm0(arg0, arg1);
+    return ret;
+  };
+  imports.wbg.__wbindgen_cast_4625c577ab2ec9ee = function(arg0) {
+    const ret = BigInt.asUintN(64, arg0);
+    return ret;
+  };
+  imports.wbg.__wbindgen_cast_9ae0607507abb057 = function(arg0) {
+    const ret = arg0;
+    return ret;
+  };
+  imports.wbg.__wbindgen_cast_d6cd19b81560fd6e = function(arg0) {
+    const ret = arg0;
+    return ret;
+  };
+  imports.wbg.__wbindgen_init_externref_table = function() {
+    const table = wasm.__wbindgen_externrefs;
+    const offset = table.grow(4);
+    table.set(0, void 0);
+    table.set(offset + 0, void 0);
+    table.set(offset + 1, null);
+    table.set(offset + 2, true);
+    table.set(offset + 3, false);
+  };
+  return imports;
 }
+function __wbg_finalize_init(instance, module) {
+  wasm = instance.exports;
+  __wbg_init.__wbindgen_wasm_module = module;
+  cachedDataViewMemory0 = null;
+  cachedUint8ArrayMemory0 = null;
+  wasm.__wbindgen_start();
+  return wasm;
+}
+async function __wbg_init(module_or_path) {
+  if (wasm !== void 0) return wasm;
+  if (typeof module_or_path !== "undefined") {
+    if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
+      ({ module_or_path } = module_or_path);
+    } else {
+      console.warn("using deprecated parameters for the initialization function; pass a single object instead");
+    }
+  }
+  if (typeof module_or_path === "undefined") {
+    module_or_path = new URL("nmeshed_core_bg.wasm", import.meta.url);
+  }
+  const imports = __wbg_get_imports();
+  if (typeof module_or_path === "string" || typeof Request === "function" && module_or_path instanceof Request || typeof URL === "function" && module_or_path instanceof URL) {
+    module_or_path = fetch(module_or_path);
+  }
+  const { instance, module } = await __wbg_load(await module_or_path, imports);
+  return __wbg_finalize_init(instance, module);
+}
+var nmeshed_core_default = __wbg_init;
+
+// src/persistence.ts
+var DB_NAME = "nmeshed_db";
+var STORE_NAME = "operation_queue";
+var DB_VERSION = 1;
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+  });
+}
+async function saveQueue(workspaceId, queue) {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      if (queue.length === 0) {
+        store.delete(workspaceId);
+      } else {
+        store.put(queue, workspaceId);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    console.warn("[nMeshed] Failed to save queue to IndexedDB:", error);
+  }
+}
+async function loadQueue(workspaceId) {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.get(workspaceId);
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.warn("[nMeshed] Failed to load queue from IndexedDB:", error);
+    return [];
+  }
+}
+
+// src/client.ts
 var ConfigSchema = z.object({
   workspaceId: z.string().min(1, "workspaceId is required and must be a non-empty string"),
   token: z.string().min(1, "token is required and must be a non-empty string"),
+  syncMode: z.enum(["crdt", "crdt_performance", "crdt_strict", "lww"]).optional(),
   userId: z.string().optional(),
   serverUrl: z.string().optional(),
   autoReconnect: z.boolean().optional(),
@@ -242,12 +586,14 @@ var NMeshedClient = class {
     this.statusListeners = /* @__PURE__ */ new Set();
     this.ephemeralListeners = /* @__PURE__ */ new Set();
     this.presenceListeners = /* @__PURE__ */ new Set();
+    this.queueListeners = /* @__PURE__ */ new Set();
     this.reconnectAttempts = 0;
     this.reconnectTimeout = null;
     this.connectionTimeout = null;
     this.heartbeatInterval = null;
     this.operationQueue = [];
-    this.currentState = {};
+    this.core = null;
+    this.preConnectState = {};
     this.isDestroyed = false;
     const result = ConfigSchema.safeParse(config);
     if (!result.success) {
@@ -259,6 +605,7 @@ var NMeshedClient = class {
       ...DEFAULT_CONFIG,
       workspaceId: validConfig.workspaceId.trim(),
       token: validConfig.token,
+      syncMode: validConfig.syncMode || "crdt",
       userId: validConfig.userId?.trim() || this.generateUserId(),
       ...validConfig.serverUrl && { serverUrl: validConfig.serverUrl },
       ...validConfig.autoReconnect !== void 0 && { autoReconnect: validConfig.autoReconnect },
@@ -270,6 +617,7 @@ var NMeshedClient = class {
       ...validConfig.maxQueueSize !== void 0 && { maxQueueSize: validConfig.maxQueueSize },
       ...validConfig.debug !== void 0 && { debug: validConfig.debug }
     };
+    this.loadQueue();
   }
   /**
    * Generates a random user ID using crypto if available, falling back to Math.random.
@@ -319,7 +667,8 @@ var NMeshedClient = class {
     const base = this.config.serverUrl.replace(/\/+$/, "");
     const params = new URLSearchParams({
       token: this.config.token,
-      userId: this.config.userId
+      userId: this.config.userId,
+      sync_mode: this.config.syncMode
     });
     const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
     return `${base}/v1/sync/${encodedWorkspace}?${params.toString()}`;
@@ -342,7 +691,32 @@ var NMeshedClient = class {
       this.log("Connection already in progress");
       return Promise.resolve();
     }
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
+      this.setStatus("CONNECTING");
+      try {
+        if (!this.core) {
+          await nmeshed_core_default();
+          const coreMode = this.config.syncMode === "lww" ? "lww" : "crdt";
+          this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
+          for (const [key, value] of Object.entries(this.preConnectState)) {
+            try {
+              const valBytes = encodeValue(value);
+              this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1e3));
+            } catch (e) {
+              this.warn("Failed to merge preConnectState for key:", key, e);
+            }
+          }
+          this.preConnectState = {};
+        }
+      } catch (error) {
+        this.setStatus("ERROR");
+        reject(new ConnectionError(
+          "Failed to initialize WASM core",
+          error instanceof Error ? error : new Error(String(error)),
+          false
+        ));
+        return;
+      }
       this.setStatus("CONNECTING");
       const url = this.buildUrl();
       this.log("Connecting to", url.replace(this.config.token, "[REDACTED]"));
@@ -394,36 +768,46 @@ var NMeshedClient = class {
       };
       this.ws.binaryType = "arraybuffer";
       this.ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          const op = unmarshalOp(event.data);
-          if (op) {
-            this.log("Received Binary Op:", op.op.key);
-            let decodedValue = op.op.value;
-            if (op.op.value instanceof Uint8Array) {
-              try {
-                const str = new TextDecoder().decode(op.op.value);
-                decodedValue = JSON.parse(str);
-              } catch {
-                decodedValue = op.op.value;
+        const isBinaryData = event.data instanceof ArrayBuffer || event.data && typeof event.data === "object" && "byteLength" in event.data && !("length" in event.data);
+        if (isBinaryData) {
+          try {
+            const result = this.core?.merge_remote_delta(new Uint8Array(event.data));
+            if (result) {
+              if (result.type === "op") {
+                const syntheticMsg = {
+                  type: "op",
+                  payload: {
+                    key: result.key,
+                    value: result.value,
+                    timestamp: 0
+                  }
+                };
+                const listeners2 = Array.from(this.messageListeners);
+                for (const listener of listeners2) {
+                  try {
+                    listener(syntheticMsg);
+                  } catch (error) {
+                    this.warn("Message listener threw an error:", error);
+                  }
+                }
+              } else if (result.type === "init") {
+                const syntheticInit = {
+                  type: "init",
+                  data: result.data || {}
+                };
+                const listeners2 = Array.from(this.messageListeners);
+                for (const listener of listeners2) {
+                  try {
+                    listener(syntheticInit);
+                  } catch (error) {
+                    this.warn("Message listener threw an error:", error);
+                  }
+                }
               }
             }
-            this.currentState[op.op.key] = decodedValue;
-            const message = {
-              type: "op",
-              payload: {
-                ...op.op,
-                value: decodedValue
-              }
-            };
-            const listeners2 = Array.from(this.messageListeners);
-            for (const listener of listeners2) {
-              try {
-                listener(message);
-              } catch (error) {
-                this.warn("Message listener threw an error:", error);
-              }
-            }
-            return;
+            this.log("Received Binary Update");
+          } catch (error) {
+            this.warn("Failed to merge remote delta:", error);
           }
           const listeners = Array.from(this.ephemeralListeners);
           for (const listener of listeners) {
@@ -434,7 +818,7 @@ var NMeshedClient = class {
             }
           }
         } else {
-          this.handleMessage(event.data);
+          this.handleControlMessage(event.data);
         }
       };
     });
@@ -459,7 +843,7 @@ var NMeshedClient = class {
     this.heartbeatInterval = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
         try {
-          this.ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+          this.ws.send(new Uint8Array([0]));
           this.log("Heartbeat sent");
         } catch (error) {
           this.warn("Failed to send heartbeat:", error);
@@ -477,45 +861,42 @@ var NMeshedClient = class {
     }
   }
   /**
-   * Handles incoming messages from the server.
+   * Handles text control messages (ephemeral, presence, errors).
+   * NOTE: CRDT operations use binary Flatbuffers, not this path.
    */
-  handleMessage(data) {
+  handleControlMessage(data) {
     try {
-      const message = parseMessage(data);
-      this.log("Received:", message.type);
-      if (message.type === "init") {
-        this.currentState = { ...message.data };
-      } else if (message.type === "op") {
-        this.currentState[message.payload.key] = message.payload.value;
-      } else if (message.type === "ephemeral") {
-        const listeners2 = Array.from(this.ephemeralListeners);
-        for (const listener of listeners2) {
-          try {
-            listener(message.payload);
-          } catch (error) {
-            this.warn("Ephemeral listener threw an error:", error);
+      const parsed = JSON.parse(data);
+      const type = parsed.type;
+      switch (type) {
+        case "presence":
+          const presencePayload = parsed.payload || parsed;
+          for (const handler of this.presenceListeners) {
+            try {
+              handler(presencePayload);
+            } catch (error) {
+              this.warn("Presence handler threw error:", error);
+            }
           }
-        }
-      } else if (message.type === "presence") {
-        const listeners2 = Array.from(this.presenceListeners);
-        for (const listener of listeners2) {
-          try {
-            listener(message.payload);
-          } catch (error) {
-            this.warn("Presence listener threw an error:", error);
+          break;
+        case "ephemeral":
+          const ephemeralPayload = parsed.payload || parsed;
+          for (const listener of this.ephemeralListeners) {
+            try {
+              listener(ephemeralPayload);
+            } catch (error) {
+              this.warn("Ephemeral listener threw error:", error);
+            }
           }
-        }
+          break;
+        case "error":
+          this.warn("Server error:", parsed.error || parsed.message || data);
+          break;
+        default:
+          this.log("Ignoring unknown control message type:", type);
       }
-      const listeners = Array.from(this.messageListeners);
-      for (const listener of listeners) {
-        try {
-          listener(message);
-        } catch (error) {
-          this.warn("Message listener threw an error:", error);
-        }
-      }
-    } catch (error) {
-      this.warn("Failed to parse message:", truncate(data), error);
+    } catch {
+      this.log("Ignoring non-JSON text message");
     }
   }
   /**
@@ -584,6 +965,8 @@ var NMeshedClient = class {
     this.log(`Flushing ${this.operationQueue.length} queued operations`);
     const queueToProcess = [...this.operationQueue];
     this.operationQueue = [];
+    this.saveQueue();
+    this.notifyQueueListeners();
     for (const op of queueToProcess) {
       this.sendOperationInternal(op.key, op.value, op.timestamp);
     }
@@ -601,25 +984,26 @@ var NMeshedClient = class {
     }
     this.sendOperation(key, value);
   }
-  /**
-   * Gets the current value of a key from local state.
-   *
-   * Note: This returns the locally cached state, which may be
-   * momentarily out of sync with the server.
-   *
-   * @param key - The key to get
-   * @returns The value, or undefined if not found
-   */
   get(key) {
-    return this.currentState[key];
+    if (!this.core) {
+      return this.preConnectState[key];
+    }
+    const state = this.getState();
+    return state[key];
   }
   /**
    * Gets the entire current state of the workspace.
    *
-   * @returns A shallow copy of the current state
+   * @returns The current state from the WASM core
    */
   getState() {
-    return { ...this.currentState };
+    if (!this.core) return { ...this.preConnectState };
+    try {
+      return this.core.get_state();
+    } catch (error) {
+      this.warn("Failed to get state from WASM core:", error);
+      return {};
+    }
   }
   /**
    * Sends an operation to update a key-value pair.
@@ -631,7 +1015,9 @@ var NMeshedClient = class {
    */
   sendOperation(key, value) {
     const timestamp = Date.now() * 1e3;
-    this.currentState[key] = value;
+    if (!this.core) {
+      this.preConnectState[key] = value;
+    }
     if (this.ws?.readyState !== WebSocket.OPEN) {
       this.queueOperation(key, value, timestamp);
       return;
@@ -653,11 +1039,8 @@ var NMeshedClient = class {
         this.ws.send(payload);
         return;
       }
-      const message = JSON.stringify({
-        type: "ephemeral",
-        payload
-      });
-      this.ws.send(message);
+      const encoded = encodeValue(payload);
+      this.ws.send(encoded);
     } catch (error) {
       this.warn("Failed to broadcast message:", error);
     }
@@ -666,27 +1049,27 @@ var NMeshedClient = class {
    * Internal method to send an operation (assumes connection is open).
    */
   sendOperationInternal(key, value, timestamp) {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
+    if (!this.core) {
+      this.warn("WASM core not initialized, queuing operation");
       this.queueOperation(key, value, timestamp);
       return;
     }
+    let valBytes;
     try {
-      const binaryOp = marshalOp(this.config.workspaceId, { key, value, timestamp });
-      this.ws.send(binaryOp);
-      this.log("Sent binary operation:", key);
+      valBytes = encodeValue(value);
     } catch (error) {
-      this.warn("Failed to send binary operation, falling back to JSON:", error);
-      try {
-        const message = JSON.stringify({
-          type: "op",
-          payload: { key, value, timestamp }
-        });
-        this.ws.send(message);
-        this.log("Sent JSON operation:", key);
-      } catch (jsonError) {
-        this.warn("Failed to send JSON operation:", jsonError);
-        this.queueOperation(key, value, timestamp);
+      this.warn("Failed to encode value, dropping operation:", key, error);
+      return;
+    }
+    try {
+      const binaryOp = this.core.apply_local_op(key, valBytes, BigInt(timestamp));
+      if (this.ws) {
+        this.ws.send(binaryOp);
       }
+      this.log("Sent binary operation (WASM-packed):", key);
+    } catch (error) {
+      this.warn("Failed to send binary operation via WASM core:", error);
+      this.queueOperation(key, value, timestamp);
     }
   }
   /**
@@ -698,6 +1081,8 @@ var NMeshedClient = class {
       this.warn(`Queue full, dropping oldest operation: ${dropped?.key} `);
     }
     this.operationQueue.push({ key, value, timestamp });
+    this.saveQueue();
+    this.notifyQueueListeners();
     this.log(`Queued operation: ${key} (queue size: ${this.operationQueue.length})`);
   }
   /**
@@ -794,27 +1179,53 @@ var NMeshedClient = class {
     this.disconnect();
   }
   /**
-   * Helper to convert WebSocket URL to HTTP URL.
+   * Subscribe to queue size changes.
    */
-  getHttpUrl(path) {
-    try {
-      const url = new URL(this.config.serverUrl);
-      url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-      const base = url.toString().replace(/\/+$/, "");
-      return `${base}${path}`;
-    } catch (e) {
-      const base = this.config.serverUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/+$/, "");
-      return `${base}${path}`;
+  onQueueChange(handler) {
+    this.queueListeners.add(handler);
+    handler(this.operationQueue.length);
+    return () => {
+      this.queueListeners.delete(handler);
+    };
+  }
+  notifyQueueListeners() {
+    const size = this.operationQueue.length;
+    for (const handler of this.queueListeners) {
+      try {
+        handler(size);
+      } catch (e) {
+        this.warn("Queue listener error", e);
+      }
     }
   }
-  /**
-   * Fetches current presence information for the workspace.
-   * 
-   * @returns A promise resolving to a list of active users.
-   */
-  // Updated to match PresenceUser type in types.ts (with optional last_seen)
+  async loadQueue() {
+    try {
+      const items = await loadQueue(this.config.workspaceId);
+      if (items && items.length > 0) {
+        this.operationQueue = [...items, ...this.operationQueue];
+        this.notifyQueueListeners();
+        this.log(`Loaded ${items.length} operations from IndexedDB`);
+      }
+    } catch (e) {
+      this.warn("Failed to load queue from IndexedDB", e);
+    }
+  }
+  saveQueue() {
+    saveQueue(this.config.workspaceId, this.operationQueue).catch((e) => {
+      this.warn("Failed to save queue to IndexedDB", e);
+    });
+  }
+  destroy() {
+    this.disconnect();
+    this.isDestroyed = true;
+    this.preConnectState = {};
+    this.operationQueue = [];
+    this.core = null;
+  }
   async getPresence() {
-    const url = this.getHttpUrl(`/v1/presence/${this.config.workspaceId}`);
+    const base = this.config.serverUrl.replace(/\/+$/, "").replace(/^ws/, "http");
+    const encodedWorkspace = encodeURIComponent(this.config.workspaceId);
+    const url = `${base}/v1/presence/${encodedWorkspace}`;
     const response = await fetch(url, {
       headers: {
         "Authorization": `Bearer ${this.config.token}`
@@ -825,25 +1236,66 @@ var NMeshedClient = class {
     }
     return response.json();
   }
-  /**
-   * Permanently destroys the client, releasing all resources.
-   * 
-   * After calling this, the client cannot be reconnected.
-   * Use this for cleanup in React useEffect or similar.
-   */
-  destroy() {
-    this.log("Destroying client");
-    this.disconnect();
-    this.messageListeners.clear();
-    this.statusListeners.clear();
-    this.ephemeralListeners.clear();
-    this.presenceListeners.clear();
-    this.operationQueue = [];
-    this.currentState = {};
-    this.isDestroyed = true;
-  }
 };
 
-export { AuthenticationError, ConfigurationError, ConnectionError, MessageError, NMeshedClient, NMeshedError, QueueOverflowError, parseMessage, truncate };
+// src/debug.ts
+function debugPacket(data) {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+  if (bytes.length === 0) {
+    return "[Empty Packet]";
+  }
+  const lines = [
+    `[Packet: ${bytes.length} bytes]`,
+    `  Header: ${hexDump(bytes.subarray(0, Math.min(16, bytes.length)))}`
+  ];
+  if (bytes.length >= 4) {
+    const rootOffset = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true);
+    lines.push(`  Root Offset: ${rootOffset}`);
+  }
+  const ascii = bytesToAscii(bytes.subarray(0, Math.min(64, bytes.length)));
+  if (ascii.length > 0) {
+    lines.push(`  ASCII: "${ascii}"`);
+  }
+  return lines.join("\n");
+}
+function hexDump(data, bytesPerLine = 16) {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+  if (bytes.length === 0) return "(empty)";
+  const lines = [];
+  for (let i = 0; i < bytes.length; i += bytesPerLine) {
+    const slice = bytes.subarray(i, Math.min(i + bytesPerLine, bytes.length));
+    const hex = Array.from(slice).map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    const ascii = bytesToAscii(slice);
+    const offset = i.toString(16).padStart(8, "0");
+    lines.push(`${offset}  ${hex.padEnd(bytesPerLine * 3 - 1)}  |${ascii}|`);
+  }
+  return lines.join("\n");
+}
+function bytesToAscii(bytes) {
+  return Array.from(bytes).map((b) => b >= 32 && b <= 126 ? String.fromCharCode(b) : ".").join("");
+}
+function tryParseAsJson(data) {
+  try {
+    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+    const text = new TextDecoder().decode(bytes);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+function startTimer() {
+  const start = performance.now();
+  return {
+    elapsed: () => performance.now() - start,
+    elapsedMicros: () => (performance.now() - start) * 1e3
+  };
+}
+
+export { AuthenticationError, ConfigurationError, ConnectionError, MessageError, NMeshedClient, NMeshedError, QueueOverflowError, debugPacket, decodeValue, encodeValue, formatBytes, hexDump, isBinary, startTimer, tryParseAsJson };
 //# sourceMappingURL=index.mjs.map
 //# sourceMappingURL=index.mjs.map

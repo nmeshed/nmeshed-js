@@ -24,7 +24,7 @@ const originalWebSocket = globalThis.WebSocket;
 
 vi.mock('./wasm/nmeshed_core', () => {
     class MockCore {
-        state: Record<string, string> = {};
+        state: Record<string, unknown> = {};
         constructor() { }
         apply_local_op = vi.fn((key: string, value: Uint8Array) => {
             const raw = new TextDecoder().decode(value);
@@ -35,7 +35,32 @@ vi.mock('./wasm/nmeshed_core', () => {
             }
             return new Uint8Array([1, 2, 3]); // Dummy binary op
         });
-        merge_remote_delta = vi.fn();
+        // Mock merge_remote_delta to work with binary protocol test messages
+        merge_remote_delta = vi.fn((bytes: Uint8Array) => {
+            try {
+                const text = new TextDecoder().decode(bytes);
+                const parsed = JSON.parse(text);
+                if (parsed.type === 'init') {
+                    for (const [k, v] of Object.entries(parsed.data)) {
+                        (this as MockCore).state[k] = v;
+                    }
+                    return { type: 'init', data: parsed.data };
+                }
+                if (parsed.type === 'op') {
+                    const key = parsed.payload.key;
+                    const value = parsed.payload.value;
+                    (this as MockCore).state[key] = value;
+                    return {
+                        type: 'op',
+                        key,
+                        value: new TextEncoder().encode(JSON.stringify(value))
+                    };
+                }
+            } catch {
+                // Not a test payload
+            }
+            return null;
+        });
         get_state = vi.fn(() => ({ ...this.state }));
     }
     return {
@@ -44,7 +69,7 @@ vi.mock('./wasm/nmeshed_core', () => {
     };
 });
 
-// Mock WebSocket with all static constants
+// Mock WebSocket with binary message support
 class MockWebSocket {
     static instances: MockWebSocket[] = [];
 
@@ -55,10 +80,11 @@ class MockWebSocket {
     static readonly CLOSED = 3;
 
     readyState = MockWebSocket.CONNECTING;
+    binaryType = 'arraybuffer';
     onopen: (() => void) | null = null;
     onclose: ((event: { code: number; reason: string }) => void) | null = null;
     onerror: ((event: unknown) => void) | null = null;
-    onmessage: ((event: { data: string }) => void) | null = null;
+    onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
 
     constructor(public url: string) {
         MockWebSocket.instances.push(this);
@@ -72,7 +98,27 @@ class MockWebSocket {
         this.onopen?.();
     }
 
-    simulateMessage(data: unknown) {
+    /**
+     * Simulates receiving a binary message (primary path).
+     * Encodes the data as JSON bytes for the mock WASM to decode.
+     */
+    simulateBinaryMessage(data: unknown) {
+        const jsonBytes = new TextEncoder().encode(JSON.stringify(data));
+        this.onmessage?.({ data: jsonBytes.buffer });
+    }
+
+    /**
+     * Simulates receiving raw binary data (ArrayBuffer).
+     */
+    simulateRawBinaryMessage(data: ArrayBuffer) {
+        this.onmessage?.({ data });
+    }
+
+    /**
+     * Simulates receiving a JSON text message (control messages: presence, errors, ephemeral).
+     * This exercises the handleControlMessage path.
+     */
+    simulateTextMessage(data: unknown) {
         this.onmessage?.({ data: JSON.stringify(data) });
     }
 
@@ -180,7 +226,7 @@ describe('NMeshedClient', () => {
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
             await connectPromise;
-            ws.simulateMessage({
+            ws.simulateBinaryMessage({
                 type: 'init',
                 data: { greeting: 'Hello', count: 42 },
             });
@@ -194,7 +240,7 @@ describe('NMeshedClient', () => {
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
-            MockWebSocket.instances[0].simulateMessage({
+            MockWebSocket.instances[0].simulateBinaryMessage({
                 type: 'op',
                 payload: { key: 'title', value: 'New Title', timestamp: 123 },
             });
@@ -209,7 +255,7 @@ describe('NMeshedClient', () => {
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
-            MockWebSocket.instances[0].simulateMessage({
+            MockWebSocket.instances[0].simulateBinaryMessage({
                 type: 'op',
                 payload: { key: 'test', value: 'value', timestamp: 123 },
             });
@@ -225,7 +271,7 @@ describe('NMeshedClient', () => {
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
             unsubscribe();
-            MockWebSocket.instances[0].simulateMessage({
+            MockWebSocket.instances[0].simulateBinaryMessage({
                 type: 'op',
                 payload: { key: 'test', value: 'value', timestamp: 123 },
             });
@@ -374,7 +420,7 @@ describe('NMeshedClient', () => {
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
             await connectPromise;
-            ws.simulateMessage({
+            ws.simulateBinaryMessage({
                 type: 'init',
                 data: { a: 1, b: 2 },
             });
@@ -410,6 +456,144 @@ describe('NMeshedClient', () => {
             await Promise.resolve();
 
             expect(client.getQueueSize()).toBe(1);
+        });
+    });
+
+    // =========================================================================
+    // BINARY PATH TESTS (CRDT Operations - Hot Path)
+    // =========================================================================
+    describe('binary CRDT path', () => {
+        it('processes binary init messages via merge_remote_delta', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            const ws = MockWebSocket.instances[0];
+            ws.simulateOpen();
+            await connectPromise;
+
+            // Simulate binary init message
+            ws.simulateBinaryMessage({
+                type: 'init',
+                data: { score: 100, player: 'Alice' },
+            });
+
+            expect(client.get('score')).toBe(100);
+            expect(client.get('player')).toBe('Alice');
+        });
+
+        it('processes binary op messages and notifies listeners', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const listener = vi.fn();
+            client.onMessage(listener);
+
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            MockWebSocket.instances[0].simulateBinaryMessage({
+                type: 'op',
+                payload: { key: 'health', value: 75, timestamp: 456 },
+            });
+
+            expect(listener).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'op',
+                    payload: expect.objectContaining({ key: 'health' }),
+                })
+            );
+        });
+    });
+
+    // =========================================================================
+    // JSON CONTROL MESSAGE TESTS (Presence, Errors, Ephemeral)
+    // =========================================================================
+    describe('JSON control message path', () => {
+        it('handles presence updates from server', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const presenceHandler = vi.fn();
+            client.onPresence(presenceHandler);
+
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Simulate presence message as JSON text
+            MockWebSocket.instances[0].simulateTextMessage({
+                type: 'presence',
+                payload: { userId: 'user-123', status: 'online' },
+            });
+
+            expect(presenceHandler).toHaveBeenCalledWith(
+                expect.objectContaining({ userId: 'user-123', status: 'online' })
+            );
+        });
+
+        it('handles ephemeral events from server', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const ephemeralHandler = vi.fn();
+            client.onBroadcast(ephemeralHandler);
+
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Simulate ephemeral message (cursor update)
+            MockWebSocket.instances[0].simulateTextMessage({
+                type: 'ephemeral',
+                payload: { userId: 'user-456', cursor: { x: 100, y: 200 } },
+            });
+
+            expect(ephemeralHandler).toHaveBeenCalledWith(
+                expect.objectContaining({ userId: 'user-456' })
+            );
+        });
+
+        it('logs server errors without crashing', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Should not throw
+            expect(() => {
+                MockWebSocket.instances[0].simulateTextMessage({
+                    type: 'error',
+                    error: 'Rate limit exceeded',
+                });
+            }).not.toThrow();
+        });
+
+        it('ignores unknown control message types', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Should not throw on unknown type
+            expect(() => {
+                MockWebSocket.instances[0].simulateTextMessage({
+                    type: 'unknown_future_type',
+                    data: {},
+                });
+            }).not.toThrow();
+        });
+
+        it('ignores malformed JSON text messages', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Send raw invalid text (not JSON)
+            expect(() => {
+                MockWebSocket.instances[0].onmessage?.({ data: 'not valid json {{' });
+            }).not.toThrow();
         });
     });
 });

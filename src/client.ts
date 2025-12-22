@@ -1,3 +1,27 @@
+/**
+ * @file client.ts
+ * @brief Core nMeshed client for real-time synchronization.
+ *
+ * This module provides the main NMeshedClient class for connecting to
+ * nMeshed servers and synchronizing state across distributed clients.
+ *
+ * Architecture:
+ * - Binary CRDT Path: Operations use Flatbuffers for high-performance sync
+ * - JSON Control Path: Presence, errors, and ephemeral use JSON for simplicity
+ *
+ * @example
+ * ```typescript
+ * import { NMeshedClient } from 'nmeshed';
+ *
+ * const client = new NMeshedClient({
+ *     workspaceId: 'my-workspace',
+ *     token: 'jwt-token',
+ * });
+ *
+ * await client.connect();
+ * client.set('key', 'value');
+ * ```
+ */
 import type {
     NMeshedConfig,
     ConnectionStatus,
@@ -11,7 +35,7 @@ import {
     ConfigurationError,
     ConnectionError,
 } from './errors';
-import { parseMessage, truncate } from './validation';
+import { encodeValue } from './codec';
 import init, { NMeshedClientCore } from './wasm/nmeshed_core';
 import { z } from 'zod';
 import { loadQueue as dbLoadQueue, saveQueue as dbSaveQueue } from './persistence';
@@ -249,7 +273,7 @@ export class NMeshedClient {
                     // Merge pre-connect state into the new core
                     for (const [key, value] of Object.entries(this.preConnectState)) {
                         try {
-                            const valBytes = new TextEncoder().encode(JSON.stringify(value));
+                            const valBytes = encodeValue(value);
                             this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
                         } catch (e) {
                             this.warn('Failed to merge preConnectState for key:', key, e);
@@ -326,32 +350,52 @@ export class NMeshedClient {
             this.ws.binaryType = 'arraybuffer'; // Crucial for performance
 
             this.ws.onmessage = (event) => {
-                if (event.data instanceof ArrayBuffer) {
+                // Use duck-typing for ArrayBuffer check (works in Node.js tests)
+                const isBinaryData = event.data instanceof ArrayBuffer ||
+                    (event.data && typeof event.data === 'object' && 'byteLength' in event.data && !('length' in event.data));
+
+                if (isBinaryData) {
                     // Binary Path (Fast Lane)
-                    // Check if it's a known binary Op or just ephemeral
                     try {
                         // 1. Merge into WASM Core
                         const result = this.core?.merge_remote_delta(new Uint8Array(event.data)) as any;
 
                         // 2. State is now updated in Core. 
-                        // Notify listeners if we have op details
-                        if (result && result.type === 'op') {
-                            const syntheticMsg = {
-                                type: 'op',
-                                payload: {
-                                    key: result.key,
-                                    value: result.value,
-                                    timestamp: 0 // Timestamp not needed for notification
-                                }
-                            };
+                        // Notify listeners based on result type
+                        if (result) {
+                            if (result.type === 'op') {
+                                const syntheticMsg = {
+                                    type: 'op' as const,
+                                    payload: {
+                                        key: result.key,
+                                        value: result.value,
+                                        timestamp: 0
+                                    }
+                                };
 
-                            // Dispatch to listeners (e.g. useDocument)
-                            const listeners = Array.from(this.messageListeners);
-                            for (const listener of listeners) {
-                                try {
-                                    listener(syntheticMsg as any);
-                                } catch (error) {
-                                    this.warn('Message listener threw an error:', error);
+                                // Dispatch to listeners (e.g. useDocument, useNmeshed)
+                                const listeners = Array.from(this.messageListeners);
+                                for (const listener of listeners) {
+                                    try {
+                                        listener(syntheticMsg as any);
+                                    } catch (error) {
+                                        this.warn('Message listener threw an error:', error);
+                                    }
+                                }
+                            } else if (result.type === 'init') {
+                                // Handle init message from binary protocol
+                                const syntheticInit = {
+                                    type: 'init' as const,
+                                    data: result.data || {}
+                                };
+
+                                const listeners = Array.from(this.messageListeners);
+                                for (const listener of listeners) {
+                                    try {
+                                        listener(syntheticInit as any);
+                                    } catch (error) {
+                                        this.warn('Message listener threw an error:', error);
+                                    }
                                 }
                             }
                         }
@@ -371,8 +415,9 @@ export class NMeshedClient {
                         }
                     }
                 } else {
-                    // Slow Path: Text/JSON
-                    this.handleMessage(event.data);
+                    // TEXT PATH: Control messages only (ephemeral, presence, errors)
+                    // CRDT ops should NEVER be text - only binary Flatbuffers
+                    this.handleControlMessage(event.data);
                 }
             };
         });
@@ -401,9 +446,9 @@ export class NMeshedClient {
         this.heartbeatInterval = setInterval(() => {
             if (this.ws?.readyState === WebSocket.OPEN) {
                 try {
-                    // Send a ping message
-                    // Note: Browser WebSocket doesn't expose ping(), so we send a custom message
-                    this.ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+                    // Send a binary heartbeat (single byte marker)
+                    // Note: Server interprets 0x00 as keep-alive ping
+                    this.ws.send(new Uint8Array([0x00]));
                     this.log('Heartbeat sent');
                 } catch (error) {
                     this.warn('Failed to send heartbeat:', error);
@@ -423,59 +468,50 @@ export class NMeshedClient {
     }
 
     /**
-     * Handles incoming messages from the server.
+     * Handles text control messages (ephemeral, presence, errors).
+     * NOTE: CRDT operations use binary Flatbuffers, not this path.
      */
-    private handleMessage(data: string): void {
+    private handleControlMessage(data: string): void {
         try {
-            const message = parseMessage(data);
-            this.log('Received:', message.type);
+            const parsed = JSON.parse(data);
+            const type = parsed.type;
 
-            // Update local state cache
-            if (message.type === 'init') {
-                // Initialize core state from snapshot if provided
-                // For now, if init is just a JSON object, we apply each key
-                for (const [key, value] of Object.entries(message.data)) {
-                    const bytes = new TextEncoder().encode(JSON.stringify(value));
-                    this.core?.apply_local_op(key, bytes, BigInt(Date.now() * 1000));
-                }
-            } else if (message.type === 'op') {
-                const bytes = new TextEncoder().encode(JSON.stringify(message.payload.value));
-                this.core?.apply_local_op(message.payload.key, bytes, BigInt(message.payload.timestamp));
-            } else if (message.type === 'ephemeral') {
-                // Dispatch to ephemeral listeners
-                const listeners = Array.from(this.ephemeralListeners);
-                for (const listener of listeners) {
-                    try {
-                        listener(message.payload);
-                    } catch (error) {
-                        this.warn('Ephemeral listener threw an error:', error);
+            switch (type) {
+                case 'presence':
+                    // Real-time presence update from server
+                    const presencePayload = parsed.payload || parsed;
+                    for (const handler of this.presenceListeners) {
+                        try {
+                            handler(presencePayload);
+                        } catch (error) {
+                            this.warn('Presence handler threw error:', error);
+                        }
                     }
-                }
-            } else if (message.type === 'presence') {
-                // Dispatch to presence listeners
-                const listeners = Array.from(this.presenceListeners);
-                for (const listener of listeners) {
-                    try {
-                        listener(message.payload);
-                    } catch (error) {
-                        this.warn('Presence listener threw an error:', error);
-                    }
-                }
-            }
-            // Ignore pong messages (heartbeat responses)
+                    break;
 
-            // Notify generic listeners
-            const listeners = Array.from(this.messageListeners);
-            for (const listener of listeners) {
-                try {
-                    listener(message);
-                } catch (error) {
-                    this.warn('Message listener threw an error:', error);
-                }
+                case 'ephemeral':
+                    // Cursor/typing indicators from other clients
+                    const ephemeralPayload = parsed.payload || parsed;
+                    for (const listener of this.ephemeralListeners) {
+                        try {
+                            listener(ephemeralPayload);
+                        } catch (error) {
+                            this.warn('Ephemeral listener threw error:', error);
+                        }
+                    }
+                    break;
+
+                case 'error':
+                    // Error from server
+                    this.warn('Server error:', parsed.error || parsed.message || data);
+                    break;
+
+                default:
+                    this.log('Ignoring unknown control message type:', type);
             }
-        } catch (error) {
-            // Log but don't crash on malformed messages
-            this.warn('Failed to parse message:', truncate(data), error);
+        } catch {
+            // Not valid JSON - ignore
+            this.log('Ignoring non-JSON text message');
         }
     }
 
@@ -646,18 +682,15 @@ export class NMeshedClient {
         }
 
         try {
-            // Binary Path (Fast Lane)
+            // Binary Path (Fast Lane) - Always prefer binary
             if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
                 this.ws.send(payload);
                 return;
             }
 
-            // JSON Path (Slow Lane)
-            const message = JSON.stringify({
-                type: 'ephemeral',
-                payload
-            });
-            this.ws.send(message);
+            // Encode non-binary payload to binary (uses encodeValue for JSON encoding)
+            const encoded = encodeValue(payload);
+            this.ws.send(encoded);
         } catch (error) {
             this.warn('Failed to broadcast message:', error);
         }
@@ -668,17 +701,23 @@ export class NMeshedClient {
      */
     private sendOperationInternal(key: string, value: unknown, timestamp: number): void {
         // Binary Path: ALWAYS prefer binary for Ops
+        if (!this.core) {
+            this.warn('WASM core not initialized, queuing operation');
+            this.queueOperation(key, value, timestamp);
+            return;
+        }
+
+        // Encode value to binary using codec
+        let valBytes: Uint8Array;
         try {
-            if (!this.core) throw new Error('WASM core not initialized');
+            valBytes = encodeValue(value);
+        } catch (error) {
+            // Encoding failed (e.g., circular reference) - don't queue, just warn
+            this.warn('Failed to encode value, dropping operation:', key, error);
+            return;
+        }
 
-            let valBytes: Uint8Array;
-            try {
-                valBytes = new TextEncoder().encode(JSON.stringify(value));
-            } catch (jsonError) {
-                this.warn('Failed to serialize value, dropping operation:', key, jsonError);
-                return;
-            }
-
+        try {
             const binaryOp = this.core.apply_local_op(key, valBytes, BigInt(timestamp));
 
             if (this.ws) {

@@ -178,7 +178,10 @@ export class ConnectionManager {
     private setupDataChannel(peerId: string, dc: RTCDataChannel) {
         dc.binaryType = 'arraybuffer';
 
+        let joinTriggered = false;
         const onOpen = () => {
+            if (joinTriggered) return;
+            joinTriggered = true;
             logger.conn(`DataChannel Open with ${peerId}`);
             try {
                 this.listeners.onPeerJoin?.(peerId);

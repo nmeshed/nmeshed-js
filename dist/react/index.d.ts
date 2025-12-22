@@ -1,4 +1,4 @@
-import { b as NMeshedConfig, C as ConnectionStatus, a as NMeshedClient, P as PresenceUser } from '../client-CrvzJ8_5.js';
+import { a as NMeshedConfig, C as ConnectionStatus, N as NMeshedClient, P as PresenceUser } from '../client-D1LKSk-Q.js';
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import { ReactNode } from 'react';
 
@@ -55,6 +55,10 @@ interface UseNmeshedReturn {
      * Manually disconnect from the server.
      */
     disconnect: () => void;
+    /**
+     * Number of queued operations.
+     */
+    queueSize: number;
 }
 /**
  * React hook for real-time synchronization with nMeshed.

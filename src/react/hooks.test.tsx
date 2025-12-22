@@ -5,10 +5,10 @@ import { useNmeshed } from './useNmeshed';
 import { NMeshedProvider, useNmeshedContext } from './context';
 import { useDocument } from './useDocument';
 
-// Mock the WASM core
+// Mock the WASM core - simulates binary protocol
 vi.mock('../wasm/nmeshed_core', () => {
     class MockCore {
-        state: Record<string, string> = {};
+        state: Record<string, unknown> = {};
         constructor() { }
         apply_local_op = vi.fn((key: string, value: Uint8Array) => {
             const raw = new TextDecoder().decode(value);
@@ -19,7 +19,36 @@ vi.mock('../wasm/nmeshed_core', () => {
             }
             return new Uint8Array([1, 2, 3]); // Dummy binary op
         });
-        merge_remote_delta = vi.fn();
+        // Mock merge_remote_delta to return op info like the real WASM
+        merge_remote_delta = vi.fn((bytes: Uint8Array) => {
+            // Simulate decoding the bytes and returning op info
+            // Real WASM returns { type: 'op', key: string, value: Uint8Array }
+            // For tests, we decode a simulated init/op format
+            try {
+                const text = new TextDecoder().decode(bytes);
+                const parsed = JSON.parse(text);
+                if (parsed.type === 'init') {
+                    for (const [k, v] of Object.entries(parsed.data)) {
+                        (this as MockCore).state[k] = v;
+                    }
+                    // Return init type so client dispatches to listeners
+                    return { type: 'init', data: parsed.data };
+                }
+                if (parsed.type === 'op') {
+                    const key = parsed.payload.key;
+                    const value = parsed.payload.value;
+                    (this as MockCore).state[key] = value;
+                    return {
+                        type: 'op',
+                        key,
+                        value: new TextEncoder().encode(JSON.stringify(value))
+                    };
+                }
+            } catch {
+                // Not a test payload
+            }
+            return null;
+        });
         get_state = vi.fn(() => ({ ...this.state }));
     }
     return {
@@ -37,10 +66,11 @@ class MockWebSocket {
     static readonly CLOSED = 3;
 
     readyState = MockWebSocket.CONNECTING;
+    binaryType = 'arraybuffer';
     onopen: (() => void) | null = null;
     onclose: ((event: { code: number; reason: string }) => void) | null = null;
     onerror: ((event: unknown) => void) | null = null;
-    onmessage: ((event: { data: string }) => void) | null = null;
+    onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
 
     constructor(public url: string) {
         MockWebSocket.instances.push(this);
@@ -54,8 +84,12 @@ class MockWebSocket {
         this.onopen?.();
     }
 
-    simulateMessage(data: unknown) {
-        this.onmessage?.({ data: JSON.stringify(data) });
+    /**
+     * Simulates receiving a binary CRDT operation from the server.
+     * This triggers the binary code path which calls merge_remote_delta.
+     */
+    simulateBinaryMessage(data: ArrayBuffer) {
+        this.onmessage?.({ data });
     }
 
     simulateClose(code = 1000, reason = '') {
@@ -123,10 +157,13 @@ describe('useNmeshed', () => {
         });
 
         act(() => {
-            MockWebSocket.instances[0].simulateMessage({
+            // Simulate binary init message (encoded as JSON for test mock)
+            const initPayload = JSON.stringify({
                 type: 'init',
                 data: { counter: 5, title: 'Hello' },
             });
+            const bytes = new TextEncoder().encode(initPayload);
+            MockWebSocket.instances[0].simulateBinaryMessage(bytes.buffer);
         });
 
         await waitFor(() => {
@@ -256,10 +293,13 @@ describe('useDocument', () => {
         });
 
         act(() => {
-            MockWebSocket.instances[0].simulateMessage({
+            // Simulate binary init message (encoded as JSON for test mock)
+            const initPayload = JSON.stringify({
                 type: 'init',
                 data: { counter: 42 },
             });
+            const bytes = new TextEncoder().encode(initPayload);
+            MockWebSocket.instances[0].simulateBinaryMessage(bytes.buffer);
         });
 
         await waitFor(() => {

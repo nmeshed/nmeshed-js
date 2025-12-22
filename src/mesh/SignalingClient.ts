@@ -1,30 +1,33 @@
-/**
- * @file SignalingClient.ts
- * @brief WebSocket-based signaling client for WebRTC connection establishment.
- *
- * Handles all WebSocket communication with the signaling server, including:
- * - Connection lifecycle (connect, disconnect, reconnect)
- * - Signal message serialization/deserialization
- * - Presence notifications
- * - Automatic reconnection with exponential backoff
- */
 
 import type { SignalEnvelope, SignalMessage } from './types';
+import * as flatbuffers from 'flatbuffers';
+import { WirePacket } from '../schema/nmeshed/wire-packet';
+import { MsgType } from '../schema/nmeshed/msg-type';
+import { SignalData } from '../schema/nmeshed/signal-data';
+import { Join } from '../schema/nmeshed/join';
+import { Offer } from '../schema/nmeshed/offer';
+import { Answer } from '../schema/nmeshed/answer';
+import { Candidate } from '../schema/nmeshed/candidate';
+import { ProtocolUtils } from './ProtocolUtils';
 import { logger } from '../utils/Logger';
 
 export interface SignalingConfig {
     url: string;
     token?: string;
+    tokenProvider?: () => Promise<string>;
     workspaceId: string;
     myId: string;
 }
 
 export interface SignalingEvents {
     onSignal: (envelope: SignalEnvelope) => void;
-    onPresence: (userId: string, status: string) => void;
+    onPresence: (userId: string, status: string, meshId?: string) => void;
     onConnect: () => void;
     onDisconnect: () => void;
     onError: (err: Error) => void;
+    onServerMessage: (data: Uint8Array) => void;
+    onInit: (data: any) => void;
+    onEphemeral: (payload: any) => void;
 }
 
 /**
@@ -55,8 +58,21 @@ export class SignalingClient {
         return this.ws?.readyState === WebSocket.OPEN;
     }
 
-    public connect() {
+    public updateToken(token: string) {
+        this.config.token = token;
+    }
+
+    public async connect() {
         this.intentionallyClosed = false;
+
+        if (this.config.tokenProvider) {
+            try {
+                this.config.token = await this.config.tokenProvider();
+            } catch (e) {
+                logger.error('Token Provider Error', e);
+            }
+        }
+
         let url = this.config.url;
 
         if (this.config.token) {
@@ -64,10 +80,11 @@ export class SignalingClient {
             url += `${separator}token=${encodeURIComponent(this.config.token)}`;
         }
 
-        logger.sig(`Connecting to ${this.config.url}...`);
+        logger.sig(`Connecting to ${url}...`);
 
         try {
             this.ws = new WebSocket(url);
+            this.ws.binaryType = 'arraybuffer';
 
             this.ws.onopen = this.handleOpen.bind(this);
             this.ws.onmessage = this.handleMessage.bind(this);
@@ -89,16 +106,28 @@ export class SignalingClient {
         if (!this.connected) return;
 
         try {
-            const message = JSON.stringify({
-                type: 'signal',
-                to,
-                from: this.config.myId,
-                signal
-            });
-            this.ws!.send(message);
+            const bytes = ProtocolUtils.createSignalPacket(to, this.config.myId, signal);
+            this.ws!.send(bytes);
         } catch (e) {
             logger.error('Send Signal Error', e);
         }
+    }
+
+    public sendSync(data: Uint8Array) {
+        if (!this.connected) return;
+
+        try {
+            const bytes = ProtocolUtils.createSyncPacket(data);
+            this.ws!.send(bytes);
+        } catch (e) {
+            logger.error('Send Sync Error', e);
+        }
+    }
+
+    public sendEphemeral(payload: any, to?: string) {
+        if (!this.connected) return;
+        const msg = JSON.stringify({ type: 'ephemeral', to, payload });
+        this.ws!.send(msg);
     }
 
     private clearReconnectTimer() {
@@ -142,7 +171,22 @@ export class SignalingClient {
 
         // Auto-join the workspace
         const joinPayload: SignalMessage = { type: 'join', workspaceId: this.config.workspaceId };
+
+        // Send Binary Join
         this.sendSignal('server', joinPayload);
+
+        // Also send legacy JSON for compatibility if needed (matches factory-mesh)
+        const legacyMsg = JSON.stringify({
+            type: 'signal',
+            to: 'server',
+            from: this.config.myId,
+            payload: joinPayload,
+            signal: joinPayload
+        });
+        if (this.ws) {
+            this.ws.send(JSON.stringify({ type: 'join', payload: joinPayload }));
+            this.ws.send(legacyMsg);
+        }
 
         this.listeners.onConnect?.();
     }
@@ -151,9 +195,65 @@ export class SignalingClient {
         try {
             if (typeof e.data === 'string') {
                 this.handleJsonMessage(e.data);
+            } else {
+                this.handleBinaryMessage(e.data as ArrayBuffer);
             }
         } catch (fatal) {
             logger.error('Critical Message Error', fatal);
+        }
+    }
+
+    private handleBinaryMessage(buffer: ArrayBuffer) {
+        try {
+            const arr = new Uint8Array(buffer);
+            const buf = new flatbuffers.ByteBuffer(arr);
+            const wire = WirePacket.getRootAsWirePacket(buf);
+            const msgType = wire.msgType();
+
+            if (msgType === MsgType.Sync) {
+                const payload = wire.payloadArray();
+                if (payload) {
+                    this.listeners.onServerMessage?.(payload);
+                }
+            } else if (msgType === MsgType.Signal) {
+                const sig = wire.signal();
+                if (sig) {
+                    const from = sig.fromPeer();
+                    const dataType = sig.dataType();
+
+                    if (from && dataType !== SignalData.NONE) {
+                        let parsed: SignalMessage | null = null;
+                        if (dataType === SignalData.Join) {
+                            const join = sig.data(new Join());
+                            if (join) parsed = { type: 'join', workspaceId: join.workspaceId()! };
+                        } else if (dataType === SignalData.Offer) {
+                            const offer = sig.data(new Offer());
+                            if (offer) parsed = { type: 'offer', sdp: offer.sdp()! };
+                        } else if (dataType === SignalData.Answer) {
+                            const answer = sig.data(new Answer());
+                            if (answer) parsed = { type: 'answer', sdp: answer.sdp()! };
+                        } else if (dataType === SignalData.Candidate) {
+                            const cand = sig.data(new Candidate());
+                            if (cand) {
+                                parsed = {
+                                    type: 'candidate',
+                                    candidate: {
+                                        candidate: cand.candidate()!,
+                                        sdpMid: cand.sdpMid()!,
+                                        sdpMLineIndex: cand.sdpMLineIndex()
+                                    }
+                                };
+                            }
+                        }
+
+                        if (parsed) {
+                            this.listeners.onSignal?.({ from, signal: parsed });
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            logger.error('Binary Parser Error', err);
         }
     }
 
@@ -162,13 +262,24 @@ export class SignalingClient {
             const msg = JSON.parse(data);
             switch (msg.type) {
                 case 'presence':
-                    const { userId, status } = msg.payload || msg;
-                    this.listeners.onPresence?.(userId, status);
+                    if (msg.payload) {
+                        const { userId, status, meshId } = msg.payload || msg;
+                        if (userId) this.listeners.onPresence?.(userId, status, meshId);
+                    } else if (msg.userId) {
+                        this.listeners.onPresence?.(msg.userId, msg.status, msg.meshId);
+                    }
                     break;
                 case 'signal':
+                    // Legacy JSON signals
                     if (msg.from && msg.signal) {
                         this.listeners.onSignal?.({ from: msg.from, signal: msg.signal });
                     }
+                    break;
+                case 'init':
+                    this.listeners.onInit?.(msg);
+                    break;
+                case 'ephemeral':
+                    this.listeners.onEphemeral?.(msg.payload);
                     break;
             }
         } catch (e) {
@@ -180,7 +291,6 @@ export class SignalingClient {
         logger.sig(`Disconnected: ${e.code} ${e.reason}`);
         this.listeners.onDisconnect?.();
 
-        // Normal closure codes that shouldn't trigger reconnect
         const normalClosureCodes = [1000, 1001];
         if (!normalClosureCodes.includes(e.code) && !this.intentionallyClosed) {
             this.scheduleReconnect();

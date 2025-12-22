@@ -30,7 +30,7 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
                 try {
                     const initialUsers = await client.getPresence();
                     if (mounted) {
-                        setUsers(initialUsers);
+                        setUsers(initialUsers as PresenceUser[]);
                     }
                 } catch (e) {
                     console.warn('Failed to fetch initial presence:', e);

@@ -85,6 +85,7 @@
         "vitest": "^4.0.15"
     },
     "dependencies": {
+        "flatbuffers": "^25.9.23",
         "zod": "^3.23.8"
     }
 }

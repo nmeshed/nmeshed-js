@@ -1,3 +1,4 @@
+
 /**
  * @file MeshClient.ts
  * @brief High-level P2P mesh client for real-time multiplayer applications.
@@ -45,7 +46,7 @@ import { logger } from '../utils/Logger';
 /**
  * Default configuration values.
  */
-const DEFAULT_CONFIG: Omit<ResolvedMeshConfig, 'workspaceId' | 'token'> = {
+const DEFAULT_CONFIG: Omit<ResolvedMeshConfig, 'workspaceId' | 'token' | 'tokenProvider'> = {
     serverUrl: 'wss://api.nmeshed.com/v1/sync',
     topology: 'mesh',
     debug: false,
@@ -66,8 +67,8 @@ export class MeshClient {
     private eventListeners: Map<keyof MeshEventMap, Set<Function>> = new Map();
 
     constructor(config: MeshClientConfig) {
-        if (!config.workspaceId || !config.token) {
-            throw new Error('MeshClient requires workspaceId and token');
+        if (!config.workspaceId || (!config.token && !config.tokenProvider)) {
+            throw new Error('MeshClient requires workspaceId and either token or tokenProvider');
         }
 
         this.config = {
@@ -83,9 +84,15 @@ export class MeshClient {
         this.myId = this.generateId();
 
         // Initialize signaling client
+        // Ensure we don't double up the workspace ID if it's already in the serverUrl
+        const baseUrl = this.config.serverUrl.endsWith(this.config.workspaceId)
+            ? this.config.serverUrl
+            : `${this.config.serverUrl}/${encodeURIComponent(this.config.workspaceId)}`;
+
         this.signaling = new SignalingClient({
-            url: `${this.config.serverUrl}/${encodeURIComponent(this.config.workspaceId)}`,
+            url: baseUrl,
             token: this.config.token,
+            tokenProvider: this.config.tokenProvider,
             workspaceId: this.config.workspaceId,
             myId: this.myId,
         });
@@ -96,6 +103,14 @@ export class MeshClient {
         });
 
         this.setupListeners();
+    }
+
+    /**
+     * Updates the authentication token.
+     */
+    public updateToken(token: string): void {
+        this.config.token = token;
+        this.signaling.updateToken(token);
     }
 
     /**
@@ -132,6 +147,21 @@ export class MeshClient {
      */
     public sendToPeer(peerId: string, data: ArrayBuffer | Uint8Array): void {
         this.connections.sendToPeer(peerId, data);
+    }
+
+    /**
+     * Sends binary data to the central authority (Server).
+     */
+    public sendToAuthority(data: Uint8Array): void {
+        this.signaling.sendSync(data);
+    }
+
+    /**
+     * Sends ephemeral JSON data (cursors, typing indicators) to server and peers.
+     * Note: Server handles broadcasting this to other peers if configured.
+     */
+    public sendEphemeral(payload: any, to?: string): void {
+        this.signaling.sendEphemeral(payload, to);
     }
 
     /**
@@ -190,8 +220,11 @@ export class MeshClient {
                 }
             },
             onSignal: (envelope) => this.handleSignal(envelope),
-            onPresence: (userId, status) => this.handlePresence(userId, status),
+            onPresence: (userId, status, meshId) => this.handlePresence(userId, status, meshId),
             onError: (err) => this.emit('error', err),
+            onServerMessage: (data) => this.emit('authorityMessage', data),
+            onInit: (data) => this.emit('init', data),
+            onEphemeral: (payload) => this.emit('ephemeral', payload),
         });
 
         // Connection events
@@ -228,13 +261,14 @@ export class MeshClient {
         }
     }
 
-    private handlePresence(userId: string, status: string): void {
-        logger.mesh(`Presence: ${userId} is ${status}`);
+    private handlePresence(userId: string, status: string, meshId?: string): void {
+        logger.mesh(`Presence: ${userId} (${meshId}) is ${status}`);
 
-        if (userId !== this.myId && status === 'online') {
+        const peerId = meshId || userId;
+        if (peerId !== this.myId && status === 'online') {
             // Deterministic connection initiation to avoid glare
-            if (this.myId > userId && this.config.topology !== 'star') {
-                this.connections.initiateConnection(userId);
+            if (this.myId > peerId && this.config.topology !== 'star') {
+                this.connections.initiateConnection(peerId);
             }
         }
     }
