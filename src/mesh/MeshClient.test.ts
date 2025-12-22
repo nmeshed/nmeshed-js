@@ -88,19 +88,41 @@ describe('MeshClient', () => {
             mesh = new MeshClient(config);
             await mesh.connect();
             expect(mockSignaling.connect).toHaveBeenCalled();
+            expect(mesh.getStatus()).toBe('CONNECTING');
         });
 
-        it('updates status on connect event', async () => {
+        it('supports WASM bootstrapping', async () => {
             mesh = new MeshClient(config);
-            const statusListener = vi.fn();
-            mesh.on('statusChange', statusListener);
+            const wasmInit = vi.fn().mockResolvedValue(undefined);
 
-            // Trigger connect (need access to listeners)
-            // Constructor called above, so listeners captured
+            const connectPromise = mesh.connect(wasmInit);
+            expect(mesh.getStatus()).toBe('INITIALIZING');
+
+            await connectPromise;
+            expect(wasmInit).toHaveBeenCalled();
+            expect(mesh.getStatus()).toBe('CONNECTING');
+        });
+
+        it('updates state to HANDSHAKING on connect event', async () => {
+            mesh = new MeshClient(config);
+            const stateListener = vi.fn();
+            mesh.on('lifecycleStateChange', stateListener);
+
+            await mesh.connect();
             signalingListeners.onConnect();
 
-            expect(mesh.getStatus()).toBe('CONNECTED');
-            expect(statusListener).toHaveBeenCalledWith('CONNECTED');
+            expect(mesh.getStatus()).toBe('HANDSHAKING');
+            expect(stateListener).toHaveBeenCalledWith('HANDSHAKING');
+        });
+
+        it('reaches ACTIVE on init message', async () => {
+            mesh = new MeshClient(config);
+            await mesh.connect();
+            signalingListeners.onConnect();
+
+            signalingListeners.onInit({ workspace_id: 'ws-uuid-36-chars' });
+
+            expect(mesh.getStatus()).toBe('ACTIVE');
         });
     });
 
@@ -178,7 +200,11 @@ describe('MeshClient', () => {
     });
 
     describe('Messaging', () => {
-        beforeEach(() => { mesh = new MeshClient(config); });
+        beforeEach(() => {
+            mesh = new MeshClient(config);
+            // Transition to ACTIVE state so sends are not blocked
+            signalingListeners.onInit({ workspace_id: '550e8400-e29b-41d4-a716-446655440000' });
+        });
 
         it('broadcast uses Hybrid Routing', () => {
             connectionListeners.onPeerJoin('peer-a');
@@ -216,6 +242,19 @@ describe('MeshClient', () => {
                 'peer-b',
                 expect.objectContaining({ type: 'relay' })
             );
+        });
+
+        it('blocks sends when state is not ACTIVE', () => {
+            // Create fresh mesh without calling onInit
+            const freshMesh = new MeshClient(config);
+
+            // Should be IDLE initially
+            expect(freshMesh.getState()).toBe('IDLE');
+
+            freshMesh.broadcast(new Uint8Array([1, 2, 3]));
+            expect(mockConnections.broadcast).not.toHaveBeenCalled();
+
+            expect(freshMesh.canSend()).toBe(false);
         });
     });
 

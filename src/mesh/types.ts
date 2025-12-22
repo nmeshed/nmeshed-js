@@ -54,13 +54,21 @@ export interface SignalEnvelope {
 
 export type MeshTopology = 'star' | 'mesh' | 'hybrid';
 
-export type MeshConnectionStatus =
+/**
+ * Unified lifecycle state machine for the MeshClient.
+ * Coordinates WASM initialization, signaling connection, and authoritative sync.
+ */
+export type MeshLifecycleState =
     | 'IDLE'
-    | 'CONNECTING'
-    | 'CONNECTED'
-    | 'RECONNECTING'
-    | 'DISCONNECTED'
-    | 'ERROR';
+    | 'INITIALIZING' // Loading WASM module
+    | 'CONNECTING'   // Establishing WebSocket signaling
+    | 'HANDSHAKING'  // WebSocket open, awaiting authoritative 'init' message
+    | 'SYNCING'      // 'init' received, applying persistent history/state
+    | 'ACTIVE'       // Fully synchronized and ready for interaction
+    | 'RECONNECTING' // Re-establishing signaling after loss
+    | 'DISCONNECTED' // Intentionally closed
+    | 'ERROR';       // Critical failure
+
 
 export interface MeshClientConfig {
     /** Unique workspace/room identifier */
@@ -102,7 +110,7 @@ export type MeshEventType =
     | 'peerDisconnect'
     | 'message'
     | 'error'
-    | 'statusChange'
+    | 'lifecycleStateChange'
     | 'peerStatus'
     | 'authorityMessage'
     | 'init'
@@ -115,13 +123,13 @@ export interface MeshEventMap {
     peerDisconnect: (peerId: string) => void;
     message: (peerId: string, data: ArrayBuffer) => void;
     error: (error: Error) => void;
-    statusChange: (status: MeshConnectionStatus) => void;
+    lifecycleStateChange: (state: MeshLifecycleState) => void;
     peerStatus: (peerId: string, status: 'relay' | 'p2p') => void;
 
     // Server Authority Messages (Sync/Persistence)
     authorityMessage: (data: Uint8Array) => void;
 
-    // Legacy Init Message
+    // Authoritative Init Message (UUID resolution + History)
     init: (data: any) => void;
 
     // Ephemeral

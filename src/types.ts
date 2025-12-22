@@ -193,4 +193,4 @@ export type PresenceHandler = (user: PresenceMessage['payload']) => void;
 /**
  * Internal resolved configuration with all defaults applied.
  */
-export interface ResolvedConfig extends Required<NMeshedConfig> { }
+export type ResolvedConfig = Required<NMeshedConfig>;

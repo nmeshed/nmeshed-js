@@ -23,7 +23,7 @@ export { ConnectionManager } from './ConnectionManager';
 export type {
     // Mesh types
     MeshClientConfig,
-    MeshConnectionStatus,
+    MeshLifecycleState,
     MeshTopology,
     MeshEventMap,
 

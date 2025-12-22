@@ -25,28 +25,31 @@ export class ProtocolUtils {
         let dataOffset = 0;
 
         switch (signal.type) {
-            case 'join':
+            case 'join': {
                 const wId = builder.createString(signal.workspaceId);
                 Join.startJoin(builder);
                 Join.addWorkspaceId(builder, wId);
                 dataOffset = Join.endJoin(builder);
                 dataType = SignalData.Join;
                 break;
-            case 'offer':
+            }
+            case 'offer': {
                 const sdpOffer = builder.createString(signal.sdp);
                 Offer.startOffer(builder);
                 Offer.addSdp(builder, sdpOffer);
                 dataOffset = Offer.endOffer(builder);
                 dataType = SignalData.Offer;
                 break;
-            case 'answer':
+            }
+            case 'answer': {
                 const sdpAnswer = builder.createString(signal.sdp);
                 Answer.startAnswer(builder);
                 Answer.addSdp(builder, sdpAnswer);
                 dataOffset = Answer.endAnswer(builder);
                 dataType = SignalData.Answer;
                 break;
-            case 'candidate':
+            }
+            case 'candidate': {
                 const candStr = builder.createString(signal.candidate.candidate);
                 const midStr = builder.createString(signal.candidate.sdpMid || '');
                 Candidate.startCandidate(builder);
@@ -56,13 +59,15 @@ export class ProtocolUtils {
                 dataOffset = Candidate.endCandidate(builder);
                 dataType = SignalData.Candidate;
                 break;
-            case 'relay':
+            }
+            case 'relay': {
                 const relayData = Relay.createDataVector(builder, signal.data);
                 Relay.startRelay(builder);
                 Relay.addData(builder, relayData);
                 dataOffset = Relay.endRelay(builder);
                 dataType = SignalData.Relay;
                 break;
+            }
         }
 
         Signal.startSignal(builder);

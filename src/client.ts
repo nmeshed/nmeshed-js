@@ -260,166 +260,168 @@ export class NMeshedClient {
             return Promise.resolve();
         }
 
-        return new Promise(async (resolve, reject) => {
-            this.setStatus('CONNECTING');
-            try {
-                // Initialize WASM Core before connecting
-                if (!this.core) {
-                    await init();
-                    // Map extended modes (performance/strict) to base 'crdt' for WASM
-                    const coreMode = (this.config.syncMode === 'lww') ? 'lww' : 'crdt';
-                    this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
+        return new Promise((resolve, reject) => {
+            (async () => {
+                this.setStatus('CONNECTING');
+                try {
+                    // Initialize WASM Core before connecting
+                    if (!this.core) {
+                        await init();
+                        // Map extended modes (performance/strict) to base 'crdt' for WASM
+                        const coreMode = (this.config.syncMode === 'lww') ? 'lww' : 'crdt';
+                        this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
 
-                    // Merge pre-connect state into the new core
-                    for (const [key, value] of Object.entries(this.preConnectState)) {
-                        try {
-                            const valBytes = encodeValue(value);
-                            this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
-                        } catch (e) {
-                            this.warn('Failed to merge preConnectState for key:', key, e);
+                        // Merge pre-connect state into the new core
+                        for (const [key, value] of Object.entries(this.preConnectState)) {
+                            try {
+                                const valBytes = encodeValue(value);
+                                this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
+                            } catch (e) {
+                                this.warn('Failed to merge preConnectState for key:', key, e);
+                            }
                         }
+                        this.preConnectState = {}; // Clear it
                     }
-                    this.preConnectState = {}; // Clear it
-                }
-            } catch (error) {
-                this.setStatus('ERROR');
-                reject(new ConnectionError(
-                    'Failed to initialize WASM core',
-                    error instanceof Error ? error : new Error(String(error)),
-                    false
-                ));
-                return;
-            }
-
-            this.setStatus('CONNECTING');
-            const url = this.buildUrl();
-            this.log('Connecting to', url.replace(this.config.token, '[REDACTED]'));
-
-            // Set connection timeout
-            if (this.config.connectionTimeout > 0) {
-                this.connectionTimeout = setTimeout(() => {
-                    this.log('Connection timeout');
-                    this.cleanupConnection();
+                } catch (error) {
                     this.setStatus('ERROR');
                     reject(new ConnectionError(
-                        `Connection timed out after ${this.config.connectionTimeout} ms`,
-                        undefined,
-                        true
+                        'Failed to initialize WASM core',
+                        error instanceof Error ? error : new Error(String(error)),
+                        false
                     ));
-                }, this.config.connectionTimeout);
-            }
+                    return;
+                }
 
-            try {
-                this.ws = new WebSocket(url);
-            } catch (error) {
-                this.clearConnectionTimeout();
-                this.setStatus('ERROR');
-                reject(new ConnectionError(
-                    'Failed to create WebSocket',
-                    error instanceof Error ? error : undefined,
-                    false
-                ));
-                return;
-            }
+                this.setStatus('CONNECTING');
+                const url = this.buildUrl();
+                this.log('Connecting to', url.replace(this.config.token, '[REDACTED]'));
 
-            this.ws.onopen = () => {
-                this.clearConnectionTimeout();
-                this.log('WebSocket connected');
-                this.setStatus('CONNECTED');
-                this.reconnectAttempts = 0;
-                this.startHeartbeat();
-                this.flushOperationQueue();
-                resolve();
-            };
+                // Set connection timeout
+                if (this.config.connectionTimeout > 0) {
+                    this.connectionTimeout = setTimeout(() => {
+                        this.log('Connection timeout');
+                        this.cleanupConnection();
+                        this.setStatus('ERROR');
+                        reject(new ConnectionError(
+                            `Connection timed out after ${this.config.connectionTimeout} ms`,
+                            undefined,
+                            true
+                        ));
+                    }, this.config.connectionTimeout);
+                }
 
-            this.ws.onclose = (event) => {
-                this.clearConnectionTimeout();
-                this.log('WebSocket closed', { code: event.code, reason: event.reason });
-                this.handleDisconnect(event.code);
-            };
-
-            this.ws.onerror = () => {
-                this.log('WebSocket error');
-                if (this.status === 'CONNECTING') {
+                try {
+                    this.ws = new WebSocket(url);
+                } catch (error) {
                     this.clearConnectionTimeout();
                     this.setStatus('ERROR');
-                    reject(new ConnectionError('WebSocket connection failed', undefined, true));
+                    reject(new ConnectionError(
+                        'Failed to create WebSocket',
+                        error instanceof Error ? error : undefined,
+                        false
+                    ));
+                    return;
                 }
-            };
 
-            this.ws.binaryType = 'arraybuffer'; // Crucial for performance
+                this.ws.onopen = () => {
+                    this.clearConnectionTimeout();
+                    this.log('WebSocket connected');
+                    this.setStatus('CONNECTED');
+                    this.reconnectAttempts = 0;
+                    this.startHeartbeat();
+                    this.flushOperationQueue();
+                    resolve();
+                };
 
-            this.ws.onmessage = (event) => {
-                // Use duck-typing for ArrayBuffer check (works in Node.js tests)
-                const isBinaryData = event.data instanceof ArrayBuffer ||
-                    (event.data && typeof event.data === 'object' && 'byteLength' in event.data && !('length' in event.data));
+                this.ws.onclose = (event) => {
+                    this.clearConnectionTimeout();
+                    this.log('WebSocket closed', { code: event.code, reason: event.reason });
+                    this.handleDisconnect(event.code);
+                };
 
-                if (isBinaryData) {
-                    // Binary Path (Fast Lane)
-                    try {
-                        // 1. Merge into WASM Core
-                        const result = this.core?.merge_remote_delta(new Uint8Array(event.data)) as any;
+                this.ws.onerror = () => {
+                    this.log('WebSocket error');
+                    if (this.status === 'CONNECTING') {
+                        this.clearConnectionTimeout();
+                        this.setStatus('ERROR');
+                        reject(new ConnectionError('WebSocket connection failed', undefined, true));
+                    }
+                };
 
-                        // 2. State is now updated in Core. 
-                        // Notify listeners based on result type
-                        if (result) {
-                            if (result.type === 'op') {
-                                const syntheticMsg = {
-                                    type: 'op' as const,
-                                    payload: {
-                                        key: result.key,
-                                        value: result.value,
-                                        timestamp: 0
+                this.ws.binaryType = 'arraybuffer'; // Crucial for performance
+
+                this.ws.onmessage = (event) => {
+                    // Use duck-typing for ArrayBuffer check (works in Node.js tests)
+                    const isBinaryData = event.data instanceof ArrayBuffer ||
+                        (event.data && typeof event.data === 'object' && 'byteLength' in event.data && !('length' in event.data));
+
+                    if (isBinaryData) {
+                        // Binary Path (Fast Lane)
+                        try {
+                            // 1. Merge into WASM Core
+                            const result = this.core?.merge_remote_delta(new Uint8Array(event.data)) as any;
+
+                            // 2. State is now updated in Core. 
+                            // Notify listeners based on result type
+                            if (result) {
+                                if (result.type === 'op') {
+                                    const syntheticMsg = {
+                                        type: 'op' as const,
+                                        payload: {
+                                            key: result.key,
+                                            value: result.value,
+                                            timestamp: 0
+                                        }
+                                    };
+
+                                    // Dispatch to listeners (e.g. useDocument, useNmeshed)
+                                    const listeners = Array.from(this.messageListeners);
+                                    for (const listener of listeners) {
+                                        try {
+                                            listener(syntheticMsg as any);
+                                        } catch (error) {
+                                            this.warn('Message listener threw an error:', error);
+                                        }
                                     }
-                                };
+                                } else if (result.type === 'init') {
+                                    // Handle init message from binary protocol
+                                    const syntheticInit = {
+                                        type: 'init' as const,
+                                        data: result.data || {}
+                                    };
 
-                                // Dispatch to listeners (e.g. useDocument, useNmeshed)
-                                const listeners = Array.from(this.messageListeners);
-                                for (const listener of listeners) {
-                                    try {
-                                        listener(syntheticMsg as any);
-                                    } catch (error) {
-                                        this.warn('Message listener threw an error:', error);
-                                    }
-                                }
-                            } else if (result.type === 'init') {
-                                // Handle init message from binary protocol
-                                const syntheticInit = {
-                                    type: 'init' as const,
-                                    data: result.data || {}
-                                };
-
-                                const listeners = Array.from(this.messageListeners);
-                                for (const listener of listeners) {
-                                    try {
-                                        listener(syntheticInit as any);
-                                    } catch (error) {
-                                        this.warn('Message listener threw an error:', error);
+                                    const listeners = Array.from(this.messageListeners);
+                                    for (const listener of listeners) {
+                                        try {
+                                            listener(syntheticInit as any);
+                                        } catch (error) {
+                                            this.warn('Message listener threw an error:', error);
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        this.log('Received Binary Update');
-                    } catch (error) {
-                        this.warn('Failed to merge remote delta:', error);
-                    }
-
-                    // If not an Op, assume Ephemeral/Cursor (Legacy or Spec v2)
-                    const listeners = Array.from(this.ephemeralListeners);
-                    for (const listener of listeners) {
-                        try {
-                            listener(event.data);
+                            this.log('Received Binary Update');
                         } catch (error) {
-                            this.warn('Binary listener threw error:', error);
+                            this.warn('Failed to merge remote delta:', error);
                         }
+
+                        // If not an Op, assume Ephemeral/Cursor (Legacy or Spec v2)
+                        const listeners = Array.from(this.ephemeralListeners);
+                        for (const listener of listeners) {
+                            try {
+                                listener(event.data);
+                            } catch (error) {
+                                this.warn('Binary listener threw error:', error);
+                            }
+                        }
+                    } else {
+                        // TEXT PATH: Control messages only (ephemeral, presence, errors)
+                        // CRDT ops should NEVER be text - only binary Flatbuffers
+                        this.handleControlMessage(event.data);
                     }
-                } else {
-                    // TEXT PATH: Control messages only (ephemeral, presence, errors)
-                    // CRDT ops should NEVER be text - only binary Flatbuffers
-                    this.handleControlMessage(event.data);
-                }
-            };
+                };
+            })().catch(reject);
         });
     }
 
@@ -477,7 +479,7 @@ export class NMeshedClient {
             const type = parsed.type;
 
             switch (type) {
-                case 'presence':
+                case 'presence': {
                     // Real-time presence update from server
                     const presencePayload = parsed.payload || parsed;
                     for (const handler of this.presenceListeners) {
@@ -488,8 +490,9 @@ export class NMeshedClient {
                         }
                     }
                     break;
+                }
 
-                case 'ephemeral':
+                case 'ephemeral': {
                     // Cursor/typing indicators from other clients
                     const ephemeralPayload = parsed.payload || parsed;
                     for (const listener of this.ephemeralListeners) {
@@ -500,6 +503,7 @@ export class NMeshedClient {
                         }
                     }
                     break;
+                }
 
                 case 'error':
                     // Error from server

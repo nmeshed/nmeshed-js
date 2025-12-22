@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { NMeshedClient } from '../client';
 import type { NMeshedConfig } from '../types';
 
@@ -57,19 +57,14 @@ export function NMeshedProvider({
     children,
     autoConnect = true,
 }: NMeshedProviderProps) {
-    const clientRef = useRef<NMeshedClient | null>(null);
-
-    // Create client on first render
-    if (!clientRef.current) {
-        clientRef.current = new NMeshedClient(config);
-    }
+    // Create client on first render (guaranteed singleton)
+    const [client] = useState(() => new NMeshedClient(config));
 
     useEffect(() => {
-        const client = clientRef.current;
         if (!client) return;
 
         if (autoConnect) {
-            client.connect().catch((error) => {
+            client.connect().catch((error: unknown) => {
                 console.error('[nMeshed] Auto-connect failed:', error);
             });
         }
@@ -77,10 +72,10 @@ export function NMeshedProvider({
         return () => {
             client.disconnect();
         };
-    }, [autoConnect]);
+    }, [autoConnect, client]);
 
     return (
-        <NMeshedContext.Provider value={clientRef.current}>
+        <NMeshedContext.Provider value={client}>
             {children}
         </NMeshedContext.Provider>
     );

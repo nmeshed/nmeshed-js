@@ -34,7 +34,7 @@ import { ConnectionManager } from './ConnectionManager';
 import type {
     MeshClientConfig,
     ResolvedMeshConfig,
-    MeshConnectionStatus,
+    MeshLifecycleState,
     MeshEventMap,
     SignalEnvelope,
     OfferSignal,
@@ -60,12 +60,14 @@ export class MeshClient {
     private config: ResolvedMeshConfig;
     private signaling: SignalingClient;
     private connections: ConnectionManager;
-    private status: MeshConnectionStatus = 'IDLE';
+    private state: MeshLifecycleState = 'IDLE';
     private myId: string;
     private peerStatus: Map<string, 'relay' | 'p2p'> = new Map();
 
+    private syncTimeout: ReturnType<typeof setTimeout> | null = null;
+
     // Event listeners
-    private eventListeners: Map<keyof MeshEventMap, Set<Function>> = new Map();
+    private eventListeners: Map<keyof MeshEventMap, Set<(...args: any[]) => void>> = new Map();
 
     constructor(config: MeshClientConfig) {
         if (!config.workspaceId || (!config.token && !config.tokenProvider)) {
@@ -116,13 +118,26 @@ export class MeshClient {
 
     /**
      * Connects to the mesh network.
+     * @param wasmInit - Optional async function to initialize WASM before connecting.
      */
-    public async connect(): Promise<void> {
-        if (this.status === 'CONNECTED' || this.status === 'CONNECTING') {
+    public async connect(wasmInit?: () => Promise<void>): Promise<void> {
+        if (this.state !== 'IDLE' && this.state !== 'DISCONNECTED' && this.state !== 'ERROR') {
             return;
         }
 
-        this.setStatus('CONNECTING');
+        if (wasmInit) {
+            this.setState('INITIALIZING');
+            try {
+                await wasmInit();
+            } catch (e) {
+                logger.error('WASM Initialization failed', e);
+                this.setState('ERROR');
+                this.emit('error', e instanceof Error ? e : new Error(String(e)));
+                return;
+            }
+        }
+
+        this.setState('CONNECTING');
         this.signaling.connect();
     }
 
@@ -132,15 +147,21 @@ export class MeshClient {
     public disconnect(): void {
         this.connections.closeAll();
         this.signaling.close();
-        this.setStatus('DISCONNECTED');
+        this.setState('DISCONNECTED');
         this.emit('disconnect');
     }
 
     /**
      * Broadcasts binary data to all connected peers.
      * Uses Hybrid Routing: P2P for peers with open DataChannels, Relay for others.
+     * Note: No-op if sync state is not ACTIVE (prevents empty snapshots before hydration).
      */
     public broadcast(data: ArrayBuffer | Uint8Array): void {
+        if (!this.canSend()) {
+            logger.mesh('Broadcast blocked - state is ' + this.state);
+            return;
+        }
+
         const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
 
         // 1. Send via Relay (WebSocket) to everyone not yet on P2P
@@ -159,8 +180,14 @@ export class MeshClient {
      * Sends binary data to a specific peer.
      * Uses Hybrid Routing: Prioritizes P2P (WebRTC) if the DataChannel is open,
      * otherwise falls back to WebSocket Relay to ensure delivery.
+     * Note: No-op if sync state is not ACTIVE (prevents empty snapshots before hydration).
      */
     public sendToPeer(peerId: string, data: ArrayBuffer | Uint8Array): void {
+        if (!this.canSend()) {
+            logger.mesh('SendToPeer blocked - state is ' + this.state);
+            return;
+        }
+
         const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
         const status = this.peerStatus.get(peerId);
 
@@ -198,8 +225,8 @@ export class MeshClient {
     /**
      * Gets the current connection status.
      */
-    public getStatus(): MeshConnectionStatus {
-        return this.status;
+    public getStatus(): MeshLifecycleState {
+        return this.state;
     }
 
     /**
@@ -207,6 +234,17 @@ export class MeshClient {
      */
     public getId(): string {
         return this.myId;
+    }
+
+    /**
+     * Gets the current sync state.
+     */
+    public getState(): MeshLifecycleState {
+        return this.state;
+    }
+
+    public canSend(): boolean {
+        return this.state === 'ACTIVE';
     }
 
     /**
@@ -235,26 +273,61 @@ export class MeshClient {
         // Signaling events
         this.signaling.setListeners({
             onConnect: () => {
-                this.setStatus('CONNECTED');
+                this.setState('HANDSHAKING');
                 this.emit('connect');
+                // Start sync timeout - if no init received in 5s, assume we are the authority
+                this.syncTimeout = setTimeout(() => {
+                    if (this.state !== 'ACTIVE') {
+                        logger.mesh('Sync timeout - transitioning to ACTIVE');
+                        this.setState('ACTIVE');
+                    }
+                }, 5000);
             },
             onDisconnect: () => {
-                if (this.status !== 'DISCONNECTED') {
-                    this.setStatus('RECONNECTING');
+                if (this.state !== 'DISCONNECTED') {
+                    this.setState('RECONNECTING');
                 }
             },
             onSignal: (envelope) => this.handleSignal(envelope),
             onPresence: (userId, status, meshId) => this.handlePresence(userId, status, meshId),
-            onError: (err) => this.emit('error', err),
-            onServerMessage: (data) => this.emit('authorityMessage', data),
-            onInit: (data) => this.emit('init', data),
+            onError: (err) => {
+                this.setState('ERROR');
+                this.emit('error', err);
+            },
+            onServerMessage: (data) => {
+                // Transition to ACTIVE on authoritative server message
+                if (this.state !== 'ACTIVE') {
+                    this.setState('ACTIVE');
+                }
+                this.emit('authorityMessage', data);
+            },
+            onInit: (data) => {
+                const actualPayload = data.payload || data;
+                const resolvedId = actualPayload.workspace_id || actualPayload.workspaceId;
+
+                if (resolvedId && resolvedId.length === 36 && this.config.workspaceId !== resolvedId) {
+                    logger.mesh(`Authoritative UUID resolved: ${resolvedId}`);
+                    this.config.workspaceId = resolvedId;
+                }
+
+                // Transition HANDSHAKING -> SYNCING -> ACTIVE
+                this.setState('SYNCING');
+                this.emit('init', actualPayload);
+                this.setState('ACTIVE');
+            },
             onEphemeral: (payload) => this.emit('ephemeral', payload),
         });
 
         // Connection events
         this.connections.setListeners({
             onSignal: (to, signal) => this.signaling.sendSignal(to, signal),
-            onMessage: (peerId, data) => this.emit('message', peerId, data),
+            onMessage: (peerId, data) => {
+                // Transition to ACTIVE on first P2P message (peer has state)
+                if (this.state === 'HANDSHAKING' || this.state === 'CONNECTING') {
+                    this.setState('ACTIVE');
+                }
+                this.emit('message', peerId, data);
+            },
             onPeerJoin: (peerId) => {
                 this.peerStatus.set(peerId, 'p2p');
                 this.emit('peerStatus', peerId, 'p2p');
@@ -289,7 +362,7 @@ export class MeshClient {
             case 'candidate':
                 this.connections.handleCandidate(from, (signal as CandidateSignal).candidate);
                 break;
-            case 'relay':
+            case 'relay': {
                 // Incoming relayed P2P message
                 // Safety: Convert to ArrayBuffer correctly (respecting view offsets if any)
                 const arrayBuffer = (signal as any).data.buffer.slice(
@@ -298,6 +371,7 @@ export class MeshClient {
                 );
                 this.emit('message', from, arrayBuffer);
                 break;
+            }
         }
     }
 
@@ -325,11 +399,17 @@ export class MeshClient {
         }
     }
 
-    private setStatus(newStatus: MeshConnectionStatus): void {
-        if (this.status !== newStatus) {
-            logger.mesh(`Status: ${this.status} -> ${newStatus}`);
-            this.status = newStatus;
-            this.emit('statusChange', newStatus);
+    private setState(newState: MeshLifecycleState): void {
+        if (this.state !== newState) {
+            logger.mesh(`Lifecycle: ${this.state} -> ${newState}`);
+            this.state = newState;
+            this.emit('lifecycleStateChange', newState);
+
+            // Clear timeout once we reach ACTIVE
+            if (newState === 'ACTIVE' && this.syncTimeout) {
+                clearTimeout(this.syncTimeout);
+                this.syncTimeout = null;
+            }
         }
     }
 
@@ -338,7 +418,7 @@ export class MeshClient {
         if (listeners) {
             for (const handler of listeners) {
                 try {
-                    (handler as Function)(...args);
+                    (handler as (...args: any[]) => void)(...args);
                 } catch (e) {
                     logger.error(`Error in ${event} handler:`, e);
                 }
@@ -350,7 +430,7 @@ export class MeshClient {
      * Permanently destroys the MeshClient, closing all connections and removing listeners.
      */
     public destroy(): void {
-        this.setStatus('DISCONNECTED');
+        this.setState('DISCONNECTED');
         this.connections.closeAll();
         this.signaling.close();
         this.eventListeners.clear();

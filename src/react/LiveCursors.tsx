@@ -51,6 +51,8 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
     const [activeIds, setActiveIds] = useState<string[]>([]);
 
     // 3. Game Loop (Animation Frame)
+    const animateRef = useRef<() => void>();
+
     const animate = useCallback(() => {
         const LERP_FACTOR = 0.2; // Smoothness tuning
 
@@ -78,14 +80,23 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
             }
         }
 
-        requestRef.current = requestAnimationFrame(animate);
+        if (animateRef.current) {
+            requestRef.current = requestAnimationFrame(animateRef.current);
+        }
     }, [activeIds]);
+
+    // Keep ref updated
+    useEffect(() => {
+        animateRef.current = animate;
+    }, [animate]);
 
     // Start/Stop Loop
     useEffect(() => {
-        requestRef.current = requestAnimationFrame(animate);
+        if (animateRef.current) {
+            requestRef.current = requestAnimationFrame(animateRef.current);
+        }
         return () => cancelAnimationFrame(requestRef.current);
-    }, [animate]);
+    }, []);
 
     // 4. Handle Incoming Broadcasts
     const handleBroadcast = useCallback((payload: unknown) => {
@@ -179,6 +190,7 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
     return (
         <div className="pointer-events-none fixed inset-0 overflow-hidden z-[9999]">
             {activeIds.map(id => {
+                // eslint-disable-next-line react-hooks/rules-of-hooks
                 const state = cursorState.current[id];
                 if (!state) return null;
 

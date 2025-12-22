@@ -101,17 +101,10 @@ export function useDocument<T = unknown>(
     const { key, initialValue } = options;
     const client = useNmeshedContext();
 
-    const [value, setLocalValue] = useState<T | undefined>(initialValue);
-    const [isLoaded, setIsLoaded] = useState(false);
+    const [value, setLocalValue] = useState<T | undefined>(() => client.get<T>(key) ?? initialValue);
+    const [isLoaded, setIsLoaded] = useState(() => client.get<T>(key) !== undefined);
 
     useEffect(() => {
-        // Check if value already exists in client state
-        const existing = client.get<T>(key);
-        if (existing !== undefined) {
-            setLocalValue(existing);
-            setIsLoaded(true);
-        }
-
         // Subscribe to updates
         const unsubscribe = client.onMessage((message: NMeshedMessage) => {
             if (message.type === 'init' && key in message.data) {
