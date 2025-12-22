@@ -2,11 +2,11 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
-import { Answer, AnswerT } from '../nmeshed/answer.js';
-import { Candidate, CandidateT } from '../nmeshed/candidate.js';
-import { Join, JoinT } from '../nmeshed/join.js';
-import { Offer, OfferT } from '../nmeshed/offer.js';
-import { Relay, RelayT } from '../nmeshed/relay.js';
+import { Answer } from '../nmeshed/answer.js';
+import { Candidate } from '../nmeshed/candidate.js';
+import { Join } from '../nmeshed/join.js';
+import { Offer } from '../nmeshed/offer.js';
+import { Relay } from '../nmeshed/relay.js';
 
 
 export enum SignalData {

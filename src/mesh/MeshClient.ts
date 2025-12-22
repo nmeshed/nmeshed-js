@@ -62,6 +62,7 @@ export class MeshClient {
     private connections: ConnectionManager;
     private status: MeshConnectionStatus = 'IDLE';
     private myId: string;
+    private peerStatus: Map<string, 'relay' | 'p2p'> = new Map();
 
     // Event listeners
     private eventListeners: Map<keyof MeshEventMap, Set<Function>> = new Map();
@@ -137,16 +138,39 @@ export class MeshClient {
 
     /**
      * Broadcasts binary data to all connected peers.
+     * Uses Hybrid Routing: P2P for peers with open DataChannels, Relay for others.
      */
     public broadcast(data: ArrayBuffer | Uint8Array): void {
+        const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+
+        // 1. Send via Relay (WebSocket) to everyone not yet on P2P
+        // We also send to "server" if we want authority processing
+        this.peerStatus.forEach((status, peerId) => {
+            if (status !== 'p2p') {
+                this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+            }
+        });
+
+        // 2. Send via P2P (DataChannel)
         this.connections.broadcast(data);
     }
 
     /**
      * Sends binary data to a specific peer.
+     * Uses Hybrid Routing: Prioritizes P2P (WebRTC) if the DataChannel is open,
+     * otherwise falls back to WebSocket Relay to ensure delivery.
      */
     public sendToPeer(peerId: string, data: ArrayBuffer | Uint8Array): void {
-        this.connections.sendToPeer(peerId, data);
+        const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        const status = this.peerStatus.get(peerId);
+
+        // Routing Decision: If P2P is active and verified, use it.
+        // Otherwise, use the reliable Relay path.
+        if (status === 'p2p' && this.connections.isDirect(peerId)) {
+            this.connections.sendToPeer(peerId, data);
+        } else {
+            this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+        }
     }
 
     /**
@@ -231,8 +255,15 @@ export class MeshClient {
         this.connections.setListeners({
             onSignal: (to, signal) => this.signaling.sendSignal(to, signal),
             onMessage: (peerId, data) => this.emit('message', peerId, data),
-            onPeerJoin: (peerId) => this.emit('peerJoin', peerId),
-            onPeerDisconnect: (peerId) => this.emit('peerDisconnect', peerId),
+            onPeerJoin: (peerId) => {
+                this.peerStatus.set(peerId, 'p2p');
+                this.emit('peerStatus', peerId, 'p2p');
+                this.emit('peerJoin', peerId);
+            },
+            onPeerDisconnect: (peerId) => {
+                this.peerStatus.delete(peerId);
+                this.emit('peerDisconnect', peerId);
+            },
         });
     }
 
@@ -258,6 +289,15 @@ export class MeshClient {
             case 'candidate':
                 this.connections.handleCandidate(from, (signal as CandidateSignal).candidate);
                 break;
+            case 'relay':
+                // Incoming relayed P2P message
+                // Safety: Convert to ArrayBuffer correctly (respecting view offsets if any)
+                const arrayBuffer = (signal as any).data.buffer.slice(
+                    (signal as any).data.byteOffset,
+                    (signal as any).data.byteOffset + (signal as any).data.byteLength
+                );
+                this.emit('message', from, arrayBuffer);
+                break;
         }
     }
 
@@ -265,10 +305,22 @@ export class MeshClient {
         logger.mesh(`Presence: ${userId} (${meshId}) is ${status}`);
 
         const peerId = meshId || userId;
-        if (peerId !== this.myId && status === 'online') {
-            // Deterministic connection initiation to avoid glare
-            if (this.myId > peerId && this.config.topology !== 'star') {
-                this.connections.initiateConnection(peerId);
+        if (peerId !== this.myId) {
+            if (status === 'online') {
+                // Initialize as Relay
+                if (!this.peerStatus.has(peerId)) {
+                    this.peerStatus.set(peerId, 'relay');
+                    this.emit('peerStatus', peerId, 'relay');
+                    this.emit('peerJoin', peerId); // Trigger join immediately via Relay
+                }
+
+                // Deterministic connection initiation to avoid glare
+                if (this.myId > peerId && this.config.topology !== 'star') {
+                    this.connections.initiateConnection(peerId);
+                }
+            } else if (status === 'offline') {
+                this.peerStatus.delete(peerId);
+                this.emit('peerDisconnect', peerId);
             }
         }
     }
@@ -292,6 +344,18 @@ export class MeshClient {
                 }
             }
         }
+    }
+
+    /**
+     * Permanently destroys the MeshClient, closing all connections and removing listeners.
+     */
+    public destroy(): void {
+        this.setStatus('DISCONNECTED');
+        this.connections.closeAll();
+        this.signaling.close();
+        this.eventListeners.clear();
+        this.peerStatus.clear();
+        logger.mesh('MeshClient destroyed.');
     }
 
     private generateId(): string {

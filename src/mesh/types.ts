@@ -10,7 +10,7 @@
 //           SIGNAL TYPES
 // ============================================
 
-export type SignalType = 'join' | 'offer' | 'answer' | 'candidate';
+export type SignalType = 'join' | 'offer' | 'answer' | 'candidate' | 'relay';
 
 export interface BaseSignal {
     type: SignalType;
@@ -36,7 +36,12 @@ export interface CandidateSignal extends BaseSignal {
     candidate: RTCIceCandidateInit;
 }
 
-export type SignalMessage = JoinSignal | OfferSignal | AnswerSignal | CandidateSignal;
+export interface RelaySignal extends BaseSignal {
+    type: 'relay';
+    data: Uint8Array;
+}
+
+export type SignalMessage = JoinSignal | OfferSignal | AnswerSignal | CandidateSignal | RelaySignal;
 
 export interface SignalEnvelope {
     from: string;
@@ -97,7 +102,11 @@ export type MeshEventType =
     | 'peerDisconnect'
     | 'message'
     | 'error'
-    | 'statusChange';
+    | 'statusChange'
+    | 'peerStatus'
+    | 'authorityMessage'
+    | 'init'
+    | 'ephemeral';
 
 export interface MeshEventMap {
     connect: () => void;
@@ -107,6 +116,7 @@ export interface MeshEventMap {
     message: (peerId: string, data: ArrayBuffer) => void;
     error: (error: Error) => void;
     statusChange: (status: MeshConnectionStatus) => void;
+    peerStatus: (peerId: string, status: 'relay' | 'p2p') => void;
 
     // Server Authority Messages (Sync/Persistence)
     authorityMessage: (data: Uint8Array) => void;

@@ -175,19 +175,6 @@ export class SignalingClient {
         // Send Binary Join
         this.sendSignal('server', joinPayload);
 
-        // Also send legacy JSON for compatibility if needed (matches factory-mesh)
-        const legacyMsg = JSON.stringify({
-            type: 'signal',
-            to: 'server',
-            from: this.config.myId,
-            payload: joinPayload,
-            signal: joinPayload
-        });
-        if (this.ws) {
-            this.ws.send(JSON.stringify({ type: 'join', payload: joinPayload }));
-            this.ws.send(legacyMsg);
-        }
-
         this.listeners.onConnect?.();
     }
 

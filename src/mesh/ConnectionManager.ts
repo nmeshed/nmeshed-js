@@ -49,6 +49,14 @@ export class ConnectionManager {
     }
 
     /**
+     * Checks if a peer has a direct, open P2P channel.
+     */
+    public isDirect(peerId: string): boolean {
+        const dc = this.dataChannels.get(peerId);
+        return dc !== undefined && dc.readyState === 'open';
+    }
+
+    /**
      * Broadcasts binary data to all connected peers.
      */
     public broadcast(data: ArrayBuffer | Uint8Array) {
@@ -218,17 +226,28 @@ export class ConnectionManager {
     }
 
     private cleanupPeer(peerId: string) {
+        let removed = false;
+
         const pc = this.peers.get(peerId);
         if (pc) {
-            pc.close();
+            try {
+                pc.close();
+            } catch (e) { /* ignore */ }
             this.peers.delete(peerId);
+            removed = true;
         }
-        this.dataChannels.delete(peerId);
 
-        try {
-            this.listeners.onPeerDisconnect?.(peerId);
-        } catch (e) {
-            logger.error(`Error in onPeerDisconnect for ${peerId}:`, e);
+        if (this.dataChannels.has(peerId)) {
+            this.dataChannels.delete(peerId);
+            removed = true; // Consider it 'removed' if we had a channel too
+        }
+
+        if (removed) {
+            try {
+                this.listeners.onPeerDisconnect?.(peerId);
+            } catch (e) {
+                logger.error(`Error in onPeerDisconnect for ${peerId}:`, e);
+            }
         }
     }
 }

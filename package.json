@@ -74,6 +74,7 @@
         "@testing-library/react": "^15.0.7",
         "@types/node": "^20.10.0",
         "@types/react": "^18.3.27",
+        "@vitest/coverage-v8": "^4.0.15",
         "eslint": "^8.55.0",
         "jsdom": "^24.1.3",
         "react": "^18.2.0",

@@ -8,6 +8,7 @@ import { Join } from '../schema/nmeshed/join';
 import { Offer } from '../schema/nmeshed/offer';
 import { Answer } from '../schema/nmeshed/answer';
 import { Candidate } from '../schema/nmeshed/candidate';
+import { Relay } from '../schema/nmeshed/relay';
 import { SignalMessage } from './types';
 
 export class ProtocolUtils {
@@ -54,6 +55,13 @@ export class ProtocolUtils {
                 Candidate.addSdpMLineIndex(builder, signal.candidate.sdpMLineIndex || 0);
                 dataOffset = Candidate.endCandidate(builder);
                 dataType = SignalData.Candidate;
+                break;
+            case 'relay':
+                const relayData = Relay.createDataVector(builder, signal.data);
+                Relay.startRelay(builder);
+                Relay.addData(builder, relayData);
+                dataOffset = Relay.endRelay(builder);
+                dataType = SignalData.Relay;
                 break;
         }
 
