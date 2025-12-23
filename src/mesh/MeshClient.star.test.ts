@@ -56,7 +56,7 @@ describe('MeshClient Star Topology', () => {
             topology: 'star'
         });
 
-        // @ts-ignore - checking private field for test
+        // @ts-expect-error - reaching into internals for test - checking private field for test
         expect(mesh.effectiveTopology).toBe('star');
     });
 
@@ -112,13 +112,13 @@ describe('MeshClient Star Topology', () => {
 
         // Add first peer
         signalingHandlers.onPresence('peer-1', 'online', 'p1');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('mesh');
         expect(topologyChangeListener).not.toHaveBeenCalled();
 
         // Add second peer (exceeds limit of 1)
         signalingHandlers.onPresence('peer-2', 'online', 'p2');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('star');
         expect(topologyChangeListener).toHaveBeenCalledWith('star', 'peer_limit_exceeded');
     });
@@ -134,7 +134,7 @@ describe('MeshClient Star Topology', () => {
         // Trigger downgrade
         signalingHandlers.onPresence('peer-1', 'online', 'p1');
         signalingHandlers.onPresence('peer-2', 'online', 'p2');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('star');
 
         const topologyChangeListener = vi.fn();
@@ -142,7 +142,7 @@ describe('MeshClient Star Topology', () => {
 
         // Remove peer
         signalingHandlers.onPresence('peer-2', 'offline', 'p2');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('mesh');
         expect(topologyChangeListener).toHaveBeenCalledWith('mesh', 'peer_limit_restored');
     });
@@ -156,11 +156,11 @@ describe('MeshClient Star Topology', () => {
         });
 
         signalingHandlers.onPresence('peer-1', 'online', 'p1');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('star');
 
         signalingHandlers.onPresence('peer-2', 'online', 'p2');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test
         expect(mesh.effectiveTopology).toBe('star');
     });
 });

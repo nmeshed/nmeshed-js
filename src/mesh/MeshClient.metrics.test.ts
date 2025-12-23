@@ -67,9 +67,9 @@ describe('MeshClient Connection Metrics', () => {
         mesh.on('metricsUpdate', metricsListener);
 
         // Mock some peers
-        // @ts-ignore - reaching into private state for test setup
+        // @ts-expect-error - reaching into internals for test setup
         mesh.peerStatus.set('peer-1', 'p2p');
-        // @ts-ignore
+        // @ts-expect-error - reaching into internals for test setup
         mesh.peerStatus.set('peer-2', 'relay');
 
         // Advance time and wait for the interval to trigger

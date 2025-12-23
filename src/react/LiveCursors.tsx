@@ -99,7 +99,7 @@ export function LiveCursors() {
     const cursorState = useRef<Record<string, CursorState>>({});
     const domRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const requestRef = useRef<number>(0);
-    const lastFrameTime = useRef<number>(performance.now());
+    const lastFrameTime = useRef<number>(0);
 
     // 2. React State (Only for mounting/unmounting DOM elements)
     const [activeIds, setActiveIds] = useState<string[]>([]);
@@ -144,19 +144,15 @@ export function LiveCursors() {
     }, [cursors]);
 
     // 4. Animation Loop (Frame-rate independent LERP)
-    const animate = useCallback((timestamp: number) => {
+    const animate = useCallback(function animate(timestamp: number) {
         // Calculate delta time for frame-rate independence
         const deltaTime = timestamp - lastFrameTime.current;
         lastFrameTime.current = timestamp;
 
         // Normalize LERP factor to ~60fps baseline
-        // At 60fps, deltaTime ≈ 16.67ms, lerpFactor ≈ 0.2
-        // At 120fps, deltaTime ≈ 8.33ms, lerpFactor ≈ 0.1 (smoother, same speed)
-        // At 30fps, deltaTime ≈ 33.33ms, lerpFactor ≈ 0.4 (catches up faster)
         const baseLerpFactor = 0.2;
         const lerpFactor = Math.min(1, (deltaTime / 16.67) * baseLerpFactor);
 
-        // Get current activeIds from state snapshot (avoid stale closure)
         const currentIds = Object.keys(cursorState.current);
 
         for (const id of currentIds) {
@@ -164,11 +160,9 @@ export function LiveCursors() {
             const el = domRefs.current[id];
 
             if (cursor && el) {
-                // LERP: Current + (Target - Current) * Factor
                 const dx = cursor.targetX - cursor.x;
                 const dy = cursor.targetY - cursor.y;
 
-                // Snap if close to stop micro-jitter
                 if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
                     cursor.x = cursor.targetX;
                     cursor.y = cursor.targetY;
@@ -177,13 +171,12 @@ export function LiveCursors() {
                     cursor.y += dy * lerpFactor;
                 }
 
-                // Direct DOM update (Zero React Overhead)
                 el.style.transform = `translate3d(${cursor.x}px, ${cursor.y}px, 0)`;
             }
         }
 
         requestRef.current = requestAnimationFrame(animate);
-    }, []); // No dependencies — reads directly from refs
+    }, []);
 
     // Start/Stop Animation Loop
     useEffect(() => {
