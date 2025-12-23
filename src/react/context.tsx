@@ -1,11 +1,20 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { NMeshedClient } from '../client';
-import type { NMeshedConfig } from '../types';
+import type { NMeshedConfig, ConnectionStatus } from '../types';
+
+/**
+ * Context value shape with connection state exposure.
+ */
+interface NMeshedContextValue {
+    client: NMeshedClient;
+    status: ConnectionStatus;
+    error: Error | null;
+}
 
 /**
  * Context for sharing an nMeshed client across components.
  */
-const NMeshedContext = createContext<NMeshedClient | null>(null);
+const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 
 /**
  * Props for NMeshedProvider.
@@ -26,18 +35,34 @@ export interface NMeshedProviderProps {
      * @default true
      */
     autoConnect?: boolean;
+
+    /**
+     * Optional callback for connection errors.
+     * Called in addition to setting the error state.
+     */
+    onError?: (error: Error) => void;
+
+    /**
+     * Optional callback for status changes.
+     */
+    onStatusChange?: (status: ConnectionStatus) => void;
 }
 
 /**
  * Provider component that creates and manages an nMeshed client.
- * 
+ *
  * Wrap your app (or a portion of it) with this provider to share
  * a single client instance across multiple components.
- * 
+ *
+ * ## Connection State Exposure
+ * Unlike silent failures, this provider exposes connection state
+ * and errors to consumers via context. Use `useNmeshedStatus()` to
+ * access connection health in child components.
+ *
  * @example
  * ```tsx
  * import { NMeshedProvider } from 'nmeshed/react';
- * 
+ *
  * function App() {
  *   return (
  *     <NMeshedProvider
@@ -45,6 +70,7 @@ export interface NMeshedProviderProps {
  *         workspaceId: 'my-workspace',
  *         token: 'jwt-token'
  *       }}
+ *       onError={(err) => console.error('Connection failed:', err)}
  *     >
  *       <MyCollaborativeApp />
  *     </NMeshedProvider>
@@ -56,26 +82,64 @@ export function NMeshedProvider({
     config,
     children,
     autoConnect = true,
+    onError,
+    onStatusChange,
 }: NMeshedProviderProps) {
     // Create client on first render (guaranteed singleton)
     const [client] = useState(() => new NMeshedClient(config));
+    const [status, setStatus] = useState<ConnectionStatus>('IDLE');
+    const [error, setError] = useState<Error | null>(null);
 
+    // Subscribe to status changes
     useEffect(() => {
         if (!client) return;
 
-        if (autoConnect) {
-            client.connect().catch((error: unknown) => {
-                console.error('[nMeshed] Auto-connect failed:', error);
-            });
-        }
+        const unsubscribe = client.onStatusChange((newStatus) => {
+            setStatus(newStatus);
+            onStatusChange?.(newStatus);
+
+            // Clear error on successful connection
+            if (newStatus === 'CONNECTED') {
+                setError(null);
+            }
+        });
+
+        return unsubscribe;
+    }, [client, onStatusChange]);
+
+    // Handle auto-connect with proper error surfacing
+    useEffect(() => {
+        if (!client || !autoConnect) return;
+
+        const performConnect = async () => {
+            try {
+                await client.connect();
+            } catch (err) {
+                const connectionError = err instanceof Error
+                    ? err
+                    : new Error(String(err));
+
+                console.error('[nMeshed] Auto-connect failed:', connectionError);
+                setError(connectionError);
+                onError?.(connectionError);
+            }
+        };
+
+        performConnect();
 
         return () => {
             client.disconnect();
         };
-    }, [autoConnect, client]);
+    }, [autoConnect, client, onError]);
+
+    const contextValue: NMeshedContextValue = {
+        client,
+        status,
+        error,
+    };
 
     return (
-        <NMeshedContext.Provider value={client}>
+        <NMeshedContext.Provider value={contextValue}>
             {children}
         </NMeshedContext.Provider>
     );
@@ -83,34 +147,70 @@ export function NMeshedProvider({
 
 /**
  * Hook to access the nMeshed client from context.
- * 
+ *
  * Must be used within an NMeshedProvider.
- * 
+ *
  * @returns The nMeshed client instance
  * @throws {Error} If used outside of NMeshedProvider
- * 
+ *
  * @example
  * ```tsx
  * function MyComponent() {
  *   const client = useNmeshedContext();
- *   
+ *
  *   const handleClick = () => {
  *     client.set('clicked', true);
  *   };
- *   
+ *
  *   return <button onClick={handleClick}>Click me</button>;
  * }
  * ```
  */
 export function useNmeshedContext(): NMeshedClient {
-    const client = useContext(NMeshedContext);
+    const context = useContext(NMeshedContext);
 
-    if (!client) {
+    if (!context) {
         throw new Error(
             'useNmeshedContext must be used within an NMeshedProvider. ' +
             'Wrap your component tree with <NMeshedProvider>.'
         );
     }
 
-    return client;
+    return context.client;
+}
+
+/**
+ * Hook to access connection status and error state.
+ *
+ * Use this to show connection UI (spinner, error message, etc.)
+ * or to conditionally render based on connection health.
+ *
+ * @returns Object with status and error
+ *
+ * @example
+ * ```tsx
+ * function ConnectionIndicator() {
+ *   const { status, error } = useNmeshedStatus();
+ *
+ *   if (status === 'CONNECTING') return <Spinner />;
+ *   if (status === 'ERROR') return <ErrorBanner message={error?.message} />;
+ *   if (status === 'CONNECTED') return <GreenDot />;
+ *   return null;
+ * }
+ * ```
+ */
+export function useNmeshedStatus(): { status: ConnectionStatus; error: Error | null } {
+    const context = useContext(NMeshedContext);
+
+    if (!context) {
+        throw new Error(
+            'useNmeshedStatus must be used within an NMeshedProvider. ' +
+            'Wrap your component tree with <NMeshedProvider>.'
+        );
+    }
+
+    return {
+        status: context.status,
+        error: context.error,
+    };
 }

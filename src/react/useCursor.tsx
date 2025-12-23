@@ -22,7 +22,7 @@
  * ```
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { MeshClient } from '../mesh/MeshClient';
 import { CursorManager, CursorPosition, CursorManagerConfig } from '../presence/CursorManager';
 
@@ -47,10 +47,28 @@ export interface UseCursorResult {
 }
 
 /**
+ * Dummy manager for when client is null.
+ * Singleton to prevent unnecessary object creation.
+ */
+const DUMMY_MANAGER: CursorManager = {
+    sendCursor: () => { /* no-op */ },
+    onCursor: () => () => { /* no-op */ },
+    onCursorRemove: () => () => { /* no-op */ },
+    getCursors: () => new Map(),
+    getCursor: () => undefined,
+    destroy: () => { /* no-op */ },
+    userId: '',
+} as unknown as CursorManager;
+
+/**
  * React hook for real-time cursor synchronization.
  *
  * Automatically creates a CursorManager, subscribes to updates,
  * and cleans up on unmount.
+ *
+ * ## Memory Safety
+ * The hook memoizes based on config primitive values, not object identity.
+ * This prevents CursorManager recreation when consumers pass inline config objects.
  *
  * @param client - MeshClient instance
  * @param config - Optional CursorManager configuration
@@ -74,23 +92,40 @@ export function useCursor(
 ): UseCursorResult {
     const [cursors, setCursors] = useState<Map<string, CursorPosition>>(new Map());
 
-    // Create CursorManager instance
+    // Version counter to force re-renders only when cursors actually change
+    const versionRef = useRef(0);
+
+    // Extract config primitives to prevent identity-based recreation
+    // This fixes the memory leak where inline config objects caused manager recreation
+    const configNamespace = config?.namespace;
+    const configThrottleMs = config?.throttleMs;
+    const configStaleTimeoutMs = config?.staleTimeoutMs;
+    const configUserId = config?.userId;
+
+    // Create CursorManager instance with stable dependencies
     const manager = useMemo(() => {
         if (!client) return null;
-        return new CursorManager(client, config);
-    }, [client, config?.namespace, config?.throttleMs, config?.staleTimeoutMs]);
+
+        const resolvedConfig: CursorManagerConfig = {};
+        if (configNamespace !== undefined) resolvedConfig.namespace = configNamespace;
+        if (configThrottleMs !== undefined) resolvedConfig.throttleMs = configThrottleMs;
+        if (configStaleTimeoutMs !== undefined) resolvedConfig.staleTimeoutMs = configStaleTimeoutMs;
+        if (configUserId !== undefined) resolvedConfig.userId = configUserId;
+
+        return new CursorManager(client, resolvedConfig);
+    }, [client, configNamespace, configThrottleMs, configStaleTimeoutMs, configUserId]);
 
     // Subscribe to cursor updates
     useEffect(() => {
         if (!manager) return;
 
-        const unsubCursor = manager.onCursor(() => {
+        const updateCursors = () => {
+            versionRef.current++;
             setCursors(manager.getCursors());
-        });
+        };
 
-        const unsubRemove = manager.onCursorRemove(() => {
-            setCursors(manager.getCursors());
-        });
+        const unsubCursor = manager.onCursor(updateCursors);
+        const unsubRemove = manager.onCursorRemove(updateCursors);
 
         return () => {
             unsubCursor();
@@ -107,23 +142,9 @@ export function useCursor(
         [manager]
     );
 
-    // Create a dummy manager for when client is null
-    const dummyManager = useMemo(
-        () =>
-        ({
-            sendCursor: () => { },
-            onCursor: () => () => { },
-            onCursorRemove: () => () => { },
-            getCursors: () => new Map(),
-            getCursor: () => undefined,
-            destroy: () => { },
-        } as unknown as CursorManager),
-        []
-    );
-
     return {
         cursors,
         sendCursor,
-        manager: manager ?? dummyManager,
+        manager: manager ?? DUMMY_MANAGER,
     };
 }

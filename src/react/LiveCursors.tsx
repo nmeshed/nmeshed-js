@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNmeshedContext, useCursor } from './index';
+import { UI_LAYERS } from './layers';
 
 export interface CursorState {
     x: number;
@@ -10,21 +11,30 @@ export interface CursorState {
     color: string;
 }
 
-const START_COLORS = ['#f87171', '#fb923c', '#fbbf24', '#a3e635', '#34d399', '#22d3ee', '#818cf8', '#e879f9'];
+const CURSOR_COLORS = ['#f87171', '#fb923c', '#fbbf24', '#a3e635', '#34d399', '#22d3ee', '#818cf8', '#e879f9'];
 
-function getColor(id: string) {
+/**
+ * Generates a stable color for a given ID.
+ */
+function getColor(id: string): string {
     let hash = 0;
-    for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-    return START_COLORS[Math.abs(hash) % START_COLORS.length];
+    for (let i = 0; i < id.length; i++) {
+        hash = id.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
 /**
- * Standard SVG Cursor
+ * Standard SVG Cursor Icon with inline styles (no Tailwind dependency).
  */
 function CursorIcon({ color }: { color: string }) {
     return (
         <svg
-            className="w-5 h-5 drop-shadow-sm"
+            style={{
+                width: '20px',
+                height: '20px',
+                filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1))',
+            }}
             viewBox="0 0 24 24"
             fill={color}
             xmlns="http://www.w3.org/2000/svg"
@@ -35,9 +45,51 @@ function CursorIcon({ color }: { color: string }) {
 }
 
 /**
+ * Inline styles for LiveCursors.
+ * Using inline styles instead of Tailwind for SDK portability.
+ */
+const styles = {
+    container: {
+        pointerEvents: 'none' as const,
+        position: 'fixed' as const,
+        inset: 0,
+        overflow: 'hidden',
+        zIndex: UI_LAYERS.CURSOR_OVERLAY,
+    },
+    cursor: {
+        position: 'absolute' as const,
+        willChange: 'transform' as const,
+        display: 'flex',
+        alignItems: 'flex-start',
+    },
+    label: {
+        marginLeft: '8px',
+        padding: '4px 8px',
+        borderRadius: '9999px',
+        fontSize: '12px',
+        fontWeight: 600,
+        color: '#ffffff',
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+        maxWidth: '120px',
+        overflow: 'hidden' as const,
+        textOverflow: 'ellipsis' as const,
+        whiteSpace: 'nowrap' as const,
+    },
+};
+
+/**
  * A drop-in component that renders live multiplayer cursors.
+ *
  * Optimized for 60fps+ by bypassing React render cycle for movement.
- * Uses requestAnimationFrame and direct DOM manipulation.
+ * Uses requestAnimationFrame with frame-time-independent LERP and
+ * direct DOM manipulation.
+ *
+ * ## Features
+ * - Hardware-accelerated transforms via translate3d
+ * - Frame-rate independent interpolation (smooth on 30Hz, 60Hz, 120Hz+)
+ * - Inline styles for SDK portability (no Tailwind required)
+ * - Centralized Z-index layer management
+ * - Truncated labels for long user IDs
  */
 export function LiveCursors() {
     const client = useNmeshedContext();
@@ -47,6 +99,7 @@ export function LiveCursors() {
     const cursorState = useRef<Record<string, CursorState>>({});
     const domRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const requestRef = useRef<number>(0);
+    const lastFrameTime = useRef<number>(performance.now());
 
     // 2. React State (Only for mounting/unmounting DOM elements)
     const [activeIds, setActiveIds] = useState<string[]>([]);
@@ -90,13 +143,23 @@ export function LiveCursors() {
         }
     }, [cursors]);
 
-    // 4. Game Loop (Animation Frame)
-    const animateRef = useRef<() => void>();
+    // 4. Animation Loop (Frame-rate independent LERP)
+    const animate = useCallback((timestamp: number) => {
+        // Calculate delta time for frame-rate independence
+        const deltaTime = timestamp - lastFrameTime.current;
+        lastFrameTime.current = timestamp;
 
-    const animate = useCallback(() => {
-        const LERP_FACTOR = 0.2; // Smoothness tuning
+        // Normalize LERP factor to ~60fps baseline
+        // At 60fps, deltaTime ≈ 16.67ms, lerpFactor ≈ 0.2
+        // At 120fps, deltaTime ≈ 8.33ms, lerpFactor ≈ 0.1 (smoother, same speed)
+        // At 30fps, deltaTime ≈ 33.33ms, lerpFactor ≈ 0.4 (catches up faster)
+        const baseLerpFactor = 0.2;
+        const lerpFactor = Math.min(1, (deltaTime / 16.67) * baseLerpFactor);
 
-        for (const id of activeIds) {
+        // Get current activeIds from state snapshot (avoid stale closure)
+        const currentIds = Object.keys(cursorState.current);
+
+        for (const id of currentIds) {
             const cursor = cursorState.current[id];
             const el = domRefs.current[id];
 
@@ -106,12 +169,12 @@ export function LiveCursors() {
                 const dy = cursor.targetY - cursor.y;
 
                 // Snap if close to stop micro-jitter
-                if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
+                if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
                     cursor.x = cursor.targetX;
                     cursor.y = cursor.targetY;
                 } else {
-                    cursor.x += dx * LERP_FACTOR;
-                    cursor.y += dy * LERP_FACTOR;
+                    cursor.x += dx * lerpFactor;
+                    cursor.y += dy * lerpFactor;
                 }
 
                 // Direct DOM update (Zero React Overhead)
@@ -119,23 +182,15 @@ export function LiveCursors() {
             }
         }
 
-        if (animateRef.current) {
-            requestRef.current = requestAnimationFrame(animateRef.current);
-        }
-    }, [activeIds]);
+        requestRef.current = requestAnimationFrame(animate);
+    }, []); // No dependencies — reads directly from refs
 
-    // Keep animate callback up to date
+    // Start/Stop Animation Loop
     useEffect(() => {
-        animateRef.current = animate;
-    }, [animate]);
-
-    // Start/Stop Loop
-    useEffect(() => {
-        if (animateRef.current) {
-            requestRef.current = requestAnimationFrame(animateRef.current);
-        }
+        lastFrameTime.current = performance.now();
+        requestRef.current = requestAnimationFrame(animate);
         return () => cancelAnimationFrame(requestRef.current);
-    }, []);
+    }, [animate]);
 
     // 5. Broadcast My Position (Throttled via CursorManager internally)
     useEffect(() => {
@@ -148,9 +203,8 @@ export function LiveCursors() {
     }, [sendCursor]);
 
     return (
-        <div className="pointer-events-none fixed inset-0 overflow-hidden z-[9999]">
+        <div style={styles.container}>
             {activeIds.map(id => {
-                // eslint-disable-next-line react-hooks/rules-of-hooks
                 const state = cursorState.current[id];
                 if (!state) return null;
 
@@ -158,16 +212,17 @@ export function LiveCursors() {
                     <div
                         key={id}
                         ref={el => { domRefs.current[id] = el; }}
-                        className="absolute will-change-transform"
                         style={{
-                            // Start position, implementation handles the rest
-                            transform: `translate3d(${state.x}px, ${state.y}px, 0)`
+                            ...styles.cursor,
+                            transform: `translate3d(${state.x}px, ${state.y}px, 0)`,
                         }}
                     >
                         <CursorIcon color={state.color} />
                         <div
-                            className="ml-2 px-2 py-1 rounded-full text-xs font-semibold text-white shadow-md"
-                            style={{ backgroundColor: state.color }}
+                            style={{
+                                ...styles.label,
+                                backgroundColor: state.color,
+                            }}
                         >
                             {id}
                         </div>
