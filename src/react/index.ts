@@ -33,6 +33,7 @@ export { useDocument } from './useDocument';
 export { usePresence, generateStableColor } from './usePresence';
 export { useBroadcast } from './useBroadcast';
 export { useCursor } from './useCursor';
+export { useStore } from './useStore';
 
 // Components
 export { LiveCursors } from './LiveCursors';

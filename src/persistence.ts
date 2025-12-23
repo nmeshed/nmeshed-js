@@ -18,6 +18,10 @@ export interface PersistentQueueItem {
  */
 function openDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
+        if (typeof indexedDB === 'undefined') {
+            reject(new Error('IndexedDB not available'));
+            return;
+        }
         const request = indexedDB.open(DB_NAME, DB_VERSION);
 
         request.onerror = () => reject(request.error);
@@ -49,8 +53,14 @@ export async function saveQueue(workspaceId: string, queue: PersistentQueueItem[
                 store.put(queue, workspaceId);
             }
 
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
+            tx.oncomplete = () => {
+                db.close();
+                resolve();
+            };
+            tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+            };
         });
     } catch (error) {
         console.warn('[nMeshed] Failed to save queue to IndexedDB:', error);
@@ -68,8 +78,14 @@ export async function loadQueue(workspaceId: string): Promise<PersistentQueueIte
             const store = tx.objectStore(STORE_NAME);
             const request = store.get(workspaceId);
 
-            request.onsuccess = () => resolve(request.result || []);
-            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                db.close();
+                resolve(request.result || []);
+            };
+            request.onerror = () => {
+                db.close();
+                reject(request.error);
+            };
         });
     } catch (error) {
         console.warn('[nMeshed] Failed to load queue from IndexedDB:', error);

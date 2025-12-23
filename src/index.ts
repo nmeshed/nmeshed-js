@@ -46,5 +46,9 @@ export {
 // Binary Codec (for performance-critical applications)
 export { encodeValue, decodeValue, isBinary } from './codec';
 
+// Schema and Serialization
+export type { Schema, SchemaDefinition, SchemaField } from './schema/SchemaBuilder';
+export { defineSchema } from './schema/SchemaBuilder';
+
 // Debug Utilities (development only)
 export { debugPacket, hexDump, tryParseAsJson, formatBytes, startTimer } from './debug';

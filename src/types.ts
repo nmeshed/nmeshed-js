@@ -10,11 +10,19 @@ export interface NMeshedConfig {
     workspaceId: string;
 
     /**
-     * JWT authentication token.
-     * Required for production use.
-     * Get one from dashboard.nmeshed.com
+     * JWT authentication token (Legacy).
+     * Prefer `apiKey` for server-side or non-user-scoped access.
+     * @deprecated use apiKey where possible, or token for distinct user sessions.
      */
-    token: string;
+    token?: string;
+
+    /**
+     * API Key for authentication and routing.
+     * Replaces `serverUrl` for most use cases.
+     * Format: `nm_{env}_{region}_{random}`
+     * @example 'nm_live_us-east_12345'
+     */
+    apiKey?: string;
 
     /**
      * Synchronization strategy.

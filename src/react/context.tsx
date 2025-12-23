@@ -22,11 +22,19 @@ const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 export interface NMeshedProviderProps {
     /**
      * Configuration for the nMeshed client.
+     * Required if `client` is not provided.
      */
-    config: NMeshedConfig;
+    config?: NMeshedConfig;
+
+    /**
+     * Existing nMeshed client instance.
+     * If provided, `config` is ignored.
+     */
+    client?: NMeshedClient;
 
     /**
      * Child components that will have access to the client.
+     * ...
      */
     children: ReactNode;
 
@@ -80,13 +88,21 @@ export interface NMeshedProviderProps {
  */
 export function NMeshedProvider({
     config,
+    client: externalClient,
     children,
     autoConnect = true,
     onError,
     onStatusChange,
 }: NMeshedProviderProps) {
     // Create client on first render (guaranteed singleton)
-    const [client] = useState(() => new NMeshedClient(config));
+    // If externalClient is provided, use it. Otherwise create from config.
+    const [clientInstance] = useState(() => {
+        if (externalClient) return externalClient;
+        if (!config) throw new Error("NMeshedProvider: Either 'client' or 'config' must be provided.");
+        return new NMeshedClient(config);
+    });
+
+    const client = clientInstance;
     const [status, setStatus] = useState<ConnectionStatus>('IDLE');
     const [error, setError] = useState<Error | null>(null);
 

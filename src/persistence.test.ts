@@ -1,180 +1,129 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { saveQueue, loadQueue, PersistentQueueItem } from './persistence';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { loadQueue, saveQueue } from './persistence';
+import 'fake-indexeddb/auto'; // Automatically mocks global indexedDB
 
-// Mock IndexedDB types
-type MockIDBDatabase = {
-    transaction: any;
-    objectStoreNames: { contains: (name: string) => boolean };
-    createObjectStore: (name: string) => void;
-    close: () => void;
-};
+describe('Persistence (Real IndexedDB)', () => {
 
-type MockIDBRequest = {
-    result: any;
-    error: any;
-    onsuccess: ((ev: Event) => void) | null;
-    onerror: ((ev: Event) => void) | null;
-    onupgradeneeded: ((ev: Event) => void) | null;
-};
+    // We don't need to manually mock indexedDB anymore because 'fake-indexeddb/auto' does it.
+    // However, we should clear the DB between tests to ensure isolation.
 
-describe('persistence', () => {
-    let mockDB: MockIDBDatabase;
-    let mockTx: any;
-    let mockStore: any;
-    let mockOpenRequest: MockIDBRequest;
+    const DB_NAME = 'nmeshed_db';
 
-    beforeEach(() => {
-        // Reset mocks
-        mockStore = {
-            put: vi.fn(),
-            get: vi.fn(),
-            delete: vi.fn(),
-        };
-
-        mockTx = {
-            objectStore: vi.fn(() => mockStore),
-            oncomplete: null,
-            onerror: null,
-            error: null,
-        };
-
-        mockDB = {
-            transaction: vi.fn(() => mockTx),
-            objectStoreNames: { contains: vi.fn(() => false) },
-            createObjectStore: vi.fn(),
-            close: vi.fn(),
-        };
-
-        mockOpenRequest = {
-            result: mockDB,
-            error: null,
-            onsuccess: null,
-            onerror: null,
-            onupgradeneeded: null,
-        };
-
-        // Mock global indexedDB
-        const mockIndexedDB = {
-            open: vi.fn(() => {
-                // Simulate async success
-                setTimeout(() => {
-                    mockOpenRequest.onsuccess?.({ target: mockOpenRequest } as any);
-                }, 0);
-                return mockOpenRequest;
-            }),
-        };
-
-        vi.stubGlobal('indexedDB', mockIndexedDB);
+    afterEach(async () => {
+        // Clear database
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        await new Promise((resolve, reject) => {
+            req.onsuccess = resolve;
+            req.onerror = reject;
+            req.onblocked = resolve; // Resolve even if blocked (usually means open connection)
+        });
+        vi.restoreAllMocks();
     });
 
-    afterEach(() => {
-        vi.unstubAllGlobals();
-    });
-
-    it('saves a queue successfully', async () => {
-        const queue: PersistentQueueItem[] = [
-            { key: 'k1', value: 'v1', timestamp: 1000 },
+    it('should save and load queue items correctly', async () => {
+        const workspaceId = 'ws-test-1';
+        const items = [
+            { key: 'op1', value: { type: 'set', payload: 123 }, timestamp: 1000 },
+            { key: 'op2', value: { type: 'del' }, timestamp: 1001 }
         ];
 
-        const savePromise = saveQueue('ws1', queue);
+        // 1. Save
+        await saveQueue(workspaceId, items);
 
-        // Simulate tx success
-        setTimeout(() => {
-            mockTx.oncomplete?.();
-        }, 0);
+        // 2. Load
+        const loaded = await loadQueue(workspaceId);
 
-        await savePromise;
-
-        expect(mockStore.put).toHaveBeenCalledWith(queue, 'ws1');
+        expect(loaded).toHaveLength(2);
+        expect(loaded).toEqual(items);
     });
 
-    it('loads a queue successfully', async () => {
-        const expectedQueue = [{ key: 'k1', value: 'v1', timestamp: 1000 }];
-
-        // Setup get request mock
-        const mockGetRequest = {
-            result: expectedQueue,
-            error: null,
-            onsuccess: null,
-            onerror: null,
-        };
-        mockStore.get.mockReturnValue(mockGetRequest);
-
-        const loadPromise = loadQueue('ws1');
-
-        // Simulate DB open success (handled by open mock above)
-        // Simulate get success
-        setTimeout(() => {
-            mockGetRequest.onsuccess?.({ target: mockGetRequest } as any);
-        }, 10);
-
-        const result = await loadPromise;
-        expect(result).toEqual(expectedQueue);
+    it('should return empty array if nothing saved', async () => {
+        const loaded = await loadQueue('ws-empty');
+        expect(loaded).toEqual([]);
     });
 
-    it('deletes entry if queue is empty', async () => {
-        const savePromise = saveQueue('ws1', []);
+    it('should overwrite existing queue for workspace', async () => {
+        const workspaceId = 'ws-overwrite';
+        const initial = [{ key: '1', value: 'a', timestamp: 1 }];
+        const updated = [{ key: '2', value: 'b', timestamp: 2 }];
 
-        setTimeout(() => {
-            mockTx.oncomplete?.();
-        }, 0);
+        await saveQueue(workspaceId, initial);
+        let loaded = await loadQueue(workspaceId);
+        expect(loaded).toEqual(initial);
 
-        await savePromise;
-
-        expect(mockStore.delete).toHaveBeenCalledWith('ws1');
-        expect(mockStore.put).not.toHaveBeenCalled();
+        await saveQueue(workspaceId, updated);
+        loaded = await loadQueue(workspaceId);
+        expect(loaded).toEqual(updated);
     });
 
-    it('handles DB open errors', async () => {
-        // Override open to fail
-        (global.indexedDB.open as any).mockImplementation(() => {
-            const req = {
-                error: new Error('DB Open Failed'),
-                onsuccess: null,
-                onerror: null,
-            };
-            setTimeout(() => {
-                req.onerror?.({ target: req } as any);
-            }, 0);
-            return req;
+    it('should delete queue if empty list provided', async () => {
+        const workspaceId = 'ws-delete';
+        await saveQueue(workspaceId, [{ key: '1', value: 'v', timestamp: 1 }]);
+
+        // Verify saved
+        let loaded = await loadQueue(workspaceId);
+        expect(loaded).toHaveLength(1);
+
+        // Save empty
+        await saveQueue(workspaceId, []);
+
+        // Verify deleted
+        loaded = await loadQueue(workspaceId);
+        expect(loaded).toHaveLength(0); // Should be empty array
+    });
+
+    it('should handle different workspaces in isolation', async () => {
+        const ws1 = [{ key: '1', value: 1, timestamp: 1 }];
+        const ws2 = [{ key: '2', value: 2, timestamp: 2 }];
+
+        await saveQueue('ws-1', ws1);
+        await saveQueue('ws-2', ws2);
+
+        const loaded1 = await loadQueue('ws-1');
+        const loaded2 = await loadQueue('ws-2');
+
+        expect(loaded1).toEqual(ws1);
+        expect(loaded2).toEqual(ws2);
+    });
+
+    it('should handle openDB failure gracefully', async () => {
+        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+
+        // Mock open to fail
+        const originalOpen = indexedDB.open;
+        vi.spyOn(indexedDB, 'open').mockImplementation(() => {
+            throw new Error('Explosion');
         });
 
-        // Test save failure (should catch and log, not throw)
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
-        await saveQueue('ws1', []);
-        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save'), expect.any(Error));
+        await saveQueue('ws-fail', []);
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save queue'), expect.any(Error));
 
-        // Test load failure (should return empty array)
-        const result = await loadQueue('ws1');
-        expect(result).toEqual([]);
+        const loaded = await loadQueue('ws-fail');
+        expect(loaded).toEqual([]);
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to load queue'), expect.any(Error));
 
         consoleSpy.mockRestore();
     });
 
-    it('calls onupgradeneeded to create store', async () => {
-        // Simulate DB that needs upgrade
-        (global.indexedDB.open as any).mockImplementation(() => {
-            const req: MockIDBRequest = {
-                result: mockDB,
-                error: null,
-                onsuccess: null,
-                onerror: null,
-                onupgradeneeded: null,
-            };
-            setTimeout(() => {
-                // Call onupgradeneeded first
-                (mockDB.objectStoreNames.contains as any).mockReturnValue(false);
-                req.onupgradeneeded?.({ target: req } as any);
-                // Then success
-                req.onsuccess?.({ target: req } as any);
-            }, 0);
-            return req;
-        });
+    it('should degrade gracefully if indexedDB is missing', async () => {
+        // Temporarily remove indexedDB
+        const original = globalThis.indexedDB;
+        // @ts-ignore
+        delete globalThis.indexedDB;
 
-        const savePromise = saveQueue('ws1', []);
-        setTimeout(() => mockTx.oncomplete?.(), 5);
-        await savePromise;
+        try {
+            const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
 
-        expect(mockDB.createObjectStore).toHaveBeenCalled();
+            await saveQueue('ws-no-idb', []);
+            // Should verify fallback behavior (currently logs warn)
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save queue'), expect.any(Error));
+
+            const loaded = await loadQueue('ws-no-idb');
+            expect(loaded).toEqual([]);
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to load queue'), expect.any(Error));
+
+        } finally {
+            globalThis.indexedDB = original;
+        }
     });
 });

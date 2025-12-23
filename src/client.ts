@@ -41,13 +41,15 @@ import init, { NMeshedClientCore } from './wasm/nmeshed_core';
 import { z } from 'zod';
 import { loadQueue as dbLoadQueue, saveQueue as dbSaveQueue } from './persistence';
 import { SyncedMap } from './sync/SyncedMap';
+import { Schema, SchemaDefinition } from './schema/SchemaBuilder';
 
 /**
  * Configuration schema for validation.
  */
 const ConfigSchema = z.object({
     workspaceId: z.string().min(1, 'workspaceId is required and must be a non-empty string'),
-    token: z.string().min(1, 'token is required and must be a non-empty string'),
+    token: z.string().optional(),
+    apiKey: z.string().optional(),
     syncMode: z.enum(['crdt', 'crdt_performance', 'crdt_strict', 'lww']).optional(),
     userId: z.string().optional(),
     serverUrl: z.string().optional(),
@@ -59,13 +61,16 @@ const ConfigSchema = z.object({
     heartbeatInterval: z.number().nonnegative().optional(),
     maxQueueSize: z.number().nonnegative().optional(),
     debug: z.boolean().optional(),
+}).refine(data => data.token || data.apiKey, {
+    message: "Either 'apiKey' or 'token' must be provided",
+    path: ["apiKey"]
 });
 
 
 /**
  * Default configuration values.
  */
-const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId' | 'syncMode'> = {
+const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId' | 'syncMode' | 'apiKey'> = {
     serverUrl: 'wss://api.nmeshed.com',
     autoReconnect: true,
     maxReconnectAttempts: 10,
@@ -139,6 +144,7 @@ export class NMeshedClient {
     private chaos: ChaosOptions | null = null;
     private pendingPings: Map<string, (rtt: number) => void> = new Map();
     private syncedMaps: Map<string, SyncedMap<any>> = new Map();
+    private bootPromise: Promise<void>;
 
     /**
      * Creates a new nMeshed client instance.
@@ -164,8 +170,11 @@ export class NMeshedClient {
             ...DEFAULT_CONFIG,
             workspaceId: validConfig.workspaceId.trim(),
             token: validConfig.token,
+            apiKey: validConfig.apiKey,
             syncMode: validConfig.syncMode || 'crdt',
             userId: validConfig.userId?.trim() || this.generateUserId(),
+            // If serverUrl is explicitly validConfig, use it.
+            // If not, we defer resolution to buildUrl().
             ...(validConfig.serverUrl && { serverUrl: validConfig.serverUrl }),
             ...(validConfig.autoReconnect !== undefined && { autoReconnect: validConfig.autoReconnect }),
             ...(validConfig.maxReconnectAttempts !== undefined && { maxReconnectAttempts: validConfig.maxReconnectAttempts }),
@@ -178,6 +187,34 @@ export class NMeshedClient {
         } as ResolvedConfig; // Cast is safe because we merged defaults
 
         this.loadQueue();
+
+        // Implicit Boot: Start WASM initialization immediately (Fire and forget)
+        this.bootPromise = this.bootCore().catch(err => {
+            this.warn('Failed to implicit boot WASM core:', err);
+        });
+    }
+
+    private async bootCore() {
+        if (this.core) return;
+
+        await init();
+
+        if (this.core) return; // Race condition check
+
+        // Map extended modes (performance/strict) to base 'crdt' for WASM
+        const coreMode = (this.config.syncMode === 'lww') ? 'lww' : 'crdt';
+        this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
+
+        // Merge pre-connect state into the new core
+        for (const [key, value] of Object.entries(this.preConnectState)) {
+            try {
+                const valBytes = encodeValue(value);
+                this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
+            } catch (e) {
+                this.warn('Failed to merge preConnectState for key:', key, e);
+            }
+        }
+        this.preConnectState = {}; // Clear it
     }
 
     /**
@@ -233,9 +270,33 @@ export class NMeshedClient {
      * Builds the WebSocket URL with query parameters.
      */
     private buildUrl(): string {
-        const base = this.config.serverUrl.replace(/\/+$/, '');
+        let baseUrl = this.config.serverUrl;
+
+        // Intelligent Defaults based on API Key
+        if (!baseUrl && this.config.apiKey) {
+            const key = this.config.apiKey;
+            if (key.startsWith('nm_local_')) {
+                baseUrl = 'ws://localhost:8080';
+            } else if (key.includes('_us-east_')) {
+                baseUrl = 'wss://us-east.api.nmeshed.io';
+            } else if (key.includes('_eu-west_')) {
+                baseUrl = 'wss://eu-west.api.nmeshed.io';
+            } else {
+                // Default Global
+                baseUrl = 'wss://api.nmeshed.com';
+            }
+        }
+
+        // Fallback if no apiKey and no serverUrl (shouldn't happen due to default, but safe)
+        if (!baseUrl) {
+            baseUrl = 'wss://api.nmeshed.com';
+        }
+
+        const base = baseUrl.replace(/\/+$/, '');
         const params = new URLSearchParams({
-            token: this.config.token,
+            // Send whichever auth method is available
+            ...(this.config.token ? { token: this.config.token } : {}),
+            ...(this.config.apiKey ? { api_key: this.config.apiKey } : {}),
             userId: this.config.userId,
             sync_mode: this.config.syncMode,
         });
@@ -269,23 +330,15 @@ export class NMeshedClient {
             (async () => {
                 this.setStatus('CONNECTING');
                 try {
-                    // Initialize WASM Core before connecting
-                    if (!this.core) {
-                        await init();
-                        // Map extended modes (performance/strict) to base 'crdt' for WASM
-                        const coreMode = (this.config.syncMode === 'lww') ? 'lww' : 'crdt';
-                        this.core = new NMeshedClientCore(this.config.workspaceId, coreMode);
-
-                        // Merge pre-connect state into the new core
-                        for (const [key, value] of Object.entries(this.preConnectState)) {
-                            try {
-                                const valBytes = encodeValue(value);
-                                this.core.apply_local_op(key, valBytes, BigInt(Date.now() * 1000));
-                            } catch (e) {
-                                this.warn('Failed to merge preConnectState for key:', key, e);
-                            }
+                    // Implicit Core: Wait for proactive boot to finish
+                    try {
+                        await this.bootPromise;
+                        if (!this.core) {
+                            throw new Error("Core not initialized after boot");
                         }
-                        this.preConnectState = {}; // Clear it
+                    } catch (e: any) {
+                        // Re-throw as ConnectionError or handle
+                        throw new Error(`Failed to boot core: ${e.message}`);
                     }
                 } catch (error) {
                     this.setStatus('ERROR');
@@ -647,13 +700,25 @@ export class NMeshedClient {
      *
      * @param key - The key to set (must be non-empty string)
      * @param value - The value to set
+     * @param schema - Optional schema to use for serialization
      * @throws {ConfigurationError} If key is invalid
      */
-    set(key: string, value: unknown): void {
+    set<T extends SchemaDefinition>(key: string, value: unknown, schema?: Schema<T>): void {
         if (!key || typeof key !== 'string') {
             throw new ConfigurationError('Key must be a non-empty string');
         }
-        this.sendOperation(key, value);
+
+        let finalValue = value;
+        if (schema) {
+            try {
+                // If schema provided, we encode to Uint8Array immediately
+                finalValue = schema.encode(value);
+            } catch (e: any) {
+                throw new ConfigurationError(`Failed to encode value with schema: ${e.message}`);
+            }
+        }
+
+        this.sendOperation(key, finalValue);
     }
 
     /**
@@ -736,12 +801,23 @@ export class NMeshedClient {
         }
     }
 
-    get<T = unknown>(key: string): T | undefined {
+    get<T = unknown, S extends SchemaDefinition = any>(key: string, schema?: Schema<S>): T | undefined {
         if (!this.core) {
             return this.preConnectState[key] as T | undefined;
         }
         const state = this.getState();
-        return state[key] as T | undefined;
+        const rawValue = state[key];
+
+        if (schema && rawValue instanceof Uint8Array) {
+            try {
+                return schema.decode(rawValue) as T;
+            } catch (e) {
+                this.warn(`Failed to decode key '${key}' with schema:`, e);
+                return undefined;
+            }
+        }
+
+        return rawValue as T | undefined;
     }
 
     /**
