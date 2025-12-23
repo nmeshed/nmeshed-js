@@ -141,6 +141,9 @@ export function unmarshalOp(buffer: ArrayBuffer): { workspaceId: string, op: Ope
 
 // --- Legacy Cursor Helpers (Restored) ---
 
+/**
+ * @deprecated Use CursorManager or MeshClient.sendCursor() for real-time cursors.
+ */
 export function packCursor(userId: string, x: number, y: number): ArrayBuffer {
     const userIdBytes = new TextEncoder().encode(userId);
     // Op(1) + X(2) + Y(2) + ID_Len(1) + ID(N)
@@ -164,6 +167,9 @@ export function packCursor(userId: string, x: number, y: number): ArrayBuffer {
     return buffer;
 }
 
+/**
+ * @deprecated Use CursorManager or useCursor() for real-time cursors.
+ */
 export function unpackCursor(buffer: ArrayBuffer): { x: number, y: number, userId: string } | null {
     const view = new DataView(buffer);
     if (view.byteLength < 6) return null;
@@ -186,12 +192,16 @@ export function unpackCursor(buffer: ArrayBuffer): { x: number, y: number, userI
     return { x, y, userId };
 }
 
+/**
+ * @deprecated Cursors are now handled via JSON ephemeral messages.
+ */
 export function isBinaryCursor(data: unknown): boolean {
     if (!(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) return false;
     // Check first byte
     const view = new DataView(data instanceof Uint8Array ? data.buffer : data);
     return view.byteLength > 0 && view.getUint8(0) === MSG_TYPE_CURSOR;
 }
+
 
 // Helpers
 

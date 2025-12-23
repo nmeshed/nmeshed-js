@@ -216,6 +216,25 @@ export class MeshClient {
     }
 
     /**
+     * Broadcasts cursor position to all peers via ephemeral messaging.
+     * Convenience method that uses the standard nMeshed cursor protocol.
+     *
+     * @param x - X coordinate
+     * @param y - Y coordinate
+     */
+    public sendCursor(x: number, y: number): void {
+        this.sendEphemeral({
+            type: '__cursor__',
+            namespace: 'cursor',
+            userId: this.myId,
+            x: Math.round(x),
+            y: Math.round(y),
+            timestamp: Date.now(),
+        });
+    }
+
+
+    /**
      * Gets the list of connected peer IDs.
      */
     public getPeers(): string[] {
