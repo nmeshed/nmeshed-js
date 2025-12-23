@@ -295,6 +295,10 @@ export class SyncedMap<T> {
         }
     }
 
+    /**
+     * Internal method to apply a remote update to the local state.
+     * Deserializes the binary data and triggers reactive listeners.
+     */
     private applyRemoteUpdate(key: string, bytes: Uint8Array): void {
         try {
             const value = this.config.deserialize(bytes);
@@ -313,6 +317,10 @@ export class SyncedMap<T> {
         }
     }
 
+    /**
+     * Internal method to apply a remote deletion to the local state.
+     * Removes the key-value pair and triggers reactive listeners.
+     */
     private applyRemoteDelete(key: string): void {
         const existed = this.data.delete(key);
         this.serialized.delete(key);

@@ -12,6 +12,15 @@
 
 export type SignalType = 'join' | 'offer' | 'answer' | 'candidate' | 'relay';
 
+/** Structured error codes for MeshClient and ConnectionManager */
+export enum MeshErrorCode {
+    SIGNALING_FAILED = 'MESH_ERR_SIGNALING',
+    P2P_HANDSHAKE_FAILED = 'MESH_ERR_P2P',
+    RELAY_TIMEOUT = 'MESH_ERR_RELAY_TIMEOUT',
+    TOPOLOGY_DEGRADED = 'MESH_ERR_TOPOLOGY',
+    WASM_INIT_FAILED = 'MESH_ERR_WASM',
+}
+
 export interface BaseSignal {
     type: SignalType;
 }
@@ -91,12 +100,34 @@ export interface MeshClientConfig {
 
     /** ICE servers for WebRTC (defaults to Google STUN) */
     iceServers?: RTCIceServer[];
+
+    /** Maximum peers before auto-downgrading to star topology (default: 30) */
+    maxPeersForMesh?: number;
+
+    /** Interval for connection quality metrics updates in ms (default: 10000) */
+    metricsInterval?: number;
 }
 
-export interface ResolvedMeshConfig extends Omit<Required<MeshClientConfig>, 'iceServers' | 'token' | 'tokenProvider'> {
+export interface ResolvedMeshConfig extends Omit<Required<MeshClientConfig>, 'iceServers' | 'token' | 'tokenProvider' | 'maxPeersForMesh' | 'metricsInterval'> {
     token?: string;
     tokenProvider?: () => Promise<string>;
     iceServers: RTCIceServer[];
+    maxPeersForMesh: number;
+    metricsInterval: number;
+}
+
+/** Individual peer connection quality metrics */
+export interface MeshPeerMetrics {
+    peerId: string;
+    rtt: number; // -1 if unknown or timeout
+    status: 'relay' | 'p2p';
+}
+
+/** Aggregated mesh metrics */
+export interface MeshMetrics {
+    peers: MeshPeerMetrics[];
+    effectiveTopology: MeshTopology;
+    totalPeers: number;
 }
 
 // ============================================
@@ -114,7 +145,9 @@ export type MeshEventType =
     | 'peerStatus'
     | 'authorityMessage'
     | 'init'
-    | 'ephemeral';
+    | 'ephemeral'
+    | 'topologyChange'
+    | 'metricsUpdate';
 
 export interface MeshEventMap {
     connect: () => void;
@@ -126,6 +159,9 @@ export interface MeshEventMap {
     lifecycleStateChange: (state: MeshLifecycleState) => void;
     peerStatus: (peerId: string, status: 'relay' | 'p2p') => void;
 
+    // Connection quality metrics
+    metricsUpdate: (metrics: MeshMetrics) => void;
+
     // Server Authority Messages (Sync/Persistence)
     authorityMessage: (data: Uint8Array) => void;
 
@@ -134,6 +170,9 @@ export interface MeshEventMap {
 
     // Ephemeral
     ephemeral: (payload: any) => void;
+
+    // Topology change (mesh -> star fallback)
+    topologyChange: (topology: MeshTopology, reason: string) => void;
 }
 
 // ============================================

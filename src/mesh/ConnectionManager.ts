@@ -17,6 +17,7 @@ export interface ConnectionEvents {
     onMessage: (peerId: string, data: ArrayBuffer) => void;
     onPeerJoin: (peerId: string) => void;
     onPeerDisconnect: (peerId: string) => void;
+    onError: (peerId: string, err: Error) => void;
 }
 
 export interface ConnectionManagerConfig {
@@ -122,6 +123,7 @@ export class ConnectionManager {
             this.listeners.onSignal?.(from, { type: 'answer', sdp: answer.sdp! });
         } catch (err) {
             logger.error('Offer Error', err);
+            this.listeners.onError?.(from, err instanceof Error ? err : new Error(String(err)));
         }
     }
 
@@ -143,6 +145,7 @@ export class ConnectionManager {
             }
         } catch (err) {
             logger.error('Answer Error', err);
+            this.listeners.onError?.(from, err instanceof Error ? err : new Error(String(err)));
         }
     }
 
@@ -189,7 +192,7 @@ export class ConnectionManager {
      * Closes all peer connections gracefully.
      */
     public closeAll() {
-        for (const peerId of this.peers.keys()) {
+        for (const peerId of Array.from(this.peers.keys())) {
             this.cleanupPeer(peerId);
         }
     }
@@ -251,6 +254,7 @@ export class ConnectionManager {
 
         dc.onerror = (e) => {
             logger.error(`DataChannel Error with ${peerId}:`, e);
+            this.listeners.onError?.(peerId, new Error(`DataChannel Error: ${JSON.stringify(e)}`));
         };
 
         this.dataChannels.set(peerId, dc);

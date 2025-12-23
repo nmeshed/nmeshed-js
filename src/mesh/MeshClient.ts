@@ -29,20 +29,25 @@
  * ```
  */
 
-import { SignalingClient } from './SignalingClient';
-import { ConnectionManager } from './ConnectionManager';
 import type {
     MeshClientConfig,
     ResolvedMeshConfig,
     MeshLifecycleState,
+    MeshTopology,
     MeshEventMap,
     SignalEnvelope,
     OfferSignal,
     AnswerSignal,
     CandidateSignal,
     ChaosOptions,
+    MeshPeerMetrics,
+    MeshMetrics,
 } from './types';
+import { MeshErrorCode } from './types';
+import { SignalingClient } from './SignalingClient';
+import { ConnectionManager } from './ConnectionManager';
 import { logger } from '../utils/Logger';
+import { MeshError } from '../errors';
 
 /**
  * Default configuration values.
@@ -52,6 +57,8 @@ const DEFAULT_CONFIG: Omit<ResolvedMeshConfig, 'workspaceId' | 'token' | 'tokenP
     topology: 'mesh',
     debug: false,
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    maxPeersForMesh: 30,
+    metricsInterval: 10000,
 };
 
 /**
@@ -65,7 +72,13 @@ export class MeshClient {
     private myId: string;
     private peerStatus: Map<string, 'relay' | 'p2p'> = new Map();
 
+    /** Effective topology after evaluating peer count (may differ from config) */
+    private effectiveTopology: MeshTopology;
+
     private syncTimeout: ReturnType<typeof setTimeout> | null = null;
+    private metricsTimer: ReturnType<typeof setInterval> | null = null;
+    private peerMetrics: Map<string, MeshPeerMetrics> = new Map();
+
     private chaos: ChaosOptions | null = null;
     private pendingPings: Map<string, (rtt: number) => void> = new Map();
 
@@ -108,7 +121,10 @@ export class MeshClient {
             iceServers: this.config.iceServers,
         });
 
+        this.effectiveTopology = this.config.topology;
+
         this.setupListeners();
+        this.startMetricsTask();
     }
 
     /**
@@ -135,7 +151,11 @@ export class MeshClient {
             } catch (e) {
                 logger.error('WASM Initialization failed', e);
                 this.setState('ERROR');
-                this.emit('error', e instanceof Error ? e : new Error(String(e)));
+                this.emit('error', new MeshError(
+                    MeshErrorCode.WASM_INIT_FAILED,
+                    e instanceof Error ? e.message : String(e),
+                    { cause: e }
+                ));
                 return;
             }
         }
@@ -148,6 +168,7 @@ export class MeshClient {
      * Disconnects from the mesh network.
      */
     public disconnect(): void {
+        this.stopMetricsTask();
         this.connections.closeAll();
         this.signaling.close();
         this.setState('DISCONNECTED');
@@ -168,16 +189,18 @@ export class MeshClient {
 
             const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
 
-            // 1. Send via Relay (WebSocket) to everyone not yet on P2P
+            // 1. Send via Relay (WebSocket) to everyone not yet on P2P (or if in Star mode)
             // We also send to "server" if we want authority processing
             this.peerStatus.forEach((status, peerId) => {
-                if (status !== 'p2p') {
+                if (status !== 'p2p' || this.effectiveTopology === 'star') {
                     this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
                 }
             });
 
-            // 2. Send via P2P (DataChannel)
-            this.connections.broadcast(data);
+            // 2. Send via P2P (DataChannel) if not in Star mode
+            if (this.effectiveTopology !== 'star') {
+                this.connections.broadcast(data);
+            }
         });
     }
 
@@ -197,9 +220,9 @@ export class MeshClient {
             const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
             const status = this.peerStatus.get(peerId);
 
-            // Routing Decision: If P2P is active and verified, use it.
+            // Routing Decision: If P2P is active and verified, and not in Star mode, use it.
             // Otherwise, use the reliable Relay path.
-            if (status === 'p2p' && this.connections.isDirect(peerId)) {
+            if (this.effectiveTopology !== 'star' && status === 'p2p' && this.connections.isDirect(peerId)) {
                 this.connections.sendToPeer(peerId, data);
             } else {
                 this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
@@ -385,7 +408,11 @@ export class MeshClient {
             onPresence: (userId, status, meshId) => this.handlePresence(userId, status, meshId),
             onError: (err) => {
                 this.setState('ERROR');
-                this.emit('error', err);
+                this.emit('error', new MeshError(
+                    MeshErrorCode.SIGNALING_FAILED,
+                    err.message || 'Signaling connection failed',
+                    { url: this.config.serverUrl, cause: err }
+                ));
             },
             onServerMessage: (data) => {
                 // Transition to ACTIVE on authoritative server message
@@ -438,8 +465,8 @@ export class MeshClient {
         this.connections.setListeners({
             onSignal: (to, signal) => this.signaling.sendSignal(to, signal),
             onMessage: (peerId, data) => {
-                // Transition to ACTIVE on first P2P message (peer has state)
-                if (this.state === 'HANDSHAKING' || this.state === 'CONNECTING') {
+                // Transition to ACTIVE on first P2P message
+                if (this.state !== 'ACTIVE') {
                     this.setState('ACTIVE');
                 }
                 this.emit('message', peerId, data);
@@ -450,9 +477,16 @@ export class MeshClient {
                 this.emit('peerJoin', peerId);
             },
             onPeerDisconnect: (peerId) => {
-                this.peerStatus.delete(peerId);
-                this.emit('peerDisconnect', peerId);
+                this.peerStatus.set(peerId, 'relay');
+                this.emit('peerStatus', peerId, 'relay');
             },
+            onError: (peerId, err) => {
+                this.emit('error', new MeshError(
+                    MeshErrorCode.P2P_HANDSHAKE_FAILED,
+                    `P2P Error with ${peerId}: ${err.message}`,
+                    { peerId, cause: err }
+                ));
+            }
         });
     }
 
@@ -505,15 +539,69 @@ export class MeshClient {
                     this.emit('peerJoin', peerId); // Trigger join immediately via Relay
                 }
 
+                this.evaluateTopology();
+
                 // Deterministic connection initiation to avoid glare
-                if (this.myId > peerId && this.config.topology !== 'star') {
+                if (this.myId > peerId && this.effectiveTopology !== 'star') {
                     this.connections.initiateConnection(peerId);
                 }
             } else if (status === 'offline') {
                 this.peerStatus.delete(peerId);
+                this.evaluateTopology();
                 this.emit('peerDisconnect', peerId);
             }
         }
+    }
+
+    /**
+     * Re-evaluates the active topology based on current peer count and configuration.
+     * Triggers a 'topologyChange' event if the effective topology transitions.
+     */
+    private evaluateTopology(): void {
+        const peerCount = this.peerStatus.size;
+        const targetTopology = peerCount > this.config.maxPeersForMesh ? 'star' : this.config.topology;
+
+        if (this.effectiveTopology !== targetTopology) {
+            const reason = targetTopology === 'star' ? 'peer_limit_exceeded' : 'peer_limit_restored';
+            logger.warn(`Topology transition: ${this.effectiveTopology} -> ${targetTopology} (Reason: ${reason}, Peers: ${peerCount})`);
+            this.effectiveTopology = targetTopology;
+            this.emit('topologyChange', targetTopology, reason);
+        }
+    }
+
+    private startMetricsTask(): void {
+        if (this.metricsTimer) return;
+        this.metricsTimer = setInterval(() => this.updateMetrics(), this.config.metricsInterval);
+    }
+
+    private stopMetricsTask(): void {
+        if (this.metricsTimer) {
+            clearInterval(this.metricsTimer);
+            this.metricsTimer = null;
+        }
+    }
+
+    private async updateMetrics(): Promise<void> {
+        const peers = Array.from(this.peerStatus.keys());
+        if (peers.length === 0) return;
+
+        // Ping all peers in parallel
+        await Promise.all(peers.map(async (peerId) => {
+            const rtt = await this.ping(peerId);
+            this.peerMetrics.set(peerId, {
+                peerId,
+                rtt,
+                status: this.peerStatus.get(peerId) || 'relay'
+            });
+        }));
+
+        const metrics: MeshMetrics = {
+            peers: Array.from(this.peerMetrics.values()),
+            effectiveTopology: this.effectiveTopology,
+            totalPeers: peers.length
+        };
+
+        this.emit('metricsUpdate', metrics);
     }
 
     private setState(newState: MeshLifecycleState): void {
@@ -533,7 +621,7 @@ export class MeshClient {
     private emit<K extends keyof MeshEventMap>(event: K, ...args: Parameters<MeshEventMap[K]>): void {
         const listeners = this.eventListeners.get(event);
         if (listeners) {
-            for (const handler of listeners) {
+            for (const handler of Array.from(listeners)) {
                 try {
                     (handler as (...args: any[]) => void)(...args);
                 } catch (e) {

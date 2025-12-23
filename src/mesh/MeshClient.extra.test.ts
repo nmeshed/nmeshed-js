@@ -139,7 +139,7 @@ describe('MeshClient Coverage Boost', () => {
         const peerDisconnectHandler = vi.fn();
         mesh.on('peerDisconnect', peerDisconnectHandler);
 
-        connectionListeners.onPeerDisconnect('peer-1');
+        signalingListeners.onPresence('peer-1', 'offline');
         expect(peerDisconnectHandler).toHaveBeenCalledWith('peer-1');
     });
 
@@ -294,8 +294,8 @@ describe('MeshClient Coverage Boost', () => {
         // Add a peer first
         (mesh as any).peerStatus.set('peer-1', 'p2p');
 
-        // Trigger disconnect
-        connectionListeners.onPeerDisconnect('peer-1');
+        // Trigger disconnect via presence
+        signalingListeners.onPresence('peer-1', 'offline');
 
         expect(disconnectHandler).toHaveBeenCalledWith('peer-1');
     });

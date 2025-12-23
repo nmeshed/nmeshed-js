@@ -65,6 +65,8 @@ export class MessageError extends NMeshedError {
     }
 }
 
+import { MeshErrorCode } from './mesh/types';
+
 /**
  * Thrown when the operation queue exceeds capacity.
  */
@@ -76,5 +78,19 @@ export class QueueOverflowError extends NMeshedError {
             'QUEUE_OVERFLOW_ERROR'
         );
         this.name = 'QueueOverflowError';
+    }
+}
+
+/**
+ * Thrown by the Mesh module for P2P or signaling failures.
+ */
+export class MeshError extends NMeshedError {
+    constructor(
+        public readonly code: MeshErrorCode,
+        message: string,
+        public readonly diagnostics?: Record<string, unknown>
+    ) {
+        super(message, code);
+        this.name = 'MeshError';
     }
 }
