@@ -40,6 +40,7 @@ import type {
     OfferSignal,
     AnswerSignal,
     CandidateSignal,
+    ChaosOptions,
 } from './types';
 import { logger } from '../utils/Logger';
 
@@ -65,6 +66,8 @@ export class MeshClient {
     private peerStatus: Map<string, 'relay' | 'p2p'> = new Map();
 
     private syncTimeout: ReturnType<typeof setTimeout> | null = null;
+    private chaos: ChaosOptions | null = null;
+    private pendingPings: Map<string, (rtt: number) => void> = new Map();
 
     // Event listeners
     private eventListeners: Map<keyof MeshEventMap, Set<(...args: any[]) => void>> = new Map();
@@ -157,23 +160,25 @@ export class MeshClient {
      * Note: No-op if sync state is not ACTIVE (prevents empty snapshots before hydration).
      */
     public broadcast(data: ArrayBuffer | Uint8Array): void {
-        if (!this.canSend()) {
-            logger.mesh('Broadcast blocked - state is ' + this.state);
-            return;
-        }
-
-        const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-
-        // 1. Send via Relay (WebSocket) to everyone not yet on P2P
-        // We also send to "server" if we want authority processing
-        this.peerStatus.forEach((status, peerId) => {
-            if (status !== 'p2p') {
-                this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+        this.withChaos(() => {
+            if (!this.canSend()) {
+                logger.mesh('Broadcast blocked - state is ' + this.state);
+                return;
             }
-        });
 
-        // 2. Send via P2P (DataChannel)
-        this.connections.broadcast(data);
+            const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+
+            // 1. Send via Relay (WebSocket) to everyone not yet on P2P
+            // We also send to "server" if we want authority processing
+            this.peerStatus.forEach((status, peerId) => {
+                if (status !== 'p2p') {
+                    this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+                }
+            });
+
+            // 2. Send via P2P (DataChannel)
+            this.connections.broadcast(data);
+        });
     }
 
     /**
@@ -183,21 +188,23 @@ export class MeshClient {
      * Note: No-op if sync state is not ACTIVE (prevents empty snapshots before hydration).
      */
     public sendToPeer(peerId: string, data: ArrayBuffer | Uint8Array): void {
-        if (!this.canSend()) {
-            logger.mesh('SendToPeer blocked - state is ' + this.state);
-            return;
-        }
+        this.withChaos(() => {
+            if (!this.canSend()) {
+                logger.mesh('SendToPeer blocked - state is ' + this.state);
+                return;
+            }
 
-        const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-        const status = this.peerStatus.get(peerId);
+            const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+            const status = this.peerStatus.get(peerId);
 
-        // Routing Decision: If P2P is active and verified, use it.
-        // Otherwise, use the reliable Relay path.
-        if (status === 'p2p' && this.connections.isDirect(peerId)) {
-            this.connections.sendToPeer(peerId, data);
-        } else {
-            this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
-        }
+            // Routing Decision: If P2P is active and verified, use it.
+            // Otherwise, use the reliable Relay path.
+            if (status === 'p2p' && this.connections.isDirect(peerId)) {
+                this.connections.sendToPeer(peerId, data);
+            } else {
+                this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+            }
+        });
     }
 
     /**
@@ -231,6 +238,73 @@ export class MeshClient {
             y: Math.round(y),
             timestamp: Date.now(),
         });
+    }
+
+    /**
+     * Measures Round-Trip Time (RTT) to a specific peer.
+     * @param peerId - The ID of the peer to ping
+     * @returns Promise resolving to the RTT in milliseconds
+     */
+    public async ping(peerId: string): Promise<number> {
+        return new Promise((resolve) => {
+            const requestId = Math.random().toString(36).substring(2, 11);
+            const start = performance.now();
+
+            const timer = setTimeout(() => {
+                this.pendingPings.delete(requestId);
+                resolve(-1); // Timeout
+            }, 5000);
+
+            this.pendingPings.set(requestId, (rtt) => {
+                clearTimeout(timer);
+                resolve(rtt);
+            });
+
+            this.sendEphemeral({
+                type: '__ping__',
+                requestId,
+                from: this.myId,
+                timestamp: start,
+            }, peerId);
+        });
+    }
+
+    /**
+     * Enables artificial network conditions for testing.
+     * @param options - Chaos configuration
+     */
+    public simulateNetwork(options: ChaosOptions | null): void {
+        this.chaos = options;
+        if (options) {
+            logger.warn('Network Chaos Mode ENABLED:', options);
+        } else {
+            logger.mesh('Network Chaos Mode DISABLED');
+        }
+    }
+
+    private withChaos(fn: () => void): void {
+        if (!this.chaos) {
+            fn();
+            return;
+        }
+
+        // 1. Packet Loss
+        if (this.chaos.packetLoss && Math.random() * 100 < this.chaos.packetLoss) {
+            logger.mesh('Chaos: Packet dropped');
+            return;
+        }
+
+        // 2. Latency + Jitter
+        let delay = this.chaos.latency || 0;
+        if (this.chaos.jitter) {
+            delay += (Math.random() * 2 - 1) * this.chaos.jitter;
+        }
+
+        if (delay > 0) {
+            setTimeout(fn, delay);
+        } else {
+            fn();
+        }
     }
 
 
@@ -334,7 +408,30 @@ export class MeshClient {
                 this.emit('init', actualPayload);
                 this.setState('ACTIVE');
             },
-            onEphemeral: (payload) => this.emit('ephemeral', payload),
+            onEphemeral: (payload) => {
+                // Internal diagnostic handlers
+                if (payload.type === '__ping__') {
+                    this.sendEphemeral({
+                        type: '__pong__',
+                        requestId: payload.requestId,
+                        from: this.myId,
+                        timestamp: payload.timestamp,
+                    }, payload.from);
+                    return;
+                }
+
+                if (payload.type === '__pong__') {
+                    const handler = this.pendingPings.get(payload.requestId);
+                    if (handler) {
+                        const rtt = performance.now() - payload.timestamp;
+                        this.pendingPings.delete(payload.requestId);
+                        handler(rtt);
+                    }
+                    return;
+                }
+
+                this.emit('ephemeral', payload);
+            },
         });
 
         // Connection events

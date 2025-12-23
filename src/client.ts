@@ -30,6 +30,7 @@ import type {
     EphemeralHandler,
     PresenceHandler,
     ResolvedConfig,
+    ChaosOptions,
 } from './types';
 import {
     ConfigurationError,
@@ -134,6 +135,8 @@ export class NMeshedClient {
     private core: NMeshedClientCore | null = null;
     private preConnectState: Record<string, unknown> = {};
     private isDestroyed = false;
+    private chaos: ChaosOptions | null = null;
+    private pendingPings: Map<string, (rtt: number) => void> = new Map();
 
     /**
      * Creates a new nMeshed client instance.
@@ -495,6 +498,29 @@ export class NMeshedClient {
                 case 'ephemeral': {
                     // Cursor/typing indicators from other clients
                     const ephemeralPayload = parsed.payload || parsed;
+
+                    // Internal diagnostic handlers
+                    if (ephemeralPayload.type === '__ping__' && ephemeralPayload.to === this.config.userId) {
+                        this.broadcast({
+                            type: '__pong__',
+                            requestId: ephemeralPayload.requestId,
+                            from: this.config.userId,
+                            to: ephemeralPayload.from,
+                            timestamp: ephemeralPayload.timestamp,
+                        });
+                        return;
+                    }
+
+                    if (ephemeralPayload.type === '__pong__' && ephemeralPayload.to === this.config.userId) {
+                        const handler = this.pendingPings.get(ephemeralPayload.requestId);
+                        if (handler) {
+                            const rtt = performance.now() - ephemeralPayload.timestamp;
+                            this.pendingPings.delete(ephemeralPayload.requestId);
+                            handler(rtt);
+                        }
+                        return;
+                    }
+
                     for (const listener of this.ephemeralListeners) {
                         try {
                             listener(ephemeralPayload);
@@ -628,6 +654,86 @@ export class NMeshedClient {
         this.sendOperation(key, value);
     }
 
+    /**
+     * Gets the current user ID.
+     */
+    getId(): string {
+        return this.config.userId;
+    }
+
+    /**
+     * Measures Round-Trip Time (RTT) to a specific user.
+     * @param userId - The ID of the user to ping
+     * @returns Promise resolving to the RTT in milliseconds
+     */
+    async ping(userId: string): Promise<number> {
+        return new Promise((resolve) => {
+            if (this.status !== 'CONNECTED') {
+                resolve(-1);
+                return;
+            }
+
+            const requestId = Math.random().toString(36).substring(2, 11);
+            const start = performance.now();
+
+            const timer = setTimeout(() => {
+                this.pendingPings.delete(requestId);
+                resolve(-1); // Timeout
+            }, 5000);
+
+            this.pendingPings.set(requestId, (rtt) => {
+                clearTimeout(timer);
+                resolve(rtt);
+            });
+
+            this.broadcast({
+                type: '__ping__',
+                requestId,
+                from: this.config.userId,
+                to: userId,
+                timestamp: start,
+            });
+        });
+    }
+
+    /**
+     * Enables artificial network conditions for testing.
+     * @param options - Chaos configuration
+     */
+    simulateNetwork(options: ChaosOptions | null): void {
+        this.chaos = options;
+        if (options) {
+            this.log('Network Chaos Mode ENABLED:', options);
+        } else {
+            this.log('Network Chaos Mode DISABLED');
+        }
+    }
+
+    private withChaos(fn: () => void): void {
+        if (!this.chaos) {
+            fn();
+            return;
+        }
+
+        // 1. Packet Loss
+        if (this.chaos.packetLoss && Math.random() * 100 < this.chaos.packetLoss) {
+            this.log('Chaos: Packet dropped');
+            return;
+        }
+
+        // 2. Latency + Jitter
+        let delay = this.chaos.latency || 0;
+        if (this.chaos.jitter) {
+            delay += (Math.random() * 2 - 1) * this.chaos.jitter;
+        }
+
+        if (delay > 0) {
+            setTimeout(fn, delay);
+        } else {
+            fn();
+        }
+    }
+
     get<T = unknown>(key: string): T | undefined {
         if (!this.core) {
             return this.preConnectState[key] as T | undefined;
@@ -680,24 +786,26 @@ export class NMeshedClient {
      * @param payload - The data to broadcast (JSON object or Binary ArrayBuffer)
      */
     broadcast(payload: unknown): void {
-        if (this.ws?.readyState !== WebSocket.OPEN) {
-            this.warn('Cannot broadcast: not connected');
-            return;
-        }
-
-        try {
-            // Binary Path (Fast Lane) - Always prefer binary
-            if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
-                this.ws.send(payload);
+        this.withChaos(() => {
+            if (this.ws?.readyState !== WebSocket.OPEN) {
+                this.warn('Cannot broadcast: not connected');
                 return;
             }
 
-            // Encode non-binary payload to binary (uses encodeValue for JSON encoding)
-            const encoded = encodeValue(payload);
-            this.ws.send(encoded);
-        } catch (error) {
-            this.warn('Failed to broadcast message:', error);
-        }
+            try {
+                // Binary Path (Fast Lane) - Always prefer binary
+                if (payload instanceof ArrayBuffer || payload instanceof Uint8Array) {
+                    this.ws!.send(payload);
+                    return;
+                }
+
+                // Encode non-binary payload to binary (uses encodeValue for JSON encoding)
+                const encoded = encodeValue(payload);
+                this.ws!.send(encoded);
+            } catch (error) {
+                this.warn('Failed to broadcast message:', error);
+            }
+        });
     }
 
     /**
@@ -725,7 +833,9 @@ export class NMeshedClient {
             const binaryOp = this.core.apply_local_op(key, valBytes, BigInt(timestamp));
 
             if (this.ws) {
-                this.ws.send(binaryOp);
+                this.withChaos(() => {
+                    this.ws?.send(binaryOp);
+                });
             }
             this.log('Sent binary operation (WASM-packed):', key);
         } catch (error) {

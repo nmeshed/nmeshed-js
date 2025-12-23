@@ -35,6 +35,7 @@ export { useCursor } from './useCursor';
 export { LiveCursors } from './LiveCursors';
 export { AvatarStack } from './AvatarStack';
 export { NMeshedProvider, useNmeshedContext } from './context';
+export { NMeshedHUD } from './NMeshedHUD';
 export type { UseNmeshedOptions, UseNmeshedReturn } from './useNmeshed';
 export type { UseDocumentOptions, UseDocumentReturn } from './useDocument';
 export type { UsePresenceOptions } from './usePresence';

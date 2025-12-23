@@ -387,7 +387,9 @@ describe('usePresence Hooks', () => {
             // Check if initial fetch happened
             return result.current.length > 0;
         });
-        expect(result.current).toEqual([{ userId: 'u1', status: 'online' }]);
+        expect(result.current).toEqual([
+            expect.objectContaining({ userId: 'u1', status: 'online', color: expect.any(String) })
+        ]);
 
         // Send WS update (new user)
         act(() => {
@@ -414,7 +416,9 @@ describe('usePresence Hooks', () => {
         await waitFor(() => {
             expect(result.current.length).toBe(2);
         });
-        expect(result.current).toContainEqual({ userId: 'u2', status: 'online' });
+        expect(result.current).toContainEqual(
+            expect.objectContaining({ userId: 'u2', status: 'online', color: expect.any(String) })
+        );
 
         // Offline update
         act(() => {

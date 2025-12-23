@@ -147,6 +147,8 @@ export interface PresenceUser {
     status: 'online' | 'idle' | 'offline';
     last_seen?: string;
     metadata?: Record<string, unknown>;
+    color?: string;
+    latency?: number;
 }
 
 /**
@@ -194,3 +196,19 @@ export type PresenceHandler = (user: PresenceMessage['payload']) => void;
  * Internal resolved configuration with all defaults applied.
  */
 export type ResolvedConfig = Required<NMeshedConfig>;
+
+// ============================================
+//           CHAOS & DIAGNOSTICS
+// ============================================
+
+/**
+ * Configuration for network simulation (Chaos Mode).
+ */
+export interface ChaosOptions {
+    /** Artificial latency in ms added to all outgoing messages */
+    latency?: number;
+    /** Random jitter in ms added to latency */
+    jitter?: number;
+    /** Percentage probability of dropping a packet (0-100) */
+    packetLoss?: number;
+}

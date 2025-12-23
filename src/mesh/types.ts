@@ -135,3 +135,19 @@ export interface MeshEventMap {
     // Ephemeral
     ephemeral: (payload: any) => void;
 }
+
+// ============================================
+//           CHAOS & DIAGNOSTICS
+// ============================================
+
+/**
+ * Configuration for network simulation (Chaos Mode).
+ */
+export interface ChaosOptions {
+    /** Artificial latency in ms added to all outgoing messages */
+    latency?: number;
+    /** Random jitter in ms added to latency */
+    jitter?: number;
+    /** Percentage probability of dropping a packet (0-100) */
+    packetLoss?: number;
+}
