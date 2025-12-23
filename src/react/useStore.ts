@@ -63,6 +63,11 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
 
     // Setter function that handles encoding and sends operations
     const setStore = useCallback((updates: Partial<Record<keyof T, any>>) => {
+        if (!updates || typeof updates !== 'object') {
+            console.error('[useStore] setStore called with invalid updates:', updates);
+            return;
+        }
+
         for (const key of Object.keys(updates) as Array<keyof T>) {
             const fieldDef = schema.definition[key as string];
             const value = updates[key];
@@ -72,13 +77,19 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
                 continue;
             }
 
-            // Encode the value using schema
-            const encoded = SchemaSerializer.encodeValue(fieldDef, value);
+            try {
+                // Encode the value using schema
+                const encoded = SchemaSerializer.encodeValue(fieldDef, value);
 
-            // Send the operation
-            client.sendOperation(String(key), encoded);
+                // Send the operation
+                client.sendOperation(String(key), encoded);
+            } catch (e) {
+                console.error(`[useStore] Failed to encode field "${String(key)}":`, e);
+                // Continue with other fields rather than failing completely
+            }
         }
     }, [client, schema]);
+
 
     useEffect(() => {
         // Update on mount in case it changed

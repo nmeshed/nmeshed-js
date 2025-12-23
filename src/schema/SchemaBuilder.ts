@@ -93,11 +93,25 @@ export class SchemaSerializer {
     }
 
     static decode(schema: SchemaDefinition, buffer: Uint8Array): any {
+        if (!buffer || buffer.byteLength === 0) {
+            // Return empty object with defaults for empty buffer
+            const result: any = {};
+            for (const key of Object.keys(schema).sort()) {
+                result[key] = this.getDefaultForType(schema[key]);
+            }
+            return result;
+        }
+
         const result: any = {};
         const state = { offset: 0, buffer, view: new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength) };
         const keys = Object.keys(schema).sort();
         for (const key of keys) {
-            result[key] = this.decodeField(schema[key], state);
+            try {
+                result[key] = this.decodeField(schema[key], state);
+            } catch (e) {
+                // If decoding fails, set to default and continue
+                result[key] = this.getDefaultForType(schema[key]);
+            }
         }
         return result;
     }
@@ -107,9 +121,33 @@ export class SchemaSerializer {
     }
 
     static decodeValue(type: SchemaField, buffer: Uint8Array): any {
+        if (!buffer || buffer.byteLength === 0) {
+            return this.getDefaultForType(type);
+        }
         const state = { offset: 0, buffer, view: new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength) };
         return this.decodeField(type, state);
     }
+
+    /**
+     * Returns sensible defaults for each type to avoid runtime errors.
+     */
+    private static getDefaultForType(type: SchemaField): any {
+        if (typeof type === 'string') {
+            switch (type) {
+                case 'string': return '';
+                case 'boolean': return false;
+                case 'float32': case 'float64': return 0.0;
+                default: return 0; // All numeric types
+            }
+        }
+        switch (type.type) {
+            case 'array': return [];
+            case 'map': return {};
+            case 'object': return {};
+            default: return null;
+        }
+    }
+
 
     private static encodeField(type: SchemaField, value: any): Uint8Array {
         if (typeof type === 'string') {

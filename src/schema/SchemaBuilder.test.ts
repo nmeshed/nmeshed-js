@@ -156,5 +156,43 @@ describe('SchemaBuilder', () => {
             expect(decoded.tasks['task-1'].completed).toBe(false);
             expect(decoded.tasks['task-2'].completed).toBe(true);
         });
+
+        // Edge case tests for defensive programming
+        it('should return defaults for empty buffer', () => {
+            const schema = {
+                name: 'string',
+                count: 'uint32',
+                active: 'boolean'
+            } as const;
+
+            const decoded = SchemaSerializer.decode(schema, new Uint8Array(0));
+
+            expect(decoded.name).toBe('');
+            expect(decoded.count).toBe(0);
+            expect(decoded.active).toBe(false);
+        });
+
+        it('should return defaults for null/undefined buffer', () => {
+            const schema = {
+                items: { type: 'array', itemType: 'string' } as const,
+                tags: { type: 'map', schema: { name: 'string' } } as const
+            };
+
+            const decoded = SchemaSerializer.decode(schema, null as any);
+
+            expect(decoded.items).toEqual([]);
+            expect(decoded.tags).toEqual({});
+        });
+
+        it('should handle empty map encoding', () => {
+            const schema = {
+                tasks: { type: 'map', schema: { id: 'string' } } as const
+            };
+
+            const encoded = SchemaSerializer.encode(schema, { tasks: {} });
+            const decoded = SchemaSerializer.decode(schema, encoded);
+
+            expect(decoded.tasks).toEqual({});
+        });
     });
 });
