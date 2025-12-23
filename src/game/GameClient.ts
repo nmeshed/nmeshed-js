@@ -159,10 +159,106 @@ export class GameClient extends MeshClient {
         });
     }
 
+    // ============================================
+    //           FIXED-TIMESTEP TICK LOOP
+    // ============================================
+
+    private tickCallbacks: Set<(dt: number) => void> = new Set();
+    private animationFrameId: number | null = null;
+    private lastTickTime: number = 0;
+    private accumulator: number = 0;
+    private _isRunning: boolean = false;
+
+    /**
+     * Returns true if the tick loop is running.
+     */
+    public get isRunning(): boolean {
+        return this._isRunning;
+    }
+
+    /**
+     * Registers a callback to be called on each fixed-timestep tick.
+     * Returns an unsubscribe function.
+     *
+     * @param callback - Function called with delta time in seconds
+     * @example
+     * ```typescript
+     * const unsub = client.onTick((dt) => {
+     *     updatePhysics(dt);
+     *     syncEntities();
+     * });
+     * ```
+     */
+    public onTick(callback: (dt: number) => void): () => void {
+        this.tickCallbacks.add(callback);
+        return () => this.tickCallbacks.delete(callback);
+    }
+
+    /**
+     * Starts the fixed-timestep loop.
+     * Automatically called on connect() if tickRate is set.
+     */
+    public startLoop(): void {
+        if (this._isRunning) return;
+        if (!this.gameConfig.tickRate || this.gameConfig.tickRate <= 0) {
+            logger.mesh('GameClient: Cannot start loop without valid tickRate');
+            return;
+        }
+
+        this._isRunning = true;
+        this.lastTickTime = performance.now();
+        this.accumulator = 0;
+
+        const frameMs = 1000 / this.gameConfig.tickRate;
+
+        const loop = (now: number) => {
+            if (!this._isRunning) return;
+
+            const deltaMs = now - this.lastTickTime;
+            this.lastTickTime = now;
+            this.accumulator += deltaMs;
+
+            // Fixed timestep: drain accumulator in fixed chunks
+            while (this.accumulator >= frameMs) {
+                const dt = frameMs / 1000; // Convert to seconds
+                for (const callback of this.tickCallbacks) {
+                    try {
+                        callback(dt);
+                    } catch (e) {
+                        console.error('[GameClient] Error in tick callback:', e);
+                    }
+                }
+                this.accumulator -= frameMs;
+            }
+
+            this.animationFrameId = requestAnimationFrame(loop);
+        };
+
+        this.animationFrameId = requestAnimationFrame(loop);
+        logger.mesh(`GameClient: Tick loop started at ${this.gameConfig.tickRate} Hz`);
+    }
+
+    /**
+     * Stops the fixed-timestep loop.
+     */
+    public stopLoop(): void {
+        if (!this._isRunning) return;
+
+        this._isRunning = false;
+        if (this.animationFrameId !== null) {
+            cancelAnimationFrame(this.animationFrameId);
+            this.animationFrameId = null;
+        }
+        logger.mesh('GameClient: Tick loop stopped');
+    }
+
     /**
      * Cleans up all resources.
      */
     public override destroy(): void {
+        this.stopLoop();
+        this.tickCallbacks.clear();
+
         for (const map of this.syncedMaps.values()) {
             map.destroy();
         }
@@ -176,3 +272,4 @@ export class GameClient extends MeshClient {
         super.destroy();
     }
 }
+

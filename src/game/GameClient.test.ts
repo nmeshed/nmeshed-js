@@ -249,4 +249,174 @@ describe('GameClient', () => {
             expect(client.getSyncedMaps().size).toBe(0);
         });
     });
+
+    describe('Fixed-Timestep Tick Loop', () => {
+        // Mock requestAnimationFrame and cancelAnimationFrame
+        let rafCallbacks: ((time: number) => void)[] = [];
+        let rafId = 0;
+
+        beforeEach(() => {
+            rafCallbacks = [];
+            rafId = 0;
+
+            vi.stubGlobal('requestAnimationFrame', (cb: (time: number) => void) => {
+                rafCallbacks.push(cb);
+                return ++rafId;
+            });
+
+            vi.stubGlobal('cancelAnimationFrame', () => {
+                // Just clear
+            });
+
+            vi.stubGlobal('performance', {
+                now: vi.fn().mockReturnValue(0),
+            });
+        });
+
+        it('should register and unregister tick callbacks', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            const callback = vi.fn();
+            const unsubscribe = client.onTick(callback);
+
+            expect(typeof unsubscribe).toBe('function');
+
+            unsubscribe();
+        });
+
+        it('should start and stop the loop', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            expect(client.isRunning).toBe(false);
+
+            client.startLoop();
+            expect(client.isRunning).toBe(true);
+
+            client.stopLoop();
+            expect(client.isRunning).toBe(false);
+        });
+
+        it('should not start loop twice', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            client.startLoop();
+            const initialRafCount = rafCallbacks.length;
+
+            client.startLoop(); // Should be no-op
+            expect(rafCallbacks.length).toBe(initialRafCount);
+        });
+
+        it('should not start loop without valid tickRate', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 0,
+            });
+
+            client.startLoop();
+            expect(client.isRunning).toBe(false);
+        });
+
+        it('should call tick callbacks with correct delta time', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            const callback = vi.fn();
+            client.onTick(callback);
+            client.startLoop();
+
+            // Simulate one frame (16.67ms)
+            (performance.now as ReturnType<typeof vi.fn>)
+                .mockReturnValueOnce(0)
+                .mockReturnValueOnce(16.67);
+
+            if (rafCallbacks.length > 0) {
+                rafCallbacks[0](16.67);
+            }
+
+            expect(callback).toHaveBeenCalledWith(expect.closeTo(1 / 60, 0.001));
+        });
+
+        it('should handle errors in tick callbacks gracefully', () => {
+            const consoleError = vi.spyOn(console, 'error').mockImplementation(() => { });
+
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            const failingCallback = vi.fn(() => { throw new Error('Test error'); });
+            const successCallback = vi.fn();
+
+            client.onTick(failingCallback);
+            client.onTick(successCallback);
+            client.startLoop();
+
+            (performance.now as ReturnType<typeof vi.fn>)
+                .mockReturnValueOnce(0)
+                .mockReturnValueOnce(16.67);
+
+            if (rafCallbacks.length > 0) {
+                rafCallbacks[0](16.67);
+            }
+
+            expect(failingCallback).toHaveBeenCalled();
+            expect(successCallback).toHaveBeenCalled();
+            expect(consoleError).toHaveBeenCalled();
+
+            consoleError.mockRestore();
+        });
+
+        it('should stop loop on destroy', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            client.startLoop();
+            expect(client.isRunning).toBe(true);
+
+            client.destroy();
+            expect(client.isRunning).toBe(false);
+        });
+
+        it('should not call callbacks after stopLoop', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                tickRate: 60,
+            });
+
+            const callback = vi.fn();
+            client.onTick(callback);
+            client.startLoop();
+            client.stopLoop();
+
+            (performance.now as ReturnType<typeof vi.fn>).mockReturnValue(16.67);
+
+            if (rafCallbacks.length > 0) {
+                rafCallbacks[0](16.67);
+            }
+
+            expect(callback).not.toHaveBeenCalled();
+        });
+    });
 });
+
