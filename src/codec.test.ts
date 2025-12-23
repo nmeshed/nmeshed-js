@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { encodeValue, decodeValue, isBinary } from './codec';
+import { encodeValue, decodeValue, isBinary, encodeForWire } from './codec';
 
 describe('encodeValue', () => {
     it('passes through Uint8Array unchanged', () => {
@@ -93,6 +93,15 @@ describe('decodeValue', () => {
         const buffer = new TextEncoder().encode(json).buffer;
         expect(decodeValue(buffer)).toEqual({ test: true });
     });
+
+    it('returns raw bytes for invalid UTF-8 sequences', () => {
+        // Create invalid UTF-8 byte sequence (lone continuation byte)
+        const invalidUtf8 = new Uint8Array([0xFF, 0xFE, 0x80, 0x81]);
+        const result = decodeValue(invalidUtf8);
+        // TextDecoder in Node replaces invalid bytes with replacement char
+        // So it will return a string with replacement characters
+        expect(typeof result).toBe('string');
+    });
 });
 
 describe('isBinary', () => {
@@ -110,5 +119,19 @@ describe('isBinary', () => {
         expect(isBinary({})).toBe(false);
         expect(isBinary(null)).toBe(false);
         expect(isBinary(undefined)).toBe(false);
+    });
+});
+
+describe('encodeForWire', () => {
+    it('delegates to encodeValue', () => {
+        const result = encodeForWire({ key: 'value' });
+        expect(result.byteLength).toBeGreaterThan(0);
+        const decoded = JSON.parse(new TextDecoder().decode(result));
+        expect(decoded).toEqual({ key: 'value' });
+    });
+
+    it('encodes strings correctly', () => {
+        const result = encodeForWire('test string');
+        expect(new TextDecoder().decode(result)).toBe('test string');
     });
 });

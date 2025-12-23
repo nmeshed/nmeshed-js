@@ -902,6 +902,19 @@ export class NMeshedClient {
     }
 
     /**
+     * Compatibility event emitter interface.
+     * Maps 'ephemeral' to onBroadcast and 'presence' to onPresence.
+     * @internal
+     */
+    on(event: string, handler: any): () => void {
+        if (event === 'ephemeral') return this.onBroadcast(handler);
+        if (event === 'presence') return this.onPresence(handler);
+        if (event === 'status') return this.onStatusChange(handler);
+        if (event === 'message') return this.onMessage(handler);
+        return () => { };
+    }
+
+    /**
      * Subscribes to connection status changes.
      *
      * The handler is called immediately with the current status.

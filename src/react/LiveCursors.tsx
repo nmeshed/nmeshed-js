@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useBroadcast } from './useBroadcast';
-import { packCursor, unpackCursor, isBinaryCursor } from '../sync/binary';
-// Note: usePresence is not needed for cursor tracking, only raw broadcast
+import { useNmeshedContext, useCursor } from './index';
 
 export interface CursorState {
     x: number;
@@ -41,7 +39,10 @@ function CursorIcon({ color }: { color: string }) {
  * Optimized for 60fps+ by bypassing React render cycle for movement.
  * Uses requestAnimationFrame and direct DOM manipulation.
  */
-export function LiveCursors({ selfId }: { selfId?: string }) {
+export function LiveCursors() {
+    const client = useNmeshedContext();
+    const { cursors, sendCursor } = useCursor(client as any);
+
     // 1. Mutable State (No Re-renders for movement)
     const cursorState = useRef<Record<string, CursorState>>({});
     const domRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -50,7 +51,46 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
     // 2. React State (Only for mounting/unmounting DOM elements)
     const [activeIds, setActiveIds] = useState<string[]>([]);
 
-    // 3. Game Loop (Animation Frame)
+    // 3. Sync cursors Map to internal LERP state
+    useEffect(() => {
+        let changed = false;
+        const now = Date.now();
+
+        // Add/Update cursors from map
+        for (const [id, pos] of cursors.entries()) {
+            if (!cursorState.current[id]) {
+                cursorState.current[id] = {
+                    x: pos.x,
+                    y: pos.y,
+                    targetX: pos.x,
+                    targetY: pos.y,
+                    lastUpdate: now,
+                    color: getColor(id),
+                };
+                changed = true;
+            } else {
+                const c = cursorState.current[id];
+                c.targetX = pos.x;
+                c.targetY = pos.y;
+                c.lastUpdate = now;
+            }
+        }
+
+        // Cleanup stale ones that are no longer in the cursors map
+        for (const id in cursorState.current) {
+            if (!cursors.has(id)) {
+                delete cursorState.current[id];
+                delete domRefs.current[id];
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            setActiveIds(Object.keys(cursorState.current));
+        }
+    }, [cursors]);
+
+    // 4. Game Loop (Animation Frame)
     const animateRef = useRef<() => void>();
 
     const animate = useCallback(() => {
@@ -75,7 +115,6 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
                 }
 
                 // Direct DOM update (Zero React Overhead)
-                // Using translate3d forces GPU acceleration layer
                 el.style.transform = `translate3d(${cursor.x}px, ${cursor.y}px, 0)`;
             }
         }
@@ -85,7 +124,7 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
         }
     }, [activeIds]);
 
-    // Keep ref updated
+    // Keep animate callback up to date
     useEffect(() => {
         animateRef.current = animate;
     }, [animate]);
@@ -98,94 +137,15 @@ export function LiveCursors({ selfId }: { selfId?: string }) {
         return () => cancelAnimationFrame(requestRef.current);
     }, []);
 
-    // 4. Handle Incoming Broadcasts
-    const handleBroadcast = useCallback((payload: unknown) => {
-        let x: number, y: number, userId: string;
-
-        // A. Binary Path (Fast)
-        if (isBinaryCursor(payload)) {
-            const decoded = unpackCursor(payload as ArrayBuffer);
-            if (!decoded) return;
-            x = decoded.x;
-            y = decoded.y;
-            userId = decoded.userId;
-        }
-        // B. JSON Path (Legacy/Fallback)
-        else {
-            const data = payload as any;
-            if (data.type !== 'cursor') return;
-            x = data.x;
-            y = data.y;
-            userId = data.userId;
-        }
-
-        if (userId === selfId) return;
-
-        const now = Date.now();
-        if (!cursorState.current[userId]) {
-            // New cursor: Mount
-            cursorState.current[userId] = {
-                x, y, targetX: x, targetY: y,
-                lastUpdate: now,
-                color: getColor(userId),
-            };
-            setActiveIds(prev => [...prev, userId]);
-        } else {
-            // Update
-            const c = cursorState.current[userId];
-            c.targetX = x;
-            c.targetY = y;
-            c.lastUpdate = now;
-        }
-    }, [selfId]);
-
-    const broadcast = useBroadcast(handleBroadcast);
-
-    // 5. Cleanup Stale Cursors
+    // 5. Broadcast My Position (Throttled via CursorManager internally)
     useEffect(() => {
-        const interval = setInterval(() => {
-            const now = Date.now();
-            let changed = false;
-
-            Object.entries(cursorState.current).forEach(([id, c]) => {
-                if (now - c.lastUpdate > 5000) { // 5s timeout
-                    delete cursorState.current[id];
-                    delete domRefs.current[id];
-                    changed = true;
-                }
-            });
-
-            if (changed) {
-                setActiveIds(Object.keys(cursorState.current));
-            }
-        }, 1000);
-        return () => clearInterval(interval);
-    }, []);
-
-    // 6. Broadcast My Position (Throttled + Binary)
-    useEffect(() => {
-        let lastSent = 0;
-        const THROTTLE_MS = 30;
-
         const handleMouseMove = (e: MouseEvent) => {
-            const now = Date.now();
-            if (now - lastSent < THROTTLE_MS) return;
-
-            lastSent = now;
-
-            // Binary Pack!
-            // Note: clientX/Y are relative to viewport.
-            // In a real app we might want pageX/Y or normalized 0..1 coords.
-            // But this matches the JSON behavior for now.
-            if (selfId) {
-                const buffer = packCursor(selfId, e.clientX, e.clientY);
-                broadcast(buffer);
-            }
+            sendCursor(e.clientX, e.clientY);
         };
 
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
-    }, [broadcast, selfId]);
+    }, [sendCursor]);
 
     return (
         <div className="pointer-events-none fixed inset-0 overflow-hidden z-[9999]">

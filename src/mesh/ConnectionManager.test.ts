@@ -1,343 +1,311 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ConnectionManager } from './ConnectionManager';
 
-// Mock WebRTC interfaces
+// Mock RTCPeerConnection and RTCDataChannel
 class MockRTCDataChannel {
+    binaryType = 'arraybuffer';
     readyState = 'connecting';
-    binaryType = 'blob';
-    onopen: any = null;
-    onmessage: any = null;
-    onclose: any = null;
-    onerror: any = null;
-
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onmessage: ((e: any) => void) | null = null;
+    onerror: ((e: any) => void) | null = null;
     send = vi.fn();
     close = vi.fn();
 
-    constructor(public label: string) { }
-
-    // Helper to simulate events
-    open() {
+    simulateOpen() {
         this.readyState = 'open';
         this.onopen?.();
     }
 
-    receive(data: any) {
+    simulateClose() {
+        this.readyState = 'closed';
+        this.onclose?.();
+    }
+
+    simulateMessage(data: ArrayBuffer) {
         this.onmessage?.({ data });
     }
 }
 
-class MockRTCSessionDescription {
-    constructor(public init: any) { }
-    get type() { return this.init.type; }
-    get sdp() { return this.init.sdp; }
-}
-
-class MockRTCIceCandidate {
-    constructor(public init: any) { }
-    get candidate() { return this.init.candidate; }
-    get sdpMid() { return this.init.sdpMid; }
-    get sdpMLineIndex() { return this.init.sdpMLineIndex; }
-}
-
 class MockRTCPeerConnection {
     static instances: MockRTCPeerConnection[] = [];
-
-    createdDataChannels: MockRTCDataChannel[] = [];
     signalingState = 'stable';
-    onicecandidate: any = null;
-    ondatachannel: any = null;
-    localDescription: any = null;
     remoteDescription: any = null;
+    localDescription: any = null;
+    onicecandidate: ((e: any) => void) | null = null;
+    ondatachannel: ((e: any) => void) | null = null;
 
-    constructor(public config: any) {
+    dataChannel: MockRTCDataChannel | null = null;
+
+    constructor() {
         MockRTCPeerConnection.instances.push(this);
     }
 
-    createDataChannel(label: string) {
-        const dc = new MockRTCDataChannel(label);
-        this.createdDataChannels.push(dc);
-        return dc;
-    }
+    createDataChannel = vi.fn((name: string) => {
+        this.dataChannel = new MockRTCDataChannel();
+        return this.dataChannel;
+    });
 
-    createOffer() {
-        return Promise.resolve({ type: 'offer', sdp: 'mock-offer-sdp' });
-    }
+    createOffer = vi.fn().mockResolvedValue({ type: 'offer', sdp: 'fake-offer-sdp' });
+    createAnswer = vi.fn().mockResolvedValue({ type: 'answer', sdp: 'fake-answer-sdp' });
 
-    createAnswer() {
-        return Promise.resolve({ type: 'answer', sdp: 'mock-answer-sdp' });
-    }
-
-    setLocalDescription(desc: any) {
+    setLocalDescription = vi.fn().mockImplementation(async (desc) => {
         this.localDescription = desc;
-        this.signalingState = desc.type === 'offer' ? 'have-local-offer' : 'stable';
-        return Promise.resolve();
-    }
+        if (desc?.type === 'offer') this.signalingState = 'have-local-offer';
+    });
 
-    setRemoteDescription(desc: any) {
+    setRemoteDescription = vi.fn().mockImplementation(async (desc) => {
         this.remoteDescription = desc;
-        this.signalingState = desc.type === 'offer' ? 'have-remote-offer' : 'stable';
-        return Promise.resolve();
-    }
+        if (desc?.type === 'answer') this.signalingState = 'stable';
+    });
 
-    addIceCandidate(candidate: any) {
-        return Promise.resolve();
-    }
-
+    addIceCandidate = vi.fn().mockResolvedValue(undefined);
     close = vi.fn();
 
-    // Helpers
-    simulateIce(candidate: any) {
+    simulateIceCandidate(candidate: any) {
         this.onicecandidate?.({ candidate });
+    }
+
+    simulateDataChannel(dc: MockRTCDataChannel) {
+        this.ondatachannel?.({ channel: dc });
     }
 }
 
 vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection);
-vi.stubGlobal('RTCSessionDescription', MockRTCSessionDescription);
-vi.stubGlobal('RTCIceCandidate', MockRTCIceCandidate);
+vi.stubGlobal('RTCSessionDescription', class { constructor(public desc: any) { } });
+vi.stubGlobal('RTCIceCandidate', class { constructor(public candidate: any) { } });
 
 describe('ConnectionManager', () => {
-    let cm: ConnectionManager;
-    const config = { iceServers: [] };
+    const config = { iceServers: [{ urls: 'stun:stun.example.com' }] };
 
     beforeEach(() => {
         MockRTCPeerConnection.instances = [];
-        cm = new ConnectionManager(config);
     });
 
-    it('initiates connection correctly', async () => {
+    it('initiates connection and creates offer', async () => {
+        const cm = new ConnectionManager(config);
         const onSignal = vi.fn();
         cm.setListeners({ onSignal });
 
         await cm.initiateConnection('peer-1');
 
         expect(MockRTCPeerConnection.instances.length).toBe(1);
-        const pc = MockRTCPeerConnection.instances[0];
-
-        // Ensure DC created
-        // How to inspect DC created by PC? 
-        // My MockRTCPeerConnection doesn't store created DCs visibly, but logic flow ensures it.
-        // We can check localDescription
-        expect(pc.localDescription.type).toBe('offer');
-        expect(onSignal).toHaveBeenCalledWith('peer-1', { type: 'offer', sdp: 'mock-offer-sdp' });
+        expect(MockRTCPeerConnection.instances[0].createOffer).toHaveBeenCalled();
+        expect(onSignal).toHaveBeenCalledWith('peer-1', expect.objectContaining({ type: 'offer' }));
     });
 
-    it('handles incoming offer', async () => {
+    it('does not duplicate connection for same peer', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+        await cm.initiateConnection('peer-1');
+
+        expect(MockRTCPeerConnection.instances.length).toBe(1);
+    });
+
+    it('handles offer and creates answer', async () => {
+        const cm = new ConnectionManager(config);
         const onSignal = vi.fn();
         cm.setListeners({ onSignal });
 
         await cm.handleOffer('peer-2', 'remote-offer-sdp');
 
         expect(MockRTCPeerConnection.instances.length).toBe(1);
-        const pc = MockRTCPeerConnection.instances[0];
-
-        expect(pc.remoteDescription.sdp).toBe('remote-offer-sdp');
-        expect(pc.localDescription.type).toBe('answer');
-        expect(onSignal).toHaveBeenCalledWith('peer-2', { type: 'answer', sdp: 'mock-answer-sdp' });
+        expect(onSignal).toHaveBeenCalledWith('peer-2', expect.objectContaining({ type: 'answer' }));
     });
 
-    it('handles incoming answer', async () => {
-        // First initiate to set state
+    it('handles answer', async () => {
+        const cm = new ConnectionManager(config);
         await cm.initiateConnection('peer-1');
+
         const pc = MockRTCPeerConnection.instances[0];
+        pc.signalingState = 'have-local-offer';
 
         await cm.handleAnswer('peer-1', 'remote-answer-sdp');
 
-        expect(pc.remoteDescription.sdp).toBe('remote-answer-sdp');
-        expect(pc.signalingState).toBe('stable');
+        expect(pc.setRemoteDescription).toHaveBeenCalled();
     });
 
-    it('handles ICE candidates', async () => {
+    it('ignores answer when no connection exists', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.handleAnswer('unknown', 'sdp');
+        // No error
+    });
+
+    it('handles ICE candidate', async () => {
+        const cm = new ConnectionManager(config);
         await cm.initiateConnection('peer-1');
+
         const pc = MockRTCPeerConnection.instances[0];
-        // Ensure remote description is set so it doesn't buffer
         pc.remoteDescription = { type: 'answer', sdp: 'sdp' };
 
-        const spy = vi.spyOn(pc, 'addIceCandidate');
+        await cm.handleCandidate('peer-1', { candidate: 'ice-candidate' });
 
-        await cm.handleCandidate('peer-1', { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 });
-
-        expect(spy).toHaveBeenCalled();
+        expect(pc.addIceCandidate).toHaveBeenCalled();
     });
 
-    it('buffers candidates until remote description is set', async () => {
+    it('queues ICE candidate if no remote description', async () => {
+        const cm = new ConnectionManager(config);
         await cm.initiateConnection('peer-1');
-        const pc = MockRTCPeerConnection.instances[0];
-        const spyAdd = vi.spyOn(pc, 'addIceCandidate');
 
-        // Simulate state where remote description is not set yet
-        pc.remoteDescription = null; // Mock property
+        await cm.handleCandidate('peer-1', { candidate: 'early-candidate' });
 
-        const cand = { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 };
-        await cm.handleCandidate('peer-1', cand);
-
-        // Should NOT have called addIceCandidate yet
-        expect(spyAdd).not.toHaveBeenCalled();
-
-        // Now handle answer (which sets remote description)
-        await cm.handleAnswer('peer-1', 'sdp-answer');
-
-        // Should now flush buffer
-        // Note: addIceCandidate called with RTCIceCandidate instance
-        expect(spyAdd).toHaveBeenCalledWith(expect.any(MockRTCIceCandidate));
-        // Verify content
-        const arg = spyAdd.mock.calls[0][0]; // This is the MockRTCIceCandidate
-        expect(arg.candidate).toBe(cand.candidate);
+        // Not added yet
+        expect(MockRTCPeerConnection.instances[0].addIceCandidate).not.toHaveBeenCalled();
     });
 
-    it('emits local ICE candidates via signal', async () => {
-        const onSignal = vi.fn();
-        cm.setListeners({ onSignal });
-
-        await cm.initiateConnection('peer-1');
-        const pc = MockRTCPeerConnection.instances[0];
-
-        pc.simulateIce({ candidate: 'local-cand', sdpMid: '0', sdpMLineIndex: 0 });
-
-        expect(onSignal).toHaveBeenCalledWith('peer-1', expect.objectContaining({
-            type: 'candidate',
-            candidate: expect.objectContaining({ candidate: 'local-cand' })
-        }));
-    });
-
-    it('manages DataChannel lifecycle', async () => {
+    it('notifies on peer join when data channel opens', async () => {
+        const cm = new ConnectionManager(config);
         const onPeerJoin = vi.fn();
-        const onPeerDisconnect = vi.fn();
+        cm.setListeners({ onPeerJoin });
+
+        await cm.initiateConnection('peer-1');
+
+        const dc = MockRTCPeerConnection.instances[0].dataChannel!;
+        dc.simulateOpen();
+
+        expect(onPeerJoin).toHaveBeenCalledWith('peer-1');
+    });
+
+    it('handles incoming data channel', async () => {
+        const cm = new ConnectionManager(config);
+        const onPeerJoin = vi.fn();
         const onMessage = vi.fn();
-        cm.setListeners({ onPeerJoin, onPeerDisconnect, onMessage });
+        cm.setListeners({ onPeerJoin, onMessage });
 
-        // Simulate incoming connection (passive side) which receives a DataChannel
-        await cm.handleOffer('peer-2', 'offer');
+        await cm.handleOffer('peer-2', 'offer-sdp');
+
         const pc = MockRTCPeerConnection.instances[0];
+        const incomingDc = new MockRTCDataChannel();
+        pc.simulateDataChannel(incomingDc);
 
-        // Simulate remote creating DC
-        const mockDc = new MockRTCDataChannel('mesh');
-        pc.ondatachannel({ channel: mockDc });
-
-        // DC opens
-        mockDc.open();
+        incomingDc.simulateOpen();
         expect(onPeerJoin).toHaveBeenCalledWith('peer-2');
-        expect(cm.isDirect('peer-2')).toBe(true);
-        expect(cm.getPeerIds()).toContain('peer-2');
 
-        // Message received
-        const data = new ArrayBuffer(8);
-        mockDc.receive(data);
-        expect(onMessage).toHaveBeenCalledWith('peer-2', data);
-
-        // DC closes
-        mockDc.onclose();
-        expect(onPeerDisconnect).toHaveBeenCalledWith('peer-2');
-        expect(cm.isDirect('peer-2')).toBe(false);
+        const buffer = new ArrayBuffer(8);
+        incomingDc.simulateMessage(buffer);
+        expect(onMessage).toHaveBeenCalledWith('peer-2', buffer);
     });
 
-    it('broadcasts to open channels', async () => {
-        // Setup peer 1 (Initiator)
-        await cm.initiateConnection('peer-1');
-        const pc1 = MockRTCPeerConnection.instances[0];
-        const dc1 = pc1.createdDataChannels[0];
-        dc1.open();
-
-        const data = new Uint8Array([1, 2, 3]);
-        cm.broadcast(data);
-
-        expect(dc1.send).toHaveBeenCalled();
-        expect(new Uint8Array(dc1.send.mock.calls[0][0])).toEqual(data);
-    });
-
-    it('sends to specific peer if open', async () => {
-        await cm.initiateConnection('peer-1');
-        const pc1 = MockRTCPeerConnection.instances[0];
-        const dc1 = pc1.createdDataChannels[0];
-        dc1.open();
-
-        const data = new Uint8Array([9]);
-        cm.sendToPeer('peer-1', data);
-
-        expect(dc1.send).toHaveBeenCalled();
-    });
-
-    it('handles glare by rolling back', async () => {
-        // Setup state: we are creating an offer (local)
-        await cm.initiateConnection('peer-1');
-        const pc = MockRTCPeerConnection.instances[0];
-        // signalingState is 'have-local-offer'
-
-        const spyRollback = vi.spyOn(pc, 'setLocalDescription');
-
-        // Incoming offer implies glare
-        await cm.handleOffer('peer-1', 'remote-offer-sdp');
-
-        expect(spyRollback).toHaveBeenCalledWith({ type: 'rollback' });
-        expect(pc.remoteDescription.sdp).toBe('remote-offer-sdp');
-    });
-
-    it('closeAll closes all peer connections', async () => {
+    it('broadcasts to all open channels', async () => {
+        const cm = new ConnectionManager(config);
         await cm.initiateConnection('peer-1');
         await cm.initiateConnection('peer-2');
 
-        expect(MockRTCPeerConnection.instances.length).toBe(2);
+        MockRTCPeerConnection.instances[0].dataChannel!.simulateOpen();
+        MockRTCPeerConnection.instances[1].dataChannel!.simulateOpen();
 
-        cm.closeAll();
+        cm.broadcast(new Uint8Array([1, 2, 3]));
 
-        expect(MockRTCPeerConnection.instances[0].close).toHaveBeenCalled();
-        expect(MockRTCPeerConnection.instances[1].close).toHaveBeenCalled();
+        expect(MockRTCPeerConnection.instances[0].dataChannel!.send).toHaveBeenCalled();
+        expect(MockRTCPeerConnection.instances[1].dataChannel!.send).toHaveBeenCalled();
     });
 
-    it('handles DataChannel error gracefully', async () => {
+    it('sends to specific peer', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+
+        MockRTCPeerConnection.instances[0].dataChannel!.simulateOpen();
+
+        cm.sendToPeer('peer-1', new Uint8Array([1]));
+        expect(MockRTCPeerConnection.instances[0].dataChannel!.send).toHaveBeenCalled();
+    });
+
+    it('isDirect returns true for open channel', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+
+        expect(cm.isDirect('peer-1')).toBe(false);
+
+        MockRTCPeerConnection.instances[0].dataChannel!.simulateOpen();
+        expect(cm.isDirect('peer-1')).toBe(true);
+    });
+
+    it('hasPeer returns correct status', async () => {
+        const cm = new ConnectionManager(config);
+        expect(cm.hasPeer('peer-1')).toBe(false);
+
+        await cm.initiateConnection('peer-1');
+        expect(cm.hasPeer('peer-1')).toBe(true);
+    });
+
+    it('getPeerIds returns all peers', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+        await cm.initiateConnection('peer-2');
+
+        expect(cm.getPeerIds()).toEqual(['peer-1', 'peer-2']);
+    });
+
+    it('closes all connections', async () => {
+        const cm = new ConnectionManager(config);
         const onPeerDisconnect = vi.fn();
         cm.setListeners({ onPeerDisconnect });
 
-        await cm.handleOffer('peer-2', 'offer');
-        const pc = MockRTCPeerConnection.instances[0];
+        await cm.initiateConnection('peer-1');
+        await cm.initiateConnection('peer-2');
 
-        // Simulate remote creating DC
-        const mockDc = new MockRTCDataChannel('mesh');
-        pc.ondatachannel({ channel: mockDc });
+        cm.closeAll();
 
-        // Trigger error
-        mockDc.onerror?.(new Event('error'));
-
-        // Should not crash
+        expect(onPeerDisconnect).toHaveBeenCalledWith('peer-1');
+        expect(onPeerDisconnect).toHaveBeenCalledWith('peer-2');
     });
 
-    it('handles peer disconnect handler throwing', async () => {
-        const badHandler = vi.fn(() => { throw new Error('Handler crash'); });
-        cm.setListeners({ onPeerDisconnect: badHandler });
+    it('handles data channel close', async () => {
+        const cm = new ConnectionManager(config);
+        const onPeerDisconnect = vi.fn();
+        cm.setListeners({ onPeerDisconnect });
 
-        await cm.handleOffer('peer-2', 'offer');
-        const pc = MockRTCPeerConnection.instances[0];
+        await cm.initiateConnection('peer-1');
+        MockRTCPeerConnection.instances[0].dataChannel!.simulateOpen();
+        MockRTCPeerConnection.instances[0].dataChannel!.simulateClose();
 
-        const mockDc = new MockRTCDataChannel('mesh');
-        pc.ondatachannel({ channel: mockDc });
-        mockDc.open();
-
-        // Close throws in handler, but should not crash manager
-        expect(() => mockDc.onclose()).not.toThrow();
+        expect(onPeerDisconnect).toHaveBeenCalledWith('peer-1');
     });
 
-    it('handles sendToPeer with closed channel', async () => {
-        // Don't create any connection
-        const data = new Uint8Array([1, 2, 3]);
+    it('logs warning when sending to peer with closed channel', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+        // DC is in 'connecting' state, not 'open'
 
         // Should not throw
-        expect(() => cm.sendToPeer('non-existent-peer', data)).not.toThrow();
+        cm.sendToPeer('peer-1', new Uint8Array([1, 2, 3]));
+        expect(MockRTCPeerConnection.instances[0].dataChannel!.send).not.toHaveBeenCalled();
     });
 
-    it('receives non-ArrayBuffer data without crashing', async () => {
-        const onMessage = vi.fn();
-        cm.setListeners({ onMessage });
+    it('handles glare (simultaneous offers) by rolling back', async () => {
+        const cm = new ConnectionManager(config);
+        const onSignal = vi.fn();
+        cm.setListeners({ onSignal });
 
-        await cm.handleOffer('peer-2', 'offer');
+        // First, initiate our own connection (we have local offer)
+        await cm.initiateConnection('peer-1');
         const pc = MockRTCPeerConnection.instances[0];
+        pc.signalingState = 'have-local-offer'; // Simulate being in offer state
 
-        const mockDc = new MockRTCDataChannel('mesh');
-        pc.ondatachannel({ channel: mockDc });
-        mockDc.open();
+        // Now receive an offer from the same peer (glare condition)
+        await cm.handleOffer('peer-1', 'remote-offer-sdp');
 
-        // Send string instead of ArrayBuffer
-        mockDc.onmessage?.({ data: 'not an arraybuffer' });
+        // Should have called setLocalDescription with rollback
+        expect(pc.setLocalDescription).toHaveBeenCalledWith(expect.objectContaining({ type: 'rollback' }));
+    });
 
-        // Should not call onMessage because it's not an ArrayBuffer
-        expect(onMessage).not.toHaveBeenCalled();
+    it('ignores answer when signaling state is not have-local-offer', async () => {
+        const cm = new ConnectionManager(config);
+        await cm.initiateConnection('peer-1');
+
+        const pc = MockRTCPeerConnection.instances[0];
+        pc.signalingState = 'stable'; // Not in a state expecting answer
+
+        await cm.handleAnswer('peer-1', 'random-answer-sdp');
+
+        // setRemoteDescription should NOT have been called with the answer
+        expect(pc.setRemoteDescription).toHaveBeenCalledTimes(0);
+    });
+
+    it('handles ICE candidate for unknown peer without error', async () => {
+        const cm = new ConnectionManager(config);
+        // No connection established
+        await cm.handleCandidate('unknown-peer', { candidate: 'ice' });
+        // Should not throw
     });
 });

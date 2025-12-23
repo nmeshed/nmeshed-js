@@ -150,4 +150,31 @@ describe('persistence', () => {
 
         consoleSpy.mockRestore();
     });
+
+    it('calls onupgradeneeded to create store', async () => {
+        // Simulate DB that needs upgrade
+        (global.indexedDB.open as any).mockImplementation(() => {
+            const req: MockIDBRequest = {
+                result: mockDB,
+                error: null,
+                onsuccess: null,
+                onerror: null,
+                onupgradeneeded: null,
+            };
+            setTimeout(() => {
+                // Call onupgradeneeded first
+                (mockDB.objectStoreNames.contains as any).mockReturnValue(false);
+                req.onupgradeneeded?.({ target: req } as any);
+                // Then success
+                req.onsuccess?.({ target: req } as any);
+            }, 0);
+            return req;
+        });
+
+        const savePromise = saveQueue('ws1', []);
+        setTimeout(() => mockTx.oncomplete?.(), 5);
+        await savePromise;
+
+        expect(mockDB.createObjectStore).toHaveBeenCalled();
+    });
 });

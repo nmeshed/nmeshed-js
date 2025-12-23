@@ -82,8 +82,9 @@ export function NMeshedHUD() {
             <div style={styles.section}>
                 <div style={styles.sectionTitle}>Network Chaos Simulation</div>
                 <div style={styles.controlRow}>
-                    <label style={styles.label}>Latency (ms)</label>
+                    <label style={styles.label} htmlFor="chaos-latency">Latency (ms)</label>
                     <input
+                        id="chaos-latency"
                         type="range" min="0" max="1000" step="50"
                         value={chaos?.latency || 0}
                         onChange={(e) => toggleChaos('latency', parseInt(e.target.value))}
@@ -92,8 +93,9 @@ export function NMeshedHUD() {
                     <span style={styles.value}>{chaos?.latency || 0}ms</span>
                 </div>
                 <div style={styles.controlRow}>
-                    <label style={styles.label}>Packet Loss (%)</label>
+                    <label style={styles.label} htmlFor="chaos-loss">Packet Loss (%)</label>
                     <input
+                        id="chaos-loss"
                         type="range" min="0" max="100" step="5"
                         value={chaos?.packetLoss || 0}
                         onChange={(e) => toggleChaos('packetLoss', parseInt(e.target.value))}

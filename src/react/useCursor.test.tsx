@@ -81,6 +81,23 @@ describe('useCursor', () => {
             // Should not throw when calling sendCursor
             expect(() => result.current.sendCursor(100, 200)).not.toThrow();
         });
+
+        it('exercises all dummy manager methods when client is null', () => {
+            const { result } = renderHook(() => useCursor(null));
+            const manager = result.current.manager;
+
+            // Exercise all dummy manager methods
+            manager.sendCursor(0, 0);
+            const unsubCursor = manager.onCursor(() => { });
+            const unsubRemove = manager.onCursorRemove(() => { });
+            expect(manager.getCursors().size).toBe(0);
+            expect(manager.getCursor('anyone')).toBeUndefined();
+            manager.destroy();
+
+            // Clean up subscriptions
+            unsubCursor();
+            unsubRemove();
+        });
     });
 
     describe('sendCursor', () => {

@@ -340,4 +340,46 @@ describe('CursorManager', () => {
             expect(manager.getCursors().size).toBe(0);
         });
     });
+
+    describe('Edge Cases', () => {
+        it('should ignore null data in ephemeral message', () => {
+            const manager = new CursorManager(mockClient as any);
+
+            // Simulate null data - should not throw
+            mockClient.emit('ephemeral', null);
+
+            expect(manager.getCursors().size).toBe(0);
+        });
+
+        it('should ignore non-cursor-type messages', () => {
+            const manager = new CursorManager(mockClient as any);
+
+            // Message with different type
+            mockClient.emit('ephemeral', {
+                type: 'not-a-cursor',
+                namespace: 'cursor',
+                userId: 'peer-1',
+                x: 10,
+                y: 20,
+                timestamp: Date.now(),
+            });
+
+            expect(manager.getCursors().size).toBe(0);
+        });
+
+        it('should ignore messages with wrong namespace', () => {
+            const manager = new CursorManager(mockClient as any, { namespace: 'custom-ns' });
+
+            mockClient.emit('ephemeral', {
+                type: '__cursor__',
+                namespace: 'wrong-namespace',
+                userId: 'peer-1',
+                x: 10,
+                y: 20,
+                timestamp: Date.now(),
+            });
+
+            expect(manager.getCursors().size).toBe(0);
+        });
+    });
 });

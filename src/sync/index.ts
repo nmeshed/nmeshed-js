@@ -6,6 +6,3 @@
 
 export { SyncedMap, createSyncedMap } from './SyncedMap';
 export type { SyncedMapConfig } from './SyncedMap';
-
-// Binary protocol utilities
-export { marshalOp, unmarshalOp, packCursor, unpackCursor, isBinaryCursor } from './binary';

@@ -417,6 +417,23 @@ describe('GameClient', () => {
 
             expect(callback).not.toHaveBeenCalled();
         });
+
+        it('destroy clears snapshot throttle timers', () => {
+            const client = new GameClient({
+                workspaceId: 'test-room',
+                token: 'test-token',
+                autoSnapshot: true,
+                snapshotThrottle: 100,
+            });
+
+            // Manually add a snapshot throttle timer
+            (client as any).snapshotThrottleTimers.set('test-map', setTimeout(() => { }, 10000));
+
+            client.destroy();
+
+            // Timers should be cleared
+            expect((client as any).snapshotThrottleTimers.size).toBe(0);
+        });
     });
 });
 

@@ -457,6 +457,7 @@ export class MeshClient {
     }
 
     private handleSignal(envelope: SignalEnvelope): void {
+        if (!envelope || !envelope.from || !envelope.signal) return;
         const { from, signal } = envelope;
         if (from === this.myId) return;
 
