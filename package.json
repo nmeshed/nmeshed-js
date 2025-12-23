@@ -31,6 +31,11 @@
             "import": "./dist/sync/index.mjs",
             "require": "./dist/sync/index.js"
         },
+        "./binary": {
+            "types": "./dist/binary/index.d.ts",
+            "import": "./dist/binary/index.mjs",
+            "require": "./dist/binary/index.js"
+        },
         "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
     },
     "files": [

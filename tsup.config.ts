@@ -7,6 +7,7 @@ export default defineConfig({
         'mesh/index': 'src/mesh/index.ts',
         'game/index': 'src/game/index.ts',
         'sync/index': 'src/sync/index.ts',
+        'binary/index': 'src/binary/index.ts',
     },
     format: ['cjs', 'esm'],
     dts: true,
