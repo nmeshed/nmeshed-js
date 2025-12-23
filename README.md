@@ -82,19 +82,49 @@ To scale to 1,000+ users, choose the right tool:
 
 ## 🛠 Advanced Usage
 
+### Schema-Driven State with `useStore`
+
+For complex applications, use `defineSchema` and `useStore` for type-safe, auto-serialized state:
+
+```tsx
+import { defineSchema } from 'nmeshed';
+import { useStore } from 'nmeshed/react';
+
+const BoardSchema = defineSchema({
+  title: 'string',
+  tasks: { type: 'map', schema: { id: 'string', title: 'string' } }
+});
+
+function KanbanBoard() {
+  const [board, setBoard] = useStore(BoardSchema);
+  
+  // Update state - automatically encoded and synced
+  setBoard({ title: 'My Board' });
+  
+  return <h1>{board.title}</h1>;
+}
+```
+
 ### Local Development (No Cloud)
 
-You can run nMeshed locally without an internet connection.
+Use the `nm_local_` prefix for zero-config local development:
 
-1.  **Run the Server**: (See Server Docs)
-2.  **Configure Client**:
-    ```tsx
-    const config = {
-      workspaceId: 'dev-room',
-      token: 'dev-token',
-      serverUrl: 'ws://localhost:8080/v1/sync' // <--- Override URL
-    };
-    ```
+```tsx
+const config = {
+  workspaceId: 'my-room',
+  apiKey: 'nm_local_dev',  // Auto-routes to localhost:8080
+};
+```
+
+Or specify the URL manually:
+
+```tsx
+const config = {
+  workspaceId: 'dev-room',
+  token: 'dev-token',
+  serverUrl: 'ws://localhost:8080/v1/sync'
+};
+```
 
 ### Direct Client Access (Vanilla JS / Game Engines)
 

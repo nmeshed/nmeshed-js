@@ -126,5 +126,35 @@ describe('SchemaBuilder', () => {
             const decoded = SchemaSerializer.decode(schema, encoded);
             expect(decoded.val).toBe(0);
         });
+
+        it('should handle maps (Record<string, T>)', () => {
+            const TaskSchema = {
+                id: 'string',
+                title: 'string',
+                completed: 'boolean'
+            } as const;
+
+            const schema = {
+                tasks: { type: 'map', schema: TaskSchema } as const
+            };
+
+            const data = {
+                tasks: {
+                    'task-1': { id: 'task-1', title: 'First Task', completed: false },
+                    'task-2': { id: 'task-2', title: 'Second Task', completed: true }
+                }
+            };
+
+            const encoded = SchemaSerializer.encode(schema, data);
+            expect(encoded).toBeInstanceOf(Uint8Array);
+            expect(encoded.byteLength).toBeGreaterThan(0);
+
+            const decoded = SchemaSerializer.decode(schema, encoded);
+
+            expect(decoded.tasks['task-1'].id).toBe('task-1');
+            expect(decoded.tasks['task-1'].title).toBe('First Task');
+            expect(decoded.tasks['task-1'].completed).toBe(false);
+            expect(decoded.tasks['task-2'].completed).toBe(true);
+        });
     });
 });

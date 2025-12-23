@@ -1,44 +1,53 @@
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNmeshedContext } from './context';
 import { Schema, SchemaDefinition, SchemaSerializer } from '../schema/SchemaBuilder';
 import { NMeshedMessage } from '../types';
 
 /**
+ * Return type for useStore hook.
+ * @template T The schema definition type
+ */
+export type UseStoreReturn<T> = [
+    /** Current state derived from schema */
+    Record<string, any>,
+    /** Setter function for updating state */
+    (updates: Partial<Record<keyof T, any>>) => void
+];
+
+/**
  * Hook to strongly type and sync state with a defined schema.
+ * Returns a tuple similar to useState: [state, setStore].
  * 
  * @param schema The schema definition to sync with.
- * @returns A reactive object containing the current state.
+ * @returns A tuple of [state, setStore] where setStore handles encoding automatically.
  * 
  * @example
- * ```ts
- * const { score, player } = useStore(GameSchema);
+ * ```tsx
+ * const [board, setBoard] = useStore(KanbanSchema);
+ * 
+ * // Update a single field
+ * setBoard({ title: 'New Title' });
+ * 
+ * // Update multiple fields
+ * setBoard({ tasks: [...tasks], columns: [...columns] });
  * ```
  */
-export function useStore<T extends SchemaDefinition>(schema: Schema<T>): any {
+export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStoreReturn<T> {
     const client = useNmeshedContext();
 
     // Helper to read current snapshot from client
-    // Note: We only read keys defined in the schema.
     const snapshot = useMemo(() => {
         return () => {
             const result: any = {};
             for (const key of Object.keys(schema.definition)) {
                 const fieldDef = schema.definition[key];
-
-                // Get raw bytes (or pre-decoded value if client handles it)
-                // Note: client.get() might return Uint8Array if using get(key) without schema,
-                // or if we use our new overloaded get(key, schema) it might try to decode the WHOLE schema.
-                // WE NEED GRANULAR DECODING here.
-
-                // We access the raw value from client state directly/via get
                 const rawVal = client.get(key);
 
                 if (rawVal instanceof Uint8Array) {
                     try {
                         result[key] = SchemaSerializer.decodeValue(fieldDef, rawVal);
                     } catch (e) {
-                        // console.warn(`Failed to decode store key ${key}`, e);
                         result[key] = undefined;
                     }
                 } else {
@@ -50,20 +59,39 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): any {
     }, [client, schema]);
 
     // Initialize state
-    const [store, setStore] = useState(snapshot);
+    const [store, setStoreState] = useState(snapshot);
+
+    // Setter function that handles encoding and sends operations
+    const setStore = useCallback((updates: Partial<Record<keyof T, any>>) => {
+        for (const key of Object.keys(updates) as Array<keyof T>) {
+            const fieldDef = schema.definition[key as string];
+            const value = updates[key];
+
+            if (fieldDef === undefined) {
+                console.warn(`[useStore] Unknown field: ${String(key)}`);
+                continue;
+            }
+
+            // Encode the value using schema
+            const encoded = SchemaSerializer.encodeValue(fieldDef, value);
+
+            // Send the operation
+            client.sendOperation(String(key), encoded);
+        }
+    }, [client, schema]);
 
     useEffect(() => {
         // Update on mount in case it changed
-        setStore(snapshot());
+        setStoreState(snapshot());
 
         const handleMessage = (msg: NMeshedMessage) => {
             if (msg.type === 'op') {
                 // Optimization: Only update if the key is part of our schema
                 if (schema.definition[msg.payload.key]) {
-                    setStore(snapshot());
+                    setStoreState(snapshot());
                 }
             } else if (msg.type === 'init') {
-                setStore(snapshot());
+                setStoreState(snapshot());
             }
         };
 
@@ -71,5 +99,5 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): any {
         return unsubscribe;
     }, [client, schema, snapshot]);
 
-    return store;
+    return [store, setStore];
 }

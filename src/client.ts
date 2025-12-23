@@ -70,8 +70,8 @@ const ConfigSchema = z.object({
 /**
  * Default configuration values.
  */
-const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId' | 'syncMode' | 'apiKey'> = {
-    serverUrl: 'wss://api.nmeshed.com',
+const DEFAULT_CONFIG: Omit<ResolvedConfig, 'workspaceId' | 'token' | 'userId' | 'syncMode' | 'apiKey' | 'serverUrl'> = {
+    // serverUrl handled in buildUrl for intelligent defaults
     autoReconnect: true,
     maxReconnectAttempts: 10,
     reconnectBaseDelay: 1000,

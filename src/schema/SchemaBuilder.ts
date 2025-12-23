@@ -143,9 +143,39 @@ export class SchemaSerializer {
         }
 
         if (type.type === 'map') {
-            // Maps are serialized as arrays of Entries [Key, Value]
-            // Not implemented for this MVP pass unless needed
-            throw new Error("Map type not fully implemented in MVP Serializer");
+            // Maps are serialized as arrays of [Key, Value] entries.
+            // Format: [Count: uint16] [Key1] [Value1] [Key2] [Value2] ...
+            // Keys are always strings for simplicity.
+            if (!value || typeof value !== 'object') return new Uint8Array([0, 0]); // Count 0
+
+            const entries = value instanceof Map
+                ? Array.from(value.entries())
+                : Object.entries(value);
+
+            const itemParts: Uint8Array[] = [];
+            let itemsSize = 0;
+
+            for (const [k, v] of entries) {
+                // Encode key as string
+                const keyBytes = this.encodePrimitive('string', String(k));
+                // Encode value using the schema's value type
+                const valueBytes = this.encode(type.schema, v);
+
+                itemParts.push(keyBytes);
+                itemParts.push(valueBytes);
+                itemsSize += keyBytes.byteLength + valueBytes.byteLength;
+            }
+
+            const buf = new Uint8Array(2 + itemsSize);
+            const view = new DataView(buf.buffer);
+            view.setUint16(0, entries.length, true); // Entry count
+
+            let offset = 2;
+            for (const part of itemParts) {
+                buf.set(part, offset);
+                offset += part.byteLength;
+            }
+            return buf;
         }
 
         return new Uint8Array(0);
@@ -166,6 +196,21 @@ export class SchemaSerializer {
             const result = [];
             for (let i = 0; i < count; i++) {
                 result.push(this.decodeField(type.itemType, state));
+            }
+            return result;
+        }
+
+        if (type.type === 'map') {
+            // Maps are decoded from [Count: uint16] [Key1] [Value1] [Key2] [Value2] ...
+            const count = state.view.getUint16(state.offset, true);
+            state.offset += 2;
+            const result: Record<string, any> = {};
+            for (let i = 0; i < count; i++) {
+                // Decode key (always string)
+                const key = this.decodePrimitive('string', state);
+                // Decode value using the schema's value type
+                const value = this.decodeStateful(type.schema, state);
+                result[key] = value;
             }
             return result;
         }
