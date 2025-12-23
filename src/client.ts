@@ -40,6 +40,7 @@ import { encodeValue } from './codec';
 import init, { NMeshedClientCore } from './wasm/nmeshed_core';
 import { z } from 'zod';
 import { loadQueue as dbLoadQueue, saveQueue as dbSaveQueue } from './persistence';
+import { SyncedMap } from './sync/SyncedMap';
 
 /**
  * Configuration schema for validation.
@@ -137,6 +138,7 @@ export class NMeshedClient {
     private isDestroyed = false;
     private chaos: ChaosOptions | null = null;
     private pendingPings: Map<string, (rtt: number) => void> = new Map();
+    private syncedMaps: Map<string, SyncedMap<any>> = new Map();
 
     /**
      * Creates a new nMeshed client instance.
@@ -842,6 +844,27 @@ export class NMeshedClient {
             this.warn('Failed to send binary operation via WASM core:', error);
             this.queueOperation(key, value, timestamp);
         }
+    }
+
+    /**
+     * Returns a SyncedMap instance for the given namespace.
+     * Managed instances are cached and reused.
+     * 
+     * @param namespace - Unique namespace for the map
+     * @returns A SyncedMap instance
+     */
+    getSyncedMap<T = any>(namespace: string): SyncedMap<T> {
+        if (!this.syncedMaps.has(namespace)) {
+            const map = new SyncedMap<T>(this as any, namespace, {
+                serialize: (val: T) => encodeValue(val),
+                deserialize: (bytes: Uint8Array) => {
+                    const decoder = new TextDecoder();
+                    return JSON.parse(decoder.decode(bytes));
+                }
+            });
+            this.syncedMaps.set(namespace, map);
+        }
+        return this.syncedMaps.get(namespace)!;
     }
 
     /**
