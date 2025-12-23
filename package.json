@@ -21,6 +21,16 @@
             "import": "./dist/mesh/index.mjs",
             "require": "./dist/mesh/index.js"
         },
+        "./game": {
+            "types": "./dist/game/index.d.ts",
+            "import": "./dist/game/index.mjs",
+            "require": "./dist/game/index.js"
+        },
+        "./sync": {
+            "types": "./dist/sync/index.d.ts",
+            "import": "./dist/sync/index.mjs",
+            "require": "./dist/sync/index.js"
+        },
         "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
     },
     "files": [
