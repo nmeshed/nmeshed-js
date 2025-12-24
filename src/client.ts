@@ -14,6 +14,7 @@ import {
     MessageHandler,
     EphemeralHandler,
     PresenceHandler,
+    PresenceUser,
     NMeshedMessage,
     Unsubscribe
 } from './types';
@@ -128,8 +129,8 @@ export class NMeshedClient {
         });
 
         this.transport.on('ephemeral', (payload: unknown, from?: string) => {
-            const isNMeshedMsg = (p: any): p is NMeshedMessage =>
-                p && typeof p.type === 'string' && ['op', 'ephemeral', 'presence'].includes(p.type);
+            const isNMeshedMsg = (p: unknown): p is NMeshedMessage =>
+                p !== null && typeof p === 'object' && 'type' in p && ['op', 'ephemeral', 'presence'].includes((p as any).type);
 
             const effectiveMsg: NMeshedMessage = isNMeshedMsg(payload)
                 ? payload
@@ -139,8 +140,7 @@ export class NMeshedClient {
 
             this.listeners.ephemeral.forEach(l => {
                 try {
-                    // Only pass sender if present to match expectation of single-arg listeners
-                    if (from) {
+                    if (from !== undefined) {
                         l(payload, from);
                     } else {
                         l(payload);
@@ -151,10 +151,17 @@ export class NMeshedClient {
             });
         });
 
-        this.transport.on('presence', (user: any) => {
-            this.listeners.presence.forEach(l => {
-                try { l(user); } catch (e) { this.warn('Presence listener error', e); }
-            });
+        this.transport.on('presence', (payload: unknown) => {
+            const isPresencePayload = (p: unknown): p is PresenceUser =>
+                p !== null && typeof p === 'object' && 'userId' in p && 'status' in p;
+
+            if (isPresencePayload(payload)) {
+                this.listeners.presence.forEach(l => {
+                    try { l(payload); } catch (e) { this.warn('Presence listener error', e); }
+                });
+            } else {
+                this.warn('Received invalid presence payload:', payload);
+            }
         });
 
         this.transport.on('peerJoin', (id: string) => {
@@ -347,7 +354,7 @@ export class NMeshedClient {
         return this.engine.getQueueSize();
     }
 
-    public on(event: string, handler: (...args: any[]) => void): () => void {
+    public on(event: string, handler: (...args: any[]) => void): Unsubscribe {
         switch (event) {
             case 'status': return this.onStatusChange(handler as StatusHandler);
             case 'message': return this.onMessage(handler as MessageHandler);
@@ -369,16 +376,34 @@ export class NMeshedClient {
         return map;
     }
 
-    public async getPresence(): Promise<PresenceHandler[]> {
+    /**
+     * Fetches current presence data for the workspace.
+     * Implements defensive fetch with timeout and strict error handling.
+     */
+    public async getPresence<T = any>(): Promise<T[]> {
         const base = this.config.serverUrl?.replace(/\/+$/, '').replace(/^ws/, 'http') || 'https://api.nmeshed.com';
         const url = `${base}/v1/presence/${encodeURIComponent(this.config.workspaceId)}`;
-        const res = await fetch(url, {
-            headers: { 'Authorization': `Bearer ${this.config.token || this.config.apiKey}` }
-        });
-        if (!res.ok) {
-            throw new Error(`Failed to fetch presence: ${res.statusText || res.status}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        try {
+            const res = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${this.config.token || this.config.apiKey}` },
+                signal: controller.signal
+            });
+
+            if (!res.ok) {
+                throw new Error(`Failed to fetch presence: ${res.statusText || res.status}`);
+            }
+            return await res.json();
+        } catch (e) {
+            const error = e instanceof Error ? e : new Error(String(e));
+            this.warn('Failed to fetch presence:', error.message);
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
         }
-        return await res.json();
     }
 
     public simulateNetwork(options: ChaosOptions | null): void {
@@ -442,6 +467,9 @@ export class NMeshedClient {
     }
 
     private generateUserId(): string {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            return crypto.randomUUID();
+        }
         return `user-${Math.random().toString(36).substring(2, 11)}`;
     }
 

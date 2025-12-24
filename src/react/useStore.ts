@@ -34,19 +34,15 @@ export type UseStoreReturn<T extends SchemaDefinition> = [
  */
 export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStoreReturn<T> {
     const client = useNmeshedContext();
-
-    // Helper to read current snapshot from client
-    const getSnapshot = useCallback((): InferSchema<Schema<T>> => {
+    const [snapshot, setSnapshot] = useState<InferSchema<Schema<T>>>(() => {
         const result = {} as Record<string, unknown>;
         for (const key of Object.keys(schema.definition)) {
             const fieldDef = schema.definition[key];
             const rawVal = client.get(key);
-
             if (rawVal instanceof Uint8Array) {
                 try {
                     result[key] = SchemaSerializer.decodeValue(fieldDef, rawVal);
                 } catch (e) {
-                    // Test expects undefined on decode failure
                     result[key] = undefined;
                 }
             } else {
@@ -54,12 +50,9 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
             }
         }
         return result as InferSchema<Schema<T>>;
-    }, [client, schema]);
+    });
 
-    // Initialize state
-    const [store, setStoreState] = useState<InferSchema<Schema<T>>>(getSnapshot);
-
-    // Setter function that handles encoding and sends operations
+    // Stability: Memoize setStore to prevent downstream re-renders
     const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
         if (!updates || typeof updates !== 'object') {
             throw new Error('[useStore] setStore called with invalid updates');
@@ -70,42 +63,78 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
             const value = updates[key];
 
             if (fieldDef === undefined) {
-                // Test expects warning and skip, not loud failure for unknown fields
                 console.warn(`[useStore] Unknown field: ${String(key)}`);
                 continue;
             }
 
             try {
-                // Encode the value using schema
                 const encoded = SchemaSerializer.encodeValue(fieldDef, value);
-
-                // Send the operation
                 client.sendOperation(key, encoded);
             } catch (e) {
-                // Fail loudly as per philosophy
                 throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
             }
         }
     }, [client, schema]);
 
-
     useEffect(() => {
-        // Sync on mount
-        setStoreState(getSnapshot());
+        const updateSnapshot = () => {
+            const nextSnapshot = {} as Record<string, unknown>;
+            let changed = false;
 
-        const handleMessage = (msg: NMeshedMessage) => {
-            if (msg.type === 'op') {
-                // Optimization: Only update if the key is part of our schema
-                if (schema.definition[msg.payload.key]) {
-                    setStoreState(getSnapshot());
+            for (const key of Object.keys(schema.definition)) {
+                const fieldDef = schema.definition[key];
+                const rawVal = client.get(key);
+                let val: any;
+
+                if (rawVal instanceof Uint8Array) {
+                    try {
+                        val = SchemaSerializer.decodeValue(fieldDef, rawVal);
+                    } catch (e) {
+                        val = undefined;
+                    }
+                } else {
+                    val = rawVal;
                 }
-            } else if (msg.type === 'init') {
-                setStoreState(getSnapshot());
+
+                nextSnapshot[key] = val;
+
+                // Better comparison for objects/arrays to prevent jank
+                const prevVal = (snapshot as any)[key];
+                if (val !== prevVal) {
+                    if (typeof val === 'object' && val !== null && typeof prevVal === 'object' && prevVal !== null) {
+                        // Simple check for arrays/objects - if they are different structures, definitely changed
+                        // For this SDK, we know they are JSON-compatible
+                        if (JSON.stringify(val) !== JSON.stringify(prevVal)) {
+                            changed = true;
+                        }
+                    } else {
+                        changed = true;
+                    }
+                }
+            }
+
+            if (changed) {
+                setSnapshot(nextSnapshot as InferSchema<Schema<T>>);
             }
         };
 
-        return client.onMessage(handleMessage);
-    }, [client, schema, getSnapshot]);
+        const handleMessage = (msg: NMeshedMessage) => {
+            if (msg.type === 'op') {
+                if (schema.definition[msg.payload.key]) {
+                    updateSnapshot();
+                }
+            } else if (msg.type === 'init') {
+                updateSnapshot();
+            }
+        };
 
-    return [store, setStore];
+        const unsubscribe = client.onMessage(handleMessage);
+
+        // Final sync on mount to catch any missed updates
+        updateSnapshot();
+
+        return unsubscribe;
+    }, [client, schema, snapshot]);
+
+    return [snapshot, setStore];
 }

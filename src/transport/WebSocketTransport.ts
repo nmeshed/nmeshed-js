@@ -153,7 +153,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         }
     }
 
-    public sendEphemeral(payload: any, to?: string): void {
+    public sendEphemeral(payload: unknown, to?: string): void {
         if (this.status !== 'CONNECTED' || !this.ws) return;
 
         if (this.packetLoss > 0 && Math.random() < this.packetLoss) {
@@ -470,7 +470,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         }
     }
 
-    private log(msg: string, ...args: any[]): void {
+    private log(msg: string, ...args: unknown[]): void {
         if (this.config.debug) {
             console.log(`[WebSocketTransport] ${msg}`, ...args);
         }

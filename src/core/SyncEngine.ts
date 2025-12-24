@@ -4,9 +4,9 @@ import { encodeValue, decodeValue } from '../codec';
 import { saveQueue, loadQueue } from '../persistence';
 
 export interface SyncEngineEvents {
-    op: [string, any];
+    op: [string, unknown];
     queueChange: [number];
-    [key: string]: any;
+    [key: string]: any[];
 }
 
 /**
@@ -21,7 +21,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private isDestroyed = false;
 
     // Manual State/Queue management
-    private preConnectState: Record<string, any> = {};
+    private preConnectState: Record<string, unknown> = {};
     private operationQueue: Uint8Array[] = [];
     private maxQueueSize: number;
 
@@ -54,12 +54,12 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         this.preConnectState = {};
     }
 
-    public set(key: string, value: any): Uint8Array {
+    public set(key: string, value: unknown): Uint8Array {
         const valBytes = encodeValue(value);
         const timestamp = BigInt(Date.now() * 1000);
 
         if (this.core) {
-            const res = this.core.apply_local_op(key, valBytes, timestamp) as any;
+            const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as unknown;
             const delta = res instanceof Uint8Array ? res : (res instanceof ArrayBuffer ? new Uint8Array(res) : new TextEncoder().encode(JSON.stringify(res)));
             this.addToQueue(delta);
             this.saveState();
@@ -119,17 +119,17 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 const text = new TextDecoder().decode(result);
                 const parsed = JSON.parse(text);
                 const ops = Array.isArray(parsed) ? parsed : [parsed];
-                ops.forEach((op: any) => {
-                    if (op && typeof op === 'object' && 'key' in op) {
-                        this.emit('op', op.key, op.value);
+                ops.forEach((op: unknown) => {
+                    if (op && typeof op === 'object' && 'key' in op && 'value' in op) {
+                        this.emit('op', (op as any).key, (op as any).value);
                     }
                 });
             } catch { /* Raw delta */ }
         }
     }
 
-    public get<T = any>(key: string): T | undefined {
-        if (!this.core) return this.preConnectState[key];
+    public get<T = unknown>(key: string): T | undefined {
+        if (!this.core) return this.preConnectState[key] as T | undefined;
         const core = this.core as any;
 
         let state = typeof core.get_state === 'function' ? core.get_state() : core.state;
@@ -139,11 +139,11 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             const decoded = (val instanceof Uint8Array || val instanceof ArrayBuffer) ? decodeValue(val) : val;
             return decoded as T;
         }
-        return this.preConnectState[key];
+        return this.preConnectState[key] as T | undefined;
     }
 
-    public getAllValues(): Record<string, any> {
-        const result: Record<string, any> = { ...this.preConnectState };
+    public getAllValues(): Record<string, unknown> {
+        const result: Record<string, unknown> = { ...this.preConnectState };
         if (this.core) {
             const core = this.core as any;
             let state = typeof core.get_state === 'function' ? core.get_state() : core.state;
