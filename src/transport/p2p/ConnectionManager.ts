@@ -10,7 +10,7 @@
  */
 
 import type { SignalMessage } from './types';
-import { logger } from '../utils/Logger';
+import { logger } from '../../utils/Logger';
 
 export interface ConnectionEvents {
     onSignal: (to: string, signal: SignalMessage) => void;

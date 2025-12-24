@@ -52,4 +52,5 @@ export type { UseNmeshedOptions, UseNmeshedReturn } from './useNmeshed';
 export type { UseDocumentOptions, UseDocumentReturn } from './useDocument';
 export type { UsePresenceOptions } from './usePresence';
 export type { UseCursorResult } from './useCursor';
+export type { CursorClient } from '../presence/CursorManager';
 export type { NMeshedProviderProps } from './context';

@@ -30,6 +30,50 @@ export interface Schema<T extends SchemaDefinition> {
     decode: (buffer: Uint8Array) => any;
 }
 
+// ============================================================================
+// Type Inference Utilities
+// ============================================================================
+
+/**
+ * Maps primitive type strings to their TypeScript equivalents.
+ */
+type InferPrimitive<T extends PrimitiveType> =
+    T extends 'string' ? string :
+    T extends 'boolean' ? boolean :
+    T extends 'float32' | 'float64' ? number :
+    T extends 'int32' | 'int64' | 'uint32' | 'uint64' | 'uint8' | 'uint16' ? number :
+    never;
+
+/**
+ * Recursively infers the TypeScript type for a schema field.
+ */
+type InferField<T extends SchemaField> =
+    T extends PrimitiveType ? InferPrimitive<T> :
+    T extends { type: 'array'; itemType: infer I extends SchemaField } ? InferField<I>[] :
+    T extends { type: 'map'; schema: infer S extends SchemaDefinition } ? Record<string, InferObject<S>> :
+    T extends { type: 'object'; schema: infer S extends SchemaDefinition } ? InferObject<S> :
+    unknown;
+
+/**
+ * Infers the TypeScript type for a schema definition object.
+ */
+type InferObject<T extends SchemaDefinition> = {
+    [K in keyof T]: InferField<T[K]>;
+};
+
+/**
+ * Infers the TypeScript type from a Schema instance.
+ * 
+ * @example
+ * ```ts
+ * const TaskSchema = defineSchema({ id: 'string', done: 'boolean' });
+ * type Task = InferSchema<typeof TaskSchema>;
+ * // Task = { id: string; done: boolean; }
+ * ```
+ */
+export type InferSchema<T extends Schema<any>> =
+    T extends Schema<infer D> ? InferObject<D> : never;
+
 /**
  * Defines a schema for auto-serialization.
  * 

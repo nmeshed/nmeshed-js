@@ -52,7 +52,8 @@ vi.mock('../presence/CursorManager', () => ({
 // Mock MeshClient
 const createMockClient = () => ({
     on: vi.fn(() => () => { }),
-    sendEphemeral: vi.fn(),
+    broadcast: vi.fn(),
+    sendToPeer: vi.fn(),
 });
 
 describe('useCursor', () => {

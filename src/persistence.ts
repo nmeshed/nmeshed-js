@@ -7,11 +7,7 @@ const DB_NAME = 'nmeshed_db';
 const STORE_NAME = 'operation_queue';
 const DB_VERSION = 1;
 
-export interface PersistentQueueItem {
-    key: string;
-    value: unknown;
-    timestamp: number;
-}
+export type PersistentQueueItem = any;
 
 /**
  * Opens the IndexedDB database.

@@ -47,7 +47,7 @@ export {
 export { encodeValue, decodeValue, isBinary } from './codec';
 
 // Schema and Serialization
-export type { Schema, SchemaDefinition, SchemaField } from './schema/SchemaBuilder';
+export type { Schema, SchemaDefinition, SchemaField, InferSchema } from './schema/SchemaBuilder';
 export { defineSchema, SchemaSerializer } from './schema/SchemaBuilder';
 
 // Debug Utilities (development only)

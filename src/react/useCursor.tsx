@@ -23,8 +23,8 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import type { MeshClient } from '../mesh/MeshClient';
 import { CursorManager, CursorPosition, CursorManagerConfig } from '../presence/CursorManager';
+import { NMeshedClient } from '../client';
 
 /**
  * Return type for useCursor hook.
@@ -70,7 +70,7 @@ const DUMMY_MANAGER: CursorManager = {
  * The hook memoizes based on config primitive values, not object identity.
  * This prevents CursorManager recreation when consumers pass inline config objects.
  *
- * @param client - MeshClient instance
+ * @param client - NMeshedClient instance
  * @param config - Optional CursorManager configuration
  *
  * @example
@@ -87,7 +87,7 @@ const DUMMY_MANAGER: CursorManager = {
  * ```
  */
 export function useCursor(
-    client: MeshClient | null,
+    client: NMeshedClient | null,
     config?: CursorManagerConfig
 ): UseCursorResult {
     const [cursors, setCursors] = useState<Map<string, CursorPosition>>(new Map());

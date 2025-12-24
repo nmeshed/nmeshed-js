@@ -1,14 +1,14 @@
 
 import * as flatbuffers from 'flatbuffers';
-import { WirePacket } from '../schema/nmeshed/wire-packet';
-import { Signal } from '../schema/nmeshed/signal';
-import { MsgType } from '../schema/nmeshed/msg-type';
-import { SignalData } from '../schema/nmeshed/signal-data';
-import { Join } from '../schema/nmeshed/join';
-import { Offer } from '../schema/nmeshed/offer';
-import { Answer } from '../schema/nmeshed/answer';
-import { Candidate } from '../schema/nmeshed/candidate';
-import { Relay } from '../schema/nmeshed/relay';
+import { WirePacket } from '../../schema/nmeshed/wire-packet';
+import { Signal } from '../../schema/nmeshed/signal';
+import { MsgType } from '../../schema/nmeshed/msg-type';
+import { SignalData } from '../../schema/nmeshed/signal-data';
+import { Join } from '../../schema/nmeshed/join';
+import { Offer } from '../../schema/nmeshed/offer';
+import { Answer } from '../../schema/nmeshed/answer';
+import { Candidate } from '../../schema/nmeshed/candidate';
+import { Relay } from '../../schema/nmeshed/relay';
 import { SignalMessage } from './types';
 
 export class ProtocolUtils {

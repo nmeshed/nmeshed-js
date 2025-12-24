@@ -20,7 +20,9 @@
  * ```
  */
 
-import type { MeshClient } from '../mesh/MeshClient';
+
+
+import { NMeshedClient } from '../client';
 
 /**
  * Cursor position data.
@@ -76,7 +78,7 @@ const CURSOR_MSG_TYPE = '__cursor__';
  * peer cursor positions. Automatically cleans up cursors when peers disconnect.
  */
 export class CursorManager {
-    private client: MeshClient;
+    private client: NMeshedClient;
     private config: Required<CursorManagerConfig>;
     private cursors: Map<string, CursorPosition> = new Map();
     private callbacks: Set<CursorCallback> = new Set();
@@ -84,10 +86,11 @@ export class CursorManager {
     private lastSendTime: number = 0;
     private unsubscribes: (() => void)[] = [];
 
-    constructor(client: MeshClient, config: CursorManagerConfig = {}) {
+    constructor(client: NMeshedClient, config: CursorManagerConfig = {}) {
         this.client = client;
+        const resolvedUserId = config.userId ?? (client as any)._config?.userId ?? `user_${Math.random().toString(36).slice(2, 8)}`;
         this.config = {
-            userId: config.userId ?? `user_${Math.random().toString(36).slice(2, 8)}`,
+            userId: resolvedUserId,
             namespace: config.namespace ?? 'cursor',
             throttleMs: config.throttleMs ?? 16,
             staleTimeoutMs: config.staleTimeoutMs ?? 5000,
@@ -126,7 +129,7 @@ export class CursorManager {
             timestamp: now,
         };
 
-        this.client.sendEphemeral(message);
+        this.client.broadcast(message);
     }
 
     /**

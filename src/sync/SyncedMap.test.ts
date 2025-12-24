@@ -4,11 +4,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { SyncedMap, createSyncedMap } from './SyncedMap';
-import type { MeshClient } from '../mesh/MeshClient';
+import { SyncedMap, createSyncedMap, SyncClient } from './SyncedMap';
 
-// Mock MeshClient
-function createMockClient(): MeshClient {
+// Mock Client
+function createMockClient(): SyncClient {
     const listeners: Map<string, Set<(...args: unknown[]) => void>> = new Map();
 
     return {
@@ -19,12 +18,13 @@ function createMockClient(): MeshClient {
             listeners.get(event)!.add(handler);
             return () => listeners.get(event)?.delete(handler);
         }),
-        sendEphemeral: vi.fn(),
+        broadcast: vi.fn(),
+        sendToPeer: vi.fn(),
         // Expose for testing
         _emit: (event: string, ...args: unknown[]) => {
             listeners.get(event)?.forEach(h => h(...args));
         },
-    } as unknown as MeshClient & { _emit: (event: string, ...args: unknown[]) => void };
+    } as unknown as SyncClient & { _emit: (event: string, ...args: unknown[]) => void; broadcast: any; sendToPeer: any };
 }
 
 // Simple serialize/deserialize for tests
@@ -46,11 +46,11 @@ const testConfig = {
 };
 
 describe('SyncedMap', () => {
-    let client: MeshClient & { _emit: (event: string, ...args: unknown[]) => void };
+    let client: SyncClient & { _emit: (event: string, ...args: unknown[]) => void; broadcast: any; sendToPeer: any };
     let map: SyncedMap<TestEntity>;
 
     beforeEach(() => {
-        client = createMockClient() as MeshClient & { _emit: (event: string, ...args: unknown[]) => void };
+        client = createMockClient() as SyncClient & { _emit: (event: string, ...args: unknown[]) => void; broadcast: any; sendToPeer: any };
         map = createSyncedMap<TestEntity>(client, 'test-entities', testConfig);
     });
 
@@ -132,7 +132,7 @@ describe('SyncedMap', () => {
             const entity = { id: '1', x: 10, y: 20 };
             map.set('e1', entity);
 
-            expect(client.sendEphemeral).toHaveBeenCalledWith(
+            expect(client.broadcast).toHaveBeenCalledWith(
                 expect.objectContaining({
                     type: 'update',
                     namespace: 'test-entities',
@@ -148,7 +148,7 @@ describe('SyncedMap', () => {
 
             map.delete('e1');
 
-            expect(client.sendEphemeral).toHaveBeenCalledWith(
+            expect(client.broadcast).toHaveBeenCalledWith(
                 expect.objectContaining({
                     type: 'update',
                     namespace: 'test-entities',
@@ -283,8 +283,8 @@ describe('SyncedMap', () => {
     describe('Convergence (CAI Properties)', () => {
         it('should converge to same state regardless of operation order', () => {
             // Create two maps
-            const client1 = createMockClient() as MeshClient & { _emit: (event: string, ...args: unknown[]) => void };
-            const client2 = createMockClient() as MeshClient & { _emit: (event: string, ...args: unknown[]) => void };
+            const client1 = createMockClient() as SyncClient & { _emit: (event: string, ...args: unknown[]) => void };
+            const client2 = createMockClient() as SyncClient & { _emit: (event: string, ...args: unknown[]) => void };
             const map1 = createSyncedMap<TestEntity>(client1, 'entities', testConfig);
             const map2 = createSyncedMap<TestEntity>(client2, 'entities', testConfig);
 
@@ -389,7 +389,7 @@ describe('SyncedMap', () => {
             map.setLocal('e1', entity);
 
             expect(map.get('e1')).toEqual(entity);
-            expect(client.sendEphemeral).not.toHaveBeenCalled();
+            expect(client.broadcast).not.toHaveBeenCalled();
         });
 
         it('should include setLocal values in snapshot', () => {
@@ -402,7 +402,7 @@ describe('SyncedMap', () => {
     });
 
     describe('Binary Transport Callbacks', () => {
-        it('should call onBroadcast instead of sendEphemeral when provided', () => {
+        it('should call onBroadcast instead of broadcast when provided', () => {
             const onBroadcast = vi.fn();
             const customMap = createSyncedMap<TestEntity>(client, 'custom', {
                 ...testConfig,
@@ -419,7 +419,7 @@ describe('SyncedMap', () => {
             expect(arg).toBeDefined();
             expect(typeof arg.byteLength).toBe('number');
             expect(arg.byteLength).toBeGreaterThan(0);
-            expect(client.sendEphemeral).not.toHaveBeenCalled();
+            expect(client.broadcast).not.toHaveBeenCalled();
         });
 
         it('should call onBroadcast with null for deletions', () => {
@@ -437,7 +437,7 @@ describe('SyncedMap', () => {
             expect(onBroadcast).toHaveBeenCalledWith('e1', null);
         });
 
-        it('should call onSnapshot instead of sendEphemeral when provided', () => {
+        it('should call onSnapshot instead of sendToPeer when provided', () => {
             const onSnapshot = vi.fn();
             const customMap = createSyncedMap<TestEntity>(client, 'custom', {
                 ...testConfig,
@@ -451,7 +451,7 @@ describe('SyncedMap', () => {
 
             expect(onSnapshot).toHaveBeenCalledWith('peer-123', expect.any(Map));
             expect(onSnapshot.mock.calls[0][1].size).toBe(2);
-            expect(client.sendEphemeral).not.toHaveBeenCalled();
+            expect(client.sendToPeer).not.toHaveBeenCalled();
         });
 
         it('should use default ephemeral transport when no onSnapshot provided', () => {
@@ -460,13 +460,13 @@ describe('SyncedMap', () => {
 
             map.sendSnapshotTo('peer-123');
 
-            expect(client.sendEphemeral).toHaveBeenCalledWith(
+            expect(client.sendToPeer).toHaveBeenCalledWith(
+                'peer-123',
                 expect.objectContaining({
                     type: 'snapshot',
                     namespace: 'test-entities',
                     entries: expect.any(Array),
-                }),
-                'peer-123'
+                })
             );
         });
     });

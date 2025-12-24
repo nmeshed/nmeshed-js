@@ -1,132 +1,85 @@
+import { z } from 'zod';
+
 /**
  * Configuration options for the nMeshed client.
  */
 export interface NMeshedConfig {
-    /**
-     * The workspace ID to connect to.
-     * A workspace is a collaborative room or document.
-     * @example 'my-project-123'
-     */
     workspaceId: string;
-
-    /**
-     * JWT authentication token (Legacy).
-     * Prefer `apiKey` for server-side or non-user-scoped access.
-     * @deprecated use apiKey where possible, or token for distinct user sessions.
-     */
     token?: string;
-
-    /**
-     * API Key for authentication and routing.
-     * Replaces `serverUrl` for most use cases.
-     * Format: `nm_{env}_{region}_{random}`
-     * @example 'nm_live_us-east_12345'
-     */
     apiKey?: string;
-
-    /**
-     * Synchronization strategy.
-     * - 'crdt': (Default) Collaborative document editing (Automerge). Strong consistency.
-     * - 'crdt_performance': Optimized CRDT for high-frequency updates (Games). Relaxed durability.
-     * - 'crdt_strict': Immediate fsync for critical data (Financial). Highest durability.
-     * - 'lww': Real-time ephemeral data (cursors, gaming). Last-Write-Wins.
-     */
     syncMode?: 'crdt' | 'crdt_performance' | 'crdt_strict' | 'lww';
-
-    /**
-     * Optional user identifier for presence tracking.
-     * If not provided, a random ID will be generated.
-     */
     userId?: string;
-
-    /**
-     * WebSocket server URL.
-     * Defaults to 'wss://api.nmeshed.com' in production.
-     * @default 'wss://api.nmeshed.com'
-     */
     serverUrl?: string;
-
-    /**
-     * Enable automatic reconnection on disconnect.
-     * @default true
-     */
     autoReconnect?: boolean;
-
-    /**
-     * Maximum number of reconnection attempts.
-     * @default 10
-     */
     maxReconnectAttempts?: number;
-
-    /**
-     * Base delay (in ms) between reconnection attempts.
-     * Uses exponential backoff: delay * 2^attempt
-     * @default 1000
-     */
     reconnectBaseDelay?: number;
-
-    /**
-     * Maximum delay (in ms) between reconnection attempts.
-     * Caps the exponential backoff to prevent excessive waits.
-     * @default 30000
-     */
     maxReconnectDelay?: number;
-
-    /**
-     * Timeout (in ms) for initial connection.
-     * If connection isn't established within this time, it fails.
-     * @default 10000
-     */
     connectionTimeout?: number;
-
-    /**
-     * Interval (in ms) to send heartbeat pings.
-     * Set to 0 to disable heartbeats.
-     * @default 30000
-     */
     heartbeatInterval?: number;
-
-    /**
-     * Maximum number of operations to queue while disconnected.
-     * When exceeded, oldest operations are dropped (FIFO).
-     * Set to 0 for unlimited (not recommended).
-     * @default 1000
-     */
+    heartbeatMaxMissed?: number;
     maxQueueSize?: number;
-
-    /**
-     * Enable debug logging to console.
-     * @default false
-     */
     debug?: boolean;
+    transport?: 'server' | 'p2p' | 'hybrid';
 }
+
+/**
+ * Internal resolved configuration with all defaults applied.
+ */
+export type ResolvedConfig = Required<NMeshedConfig>;
+
+export const ConfigSchema = z.object({
+    workspaceId: z.string().min(1, 'workspaceId is required'),
+    token: z.string().optional(),
+    apiKey: z.string().optional(),
+    syncMode: z.enum(['crdt', 'crdt_performance', 'crdt_strict', 'lww']).optional().default('crdt'),
+    userId: z.string().optional(),
+    serverUrl: z.string().optional(),
+    autoReconnect: z.boolean().optional().default(true),
+    maxReconnectAttempts: z.number().int().min(0).optional().default(10),
+    reconnectBaseDelay: z.number().int().min(0).optional().default(1000),
+    maxReconnectDelay: z.number().int().min(0).optional().default(30000),
+    connectionTimeout: z.number().int().min(0).optional().default(10000),
+    heartbeatInterval: z.number().int().min(0).optional().default(30000),
+    heartbeatMaxMissed: z.number().int().min(1).optional().default(3),
+    maxQueueSize: z.number().int().min(0).optional().default(1000),
+    debug: z.boolean().optional().default(false),
+    transport: z.enum(['server', 'p2p', 'hybrid']).optional().default('server')
+}).refine(data => !!(data.token || data.apiKey), {
+    message: "Either token or apiKey must be provided",
+    path: ["token"]
+});
+
+export const DEFAULT_CONFIG: Partial<ResolvedConfig> = {
+    syncMode: 'crdt',
+    autoReconnect: true,
+    maxReconnectAttempts: 10,
+    reconnectBaseDelay: 1000,
+    maxReconnectDelay: 30000,
+    connectionTimeout: 10000,
+    heartbeatInterval: 30000,
+    heartbeatMaxMissed: 3,
+    maxQueueSize: 1000,
+    debug: false,
+    transport: 'server'
+};
 
 /**
  * Connection status of the nMeshed client.
  */
 export type ConnectionStatus =
-    /** Initial state before connect() is called */
     | 'IDLE'
-    /** Connection in progress */
     | 'CONNECTING'
-    /** Successfully connected to server */
     | 'CONNECTED'
-    /** Connection closed (may reconnect) */
     | 'DISCONNECTED'
-    /** Reconnecting after disconnect */
     | 'RECONNECTING'
-    /** Fatal error, will not reconnect */
     | 'ERROR';
 
 /**
  * An operation payload sent to or received from the server.
  */
 export interface Operation {
-    /** The key being updated */
     key: string;
-    /** The new value */
     value: unknown;
-    /** Unix microsecond timestamp for conflict resolution */
     timestamp: number;
 }
 
@@ -135,7 +88,6 @@ export interface Operation {
  */
 export interface InitMessage {
     type: 'init';
-    /** Current state of the workspace as key-value pairs */
     data: Record<string, unknown>;
 }
 
@@ -173,6 +125,7 @@ export interface PresenceMessage {
 export interface EphemeralMessage {
     type: 'ephemeral';
     payload: unknown;
+    from?: string;
 }
 
 /**
@@ -193,17 +146,12 @@ export type StatusHandler = (status: ConnectionStatus) => void;
 /**
  * Handler function for ephemeral broadcast messages.
  */
-export type EphemeralHandler = (payload: unknown) => void;
+export type EphemeralHandler = (payload: unknown, from?: string) => void;
 
 /**
  * Handler function for presence updates.
  */
 export type PresenceHandler = (user: PresenceMessage['payload']) => void;
-
-/**
- * Internal resolved configuration with all defaults applied.
- */
-export type ResolvedConfig = Required<NMeshedConfig>;
 
 // ============================================
 //           CHAOS & DIAGNOSTICS
@@ -213,10 +161,7 @@ export type ResolvedConfig = Required<NMeshedConfig>;
  * Configuration for network simulation (Chaos Mode).
  */
 export interface ChaosOptions {
-    /** Artificial latency in ms added to all outgoing messages */
     latency?: number;
-    /** Random jitter in ms added to latency */
     jitter?: number;
-    /** Percentage probability of dropping a packet (0-100) */
     packetLoss?: number;
 }

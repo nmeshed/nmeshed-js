@@ -1,16 +1,16 @@
 
 import type { SignalEnvelope, SignalMessage } from './types';
 import * as flatbuffers from 'flatbuffers';
-import { WirePacket } from '../schema/nmeshed/wire-packet';
-import { MsgType } from '../schema/nmeshed/msg-type';
-import { SignalData } from '../schema/nmeshed/signal-data';
-import { Join } from '../schema/nmeshed/join';
-import { Offer } from '../schema/nmeshed/offer';
-import { Answer } from '../schema/nmeshed/answer';
-import { Candidate } from '../schema/nmeshed/candidate';
-import { Relay } from '../schema/nmeshed/relay';
+import { WirePacket } from '../../schema/nmeshed/wire-packet';
+import { MsgType } from '../../schema/nmeshed/msg-type';
+import { SignalData } from '../../schema/nmeshed/signal-data';
+import { Join } from '../../schema/nmeshed/join';
+import { Offer } from '../../schema/nmeshed/offer';
+import { Answer } from '../../schema/nmeshed/answer';
+import { Candidate } from '../../schema/nmeshed/candidate';
+import { Relay } from '../../schema/nmeshed/relay';
 import { ProtocolUtils } from './ProtocolUtils';
-import { logger } from '../utils/Logger';
+import { logger } from '../../utils/Logger';
 
 export interface SignalingConfig {
     url: string;
@@ -28,7 +28,7 @@ export interface SignalingEvents {
     onError: (err: Error) => void;
     onServerMessage: (data: Uint8Array) => void;
     onInit: (data: any) => void;
-    onEphemeral: (payload: any) => void;
+    onEphemeral: (payload: any, from?: string) => void;
 }
 
 /**
@@ -270,7 +270,7 @@ export class SignalingClient {
                     this.listeners.onInit?.(msg);
                     break;
                 case 'ephemeral':
-                    this.listeners.onEphemeral?.(msg.payload);
+                    this.listeners.onEphemeral?.(msg.payload, msg.from);
                     break;
             }
         } catch (e) {
