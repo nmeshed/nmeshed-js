@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext, useNmeshedStatus } from './context';
 import { usePresence } from './usePresence';
 import { UI_LAYERS } from './layers';
-import type { MeshLifecycleState } from '../mesh/types';
-import type { ChaosOptions } from '../types';
+import type { ChaosOptions, ConnectionStatus } from '../types';
 
 /**
  * Style definitions for the HUD.
@@ -65,7 +64,7 @@ export function NMeshedHUD() {
     const { status: connectionStatus } = useNmeshedStatus();
     const peers = usePresence();
     const [isVisible, setIsVisible] = useState(false);
-    const [lifecycleStatus, setLifecycleStatus] = useState<MeshLifecycleState | string>('IDLE');
+    const [lifecycleStatus, setLifecycleStatus] = useState<ConnectionStatus | string>('IDLE');
     const [chaos, setChaos] = useState<ChaosOptions | null>(null);
 
     // Determine display status (prefer lifecycle status, fallback to connection status)

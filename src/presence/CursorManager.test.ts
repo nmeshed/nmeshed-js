@@ -22,6 +22,7 @@ const createMockClient = () => {
             listeners.get(event)?.forEach(h => h(...args));
         },
         sendEphemeral: vi.fn(),
+        broadcast: vi.fn(), // CursorManager uses broadcast() not sendEphemeral()
     };
 };
 
@@ -57,7 +58,7 @@ describe('CursorManager', () => {
 
             manager.sendCursor(100, 200);
 
-            expect(mockClient.sendEphemeral).toHaveBeenCalledWith({
+            expect(mockClient.broadcast).toHaveBeenCalledWith({
                 type: '__cursor__',
                 namespace: 'cursor',
                 userId: 'me',
@@ -75,7 +76,7 @@ describe('CursorManager', () => {
             manager.sendCursor(120, 220);
 
             // Only first call should go through due to throttle
-            expect(mockClient.sendEphemeral).toHaveBeenCalledTimes(1);
+            expect(mockClient.broadcast).toHaveBeenCalledTimes(1);
         });
 
         it('should round coordinates', () => {
@@ -83,7 +84,7 @@ describe('CursorManager', () => {
 
             manager.sendCursor(100.7, 200.3);
 
-            expect(mockClient.sendEphemeral).toHaveBeenCalledWith(
+            expect(mockClient.broadcast).toHaveBeenCalledWith(
                 expect.objectContaining({ x: 101, y: 200 })
             );
         });

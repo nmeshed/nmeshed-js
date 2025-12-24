@@ -42,11 +42,121 @@ const DEFAULT_CONFIG: SyncedMapConfig<any> = {
 type RemoteChangeHandler<T> = (key: string, value: T) => void;
 type RemoteDeleteHandler = (key: string) => void;
 
-interface UpdateMessage {
-    type: 'snapshot' | 'update';
-    namespace: string;
-    key: string;
-    data: string | null;
+// Binary Packing Utilities (Internal)
+function packMessage(namespace: string, key: string, value: Uint8Array | null): Uint8Array {
+    const encoder = new TextEncoder();
+    const nsBytes = encoder.encode(namespace);
+    const keyBytes = encoder.encode(key);
+
+    // Header: [NS_LEN(1)][KEY_LEN(1)][HAS_VALUE(1)]
+    // Payload: [NS][KEY][VALUE?]
+    const totalLen = 3 + nsBytes.length + keyBytes.length + (value ? value.length : 0);
+    const buf = new Uint8Array(totalLen);
+
+    let offset = 0;
+    buf[offset++] = nsBytes.length; // Limit 255
+    buf[offset++] = keyBytes.length; // Limit 255
+    buf[offset++] = value ? 1 : 0;
+
+    buf.set(nsBytes, offset); offset += nsBytes.length;
+    buf.set(keyBytes, offset); offset += keyBytes.length;
+
+    if (value) {
+        buf.set(value, offset);
+    }
+
+    return buf;
+}
+
+function unpackMessage(buf: Uint8Array): { namespace: string, key: string, data: Uint8Array | null } | null {
+    if (buf.length < 3) return null;
+    let offset = 0;
+
+    const nsLen = buf[offset++];
+    const keyLen = buf[offset++];
+    const hasValue = buf[offset++] === 1;
+
+    if (buf.length < 3 + nsLen + keyLen) return null;
+
+    const decoder = new TextDecoder();
+    const namespace = decoder.decode(buf.subarray(offset, offset + nsLen));
+    offset += nsLen;
+
+    const key = decoder.decode(buf.subarray(offset, offset + keyLen));
+    offset += keyLen;
+
+    const data = hasValue ? buf.subarray(offset) : null;
+    return { namespace, key, data };
+}
+
+const MAX_KEY_LEN = 255;
+
+function packSnapshot(entries: Map<string, Uint8Array>): Uint8Array {
+    let size = 4; // Count (Uint32)
+    const encoder = new TextEncoder();
+    const encodedKeys = new Map<string, Uint8Array>();
+
+    for (const [key, val] of entries) {
+        const kBytes = encoder.encode(key);
+        if (kBytes.length > MAX_KEY_LEN) continue;
+        encodedKeys.set(key, kBytes);
+        size += 1 + kBytes.length + 4 + val.length;
+    }
+
+    const buf = new Uint8Array(size);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+    let offset = 0;
+    view.setUint32(offset, encodedKeys.size, true);
+    offset += 4;
+
+    for (const [key, val] of entries) {
+        const kBytes = encodedKeys.get(key);
+        if (!kBytes) continue;
+
+        buf[offset++] = kBytes.length;
+        buf.set(kBytes, offset);
+        offset += kBytes.length;
+
+        view.setUint32(offset, val.length, true);
+        offset += 4;
+
+        buf.set(val, offset);
+        offset += val.length;
+    }
+
+    return buf;
+}
+
+function unpackSnapshot(buf: Uint8Array): Map<string, Uint8Array> {
+    const entries = new Map<string, Uint8Array>();
+    if (buf.length < 4) return entries;
+
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let offset = 0;
+
+    const count = view.getUint32(offset, true);
+    offset += 4;
+
+    const decoder = new TextDecoder();
+
+    for (let i = 0; i < count; i++) {
+        if (offset >= buf.length) break;
+
+        const kLen = buf[offset++];
+        const key = decoder.decode(buf.subarray(offset, offset + kLen));
+        offset += kLen;
+
+        const vLen = view.getUint32(offset, true);
+        offset += 4;
+
+        const val = buf.slice(offset, offset + vLen);
+        offset += vLen;
+
+        entries.set(key, val);
+    }
+
+    return entries;
 }
 
 export class SyncedMap<T> {
@@ -141,10 +251,15 @@ export class SyncedMap<T> {
 
     applyRemote(key: string, bytes: Uint8Array): void {
         this.applyRemoteUpdate(key, bytes);
+        // Force notify engine of "external" op if needed, but SyncedMap is usually top-level
     }
 
     applyRemoteRemove(key: string): void {
-        this.applyRemoteDelete(key);
+        const existed = this.data.delete(key);
+        this.serialized.delete(key);
+        if (existed) {
+            this.remoteDeleteListeners.forEach(l => { try { l(key) } catch { } });
+        }
     }
 
     setLocal(key: string, value: T): void {
@@ -166,24 +281,72 @@ export class SyncedMap<T> {
     }
 
     private isSyncMessage(payload: any): boolean {
-        if (typeof payload !== 'object' || payload === null) return false;
-        return (payload.type === 'snapshot' || payload.type === 'update') && payload.namespace === this.namespace;
+        // Binary payload from new protocol
+        if (payload instanceof Uint8Array) return true;
+        // Legacy JSON payload (backwards compatibility)
+        if (typeof payload === 'object' && payload !== null) {
+            return (payload.type === 'update' || payload.type === 'snapshot') && payload.namespace === this.namespace;
+        }
+        return false;
     }
 
-    private handleSyncMessage(msg: any): void {
-        if (msg.type === 'snapshot') {
-            for (const entry of msg.entries) {
-                const bytes = this.base64ToUint8Array(entry.data);
-                this.applyRemoteUpdate(entry.key, bytes);
+    private handleSyncMessage(payload: any): void {
+        // New binary protocol path
+        if (payload instanceof Uint8Array) {
+            // Check first byte for message type: 0=Update, 1=Snapshot
+            const type = payload[0];
+            if (type === 0) { // Update
+                const msg = unpackMessage(payload.subarray(1));
+                if (!msg || msg.namespace !== this.namespace) return;
+
+                if (msg.data) {
+                    this.applyRemoteUpdate(msg.key, msg.data);
+                } else {
+                    this.applyRemoteDelete(msg.key);
+                }
+            } else if (type === 1) { // Snapshot
+                let offset = 1;
+                const nsLen = payload[offset++];
+                const decoder = new TextDecoder();
+                const ns = decoder.decode(payload.subarray(offset, offset + nsLen));
+                offset += nsLen;
+
+                if (ns !== this.namespace) return;
+
+                const entries = unpackSnapshot(payload.subarray(offset));
+                for (const [key, val] of entries) {
+                    this.applyRemoteUpdate(key, val);
+                }
             }
-        } else if (msg.type === 'update') {
-            if (msg.data === null) {
-                this.applyRemoteDelete(msg.key);
-            } else {
-                const bytes = this.base64ToUint8Array(msg.data);
-                this.applyRemoteUpdate(msg.key, bytes);
+            return;
+        }
+
+        // Legacy JSON path (backwards compatibility for tests/older clients)
+        if (typeof payload === 'object' && payload !== null) {
+            if (payload.type === 'snapshot' && payload.namespace === this.namespace) {
+                for (const entry of payload.entries || []) {
+                    const bytes = this.base64ToUint8Array(entry.data);
+                    this.applyRemoteUpdate(entry.key, bytes);
+                }
+            } else if (payload.type === 'update' && payload.namespace === this.namespace) {
+                if (payload.data === null) {
+                    this.applyRemoteDelete(payload.key);
+                } else {
+                    const bytes = this.base64ToUint8Array(payload.data);
+                    this.applyRemoteUpdate(payload.key, bytes);
+                }
             }
         }
+    }
+
+    private base64ToUint8Array(base64: string): Uint8Array {
+        const binary = atob(base64);
+        const len = binary.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
     }
 
     private applyRemoteUpdate(key: string, bytes: Uint8Array): void {
@@ -219,13 +382,13 @@ export class SyncedMap<T> {
             return;
         }
 
-        const msg = {
-            type: 'update',
-            namespace: this.namespace,
-            key,
-            data: bytes ? this.uint8ArrayToBase64(bytes) : null,
-        };
-        this.client.broadcast(msg);
+        // Prefix 0 for Update
+        const body = packMessage(this.namespace, key, bytes);
+        const packet = new Uint8Array(1 + body.length);
+        packet[0] = 0; // Type: Update
+        packet.set(body, 1);
+
+        this.client.broadcast(packet);
     }
 
     sendSnapshotTo(peerId: string): void {
@@ -234,17 +397,22 @@ export class SyncedMap<T> {
             return;
         }
 
-        const entries: Array<{ key: string; data: string }> = [];
-        for (const [key, bytes] of this.serialized) {
-            entries.push({ key, data: this.uint8ArrayToBase64(bytes) });
-        }
+        // Prefix 1 for Snapshot
+        // Header: [1][NS_LEN][NS]
+        const encoder = new TextEncoder();
+        const nsBytes = encoder.encode(this.namespace);
 
-        const msg = {
-            type: 'snapshot',
-            namespace: this.namespace,
-            entries,
-        };
-        this.client.sendToPeer(peerId, msg);
+        const snapshotBytes = packSnapshot(this.serialized);
+
+        const packet = new Uint8Array(1 + 1 + nsBytes.length + snapshotBytes.length);
+        let offset = 0;
+        packet[offset++] = 1; // Type: Snapshot
+        packet[offset++] = nsBytes.length;
+        packet.set(nsBytes, offset);
+        offset += nsBytes.length;
+        packet.set(snapshotBytes, offset);
+
+        this.client.sendToPeer(peerId, packet);
     }
 
     destroy(): void {
@@ -256,24 +424,7 @@ export class SyncedMap<T> {
         this.serialized.clear();
     }
 
-    private uint8ArrayToBase64(bytes: Uint8Array): string {
-        let binary = '';
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        return btoa(binary);
-    }
-
-    private base64ToUint8Array(base64: string): Uint8Array {
-        const binary = atob(base64);
-        const len = binary.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-        return bytes;
-    }
+    // Removed base64 utils
 }
 
 export function createSyncedMap<T>(

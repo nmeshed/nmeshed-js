@@ -48,6 +48,7 @@
         "dev": "tsup --watch",
         "test": "vitest",
         "test:run": "vitest run",
+        "benchmark": "npx tsx benchmarks/benchmark_client.ts",
         "lint": "eslint src --ext .ts,.tsx",
         "typecheck": "tsc --noEmit",
         "docs:generate": "typedoc",

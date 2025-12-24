@@ -81,7 +81,12 @@ class MockWebSocket {
     }
 
     simulateBinaryMessage(data: ArrayBuffer) {
-        this.onmessage?.({ data });
+        // Prefix with OpCode.ENGINE (0x01) for proper binary framing
+        const rawBytes = new Uint8Array(data);
+        const framedBytes = new Uint8Array(rawBytes.length + 1);
+        framedBytes[0] = 0x01; // OpCode.ENGINE
+        framedBytes.set(rawBytes, 1);
+        this.onmessage?.({ data: framedBytes.buffer });
     }
 
     simulateClose(code = 1000, reason = '') {

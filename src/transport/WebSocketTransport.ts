@@ -1,6 +1,7 @@
 import { EventEmitter } from '../utils/EventEmitter';
 import { Transport, TransportEvents, TransportStatus } from './Transport';
 import { ConnectionError } from '../errors';
+import { OpCode } from './protocol';
 
 export interface WebSocketTransportConfig {
     url: string;
@@ -12,6 +13,8 @@ export interface WebSocketTransportConfig {
     heartbeatInterval?: number;
     heartbeatMaxMissed?: number;
     debug?: boolean;
+    /** When true, all messages use JSON format for debugging. Default: false (binary protocol). */
+    debugProtocol?: boolean;
 }
 
 /**
@@ -44,7 +47,8 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         connectionTimeout: 10000,
         heartbeatInterval: 30000,
         heartbeatMaxMissed: 3,
-        debug: false
+        debug: false,
+        debugProtocol: false
     };
 
     constructor(config: WebSocketTransportConfig) {
@@ -128,10 +132,24 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             return;
         }
 
-        if (this.latency > 0) {
-            setTimeout(() => this.ws?.send(data), this.latency);
+        let packet: Uint8Array | string;
+
+        if (this.config.debugProtocol) {
+            // Debug mode: Send as JSON text for human readability
+            const json = { type: 'op', payload: Array.from(data) };
+            packet = JSON.stringify(json);
         } else {
-            this.ws.send(data);
+            // Production mode: Binary with OpCode prefix
+            const binary = new Uint8Array(data.length + 1);
+            binary[0] = OpCode.ENGINE;
+            binary.set(data, 1);
+            packet = binary;
+        }
+
+        if (this.latency > 0) {
+            setTimeout(() => this.ws?.send(packet), this.latency);
+        } else {
+            this.ws.send(packet);
         }
     }
 
@@ -143,11 +161,36 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             return;
         }
 
-        const msg = JSON.stringify({ type: 'ephemeral', payload, to });
-        if (this.latency > 0) {
-            setTimeout(() => this.ws?.send(msg), this.latency);
+        let packet: Uint8Array;
+
+        if (payload instanceof Uint8Array) {
+            if (to) {
+                // Binary Direct: [OpCode.DIRECT][ToLen][To][Payload]
+                const toBytes = new TextEncoder().encode(to);
+                packet = new Uint8Array(2 + toBytes.length + payload.length);
+                packet[0] = OpCode.DIRECT;
+                packet[1] = toBytes.length;
+                packet.set(toBytes, 2);
+                packet.set(payload, 2 + toBytes.length);
+            } else {
+                // Binary Broadcast: [OpCode.EPHEMERAL][Payload]
+                packet = new Uint8Array(payload.length + 1);
+                packet[0] = OpCode.EPHEMERAL;
+                packet.set(payload, 1);
+            }
         } else {
-            this.ws.send(msg);
+            // Legacy/JSON System Message: [OpCode.SYSTEM][JSON String]
+            const json = JSON.stringify({ type: 'ephemeral', payload, to });
+            const encoded = new TextEncoder().encode(json);
+            packet = new Uint8Array(encoded.length + 1);
+            packet[0] = OpCode.SYSTEM;
+            packet.set(encoded, 1);
+        }
+
+        if (this.latency > 0) {
+            setTimeout(() => this.ws?.send(packet), this.latency);
+        } else {
+            this.ws.send(packet);
         }
     }
 
@@ -202,68 +245,113 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
     private handleMessage(event: MessageEvent): void {
         const data = event.data;
-        if (data === '__ping__' || (typeof data === 'string' && data.includes('__ping__'))) {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                // console.warn('[WebSocketTransport] Sending __pong__');
-                this.ws.send('__pong__');
+
+        // Handle string messages directly (legacy/test path)
+        if (typeof data === 'string') {
+            if (data === '__ping__' || data.includes('__ping__')) {
+                this.handlePingPong(data);
+                return;
             }
+            // Legacy string messages go directly to JSON handler - no OpCode processing
+            this.handleJsonMessage(data);
+            return;
+        }
+
+        // Binary path: data is ArrayBuffer
+        const bytes = new Uint8Array(data);
+        if (bytes.length === 0) return;
+
+        const opCode = bytes[0];
+        const payload = bytes.subarray(1);
+
+        switch (opCode) {
+            case OpCode.ENGINE:
+                this.emit('message', payload);
+                break;
+            case OpCode.EPHEMERAL:
+                this.emit('ephemeral', payload); // Emit raw binary
+                break;
+            case OpCode.DIRECT:
+                // Direct messages: server strips routing, just emit payload as ephemeral
+                this.emit('ephemeral', payload);
+                break;
+            case OpCode.SYSTEM:
+                // System message: payload is JSON string bytes
+                try {
+                    const text = new TextDecoder().decode(payload);
+                    this.handleJsonMessage(text);
+                } catch (e) {
+                    this.emit('message', bytes);
+                }
+                break;
+            default:
+                // Unknown OpCode - drop the packet (protocol violation)
+                // In a greenfield project, we enforce strict protocol compliance
+                console.warn(`[WebSocketTransport] Unknown OpCode: 0x${opCode.toString(16).padStart(2, '0')}`);
+                break;
+        }
+    }
+
+    private handlePingPong(_data: string): void {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('__pong__');
+        }
+    }
+
+    private handleJsonMessage(data: string): void {
+        if (data === '__ping__' || (typeof data === 'string' && data.includes('__ping__'))) {
+            this.handlePingPong(data);
             return;
         }
         if (data === '__pong__') return;
 
-        if (typeof data === 'string') {
-            try {
-                const json = JSON.parse(data);
-                if (json.type === 'ephemeral' || json.type === 'presence') {
-                    if (json.type === 'presence') {
-                        const payload = json.payload || json;
-                        const { userId, status } = payload;
-                        if (status === 'online') {
-                            this.peers.add(userId);
-                            this.emit('peerJoin', userId);
-                        } else if (status === 'offline') {
-                            this.peers.delete(userId);
-                            this.emit('peerDisconnect', userId);
-                        }
-                        this.emit('presence', payload);
-                    } else {
-                        const payload = json.payload;
-                        const from = json.from;
-
-                        if (payload && payload.type === '__ping__') {
-                            this.sendEphemeral({
-                                type: '__pong__',
-                                requestId: payload.requestId,
-                                timestamp: Date.now()
-                            }, from);
-                        } else if (payload && payload.type === '__pong__') {
-                            const resolver = this.pingResolvers.get(payload.requestId);
-                            const start = this.pingStarts.get(payload.requestId);
-                            if (resolver && start) {
-                                resolver(performance.now() - start);
-                                this.pingResolvers.delete(payload.requestId);
-                                this.pingStarts.delete(payload.requestId);
-                            }
-                        }
-
-                        this.emit('ephemeral', payload, from);
+        try {
+            const json = JSON.parse(data);
+            // ... (rest of legacy JSON handling)
+            if (json.type === 'ephemeral' || json.type === 'presence') {
+                if (json.type === 'presence') {
+                    const payload = json.payload || json;
+                    const { userId, status } = payload;
+                    if (status === 'online') {
+                        this.peers.add(userId);
+                        this.emit('peerJoin', userId);
+                    } else if (status === 'offline') {
+                        this.peers.delete(userId);
+                        this.emit('peerDisconnect', userId);
                     }
-                } else if (json.type === 'init' || json.type === 'op' || json.op) {
-                    this.emit('message', new TextEncoder().encode(data));
+                    this.emit('presence', payload);
                 } else {
-                    this.emit('ephemeral', json);
+                    const payload = json.payload;
+                    const from = json.from;
+
+                    if (payload && payload.type === '__ping__') {
+                        this.sendEphemeral({
+                            type: '__pong__',
+                            requestId: payload.requestId,
+                            timestamp: Date.now()
+                        }, from);
+                    } else if (payload && payload.type === '__pong__') {
+                        const resolver = this.pingResolvers.get(payload.requestId);
+                        const start = this.pingStarts.get(payload.requestId);
+                        if (resolver && start) {
+                            resolver(performance.now() - start);
+                            this.pingResolvers.delete(payload.requestId);
+                            this.pingStarts.delete(payload.requestId);
+                        }
+                    }
+
+                    this.emit('ephemeral', payload, from);
                 }
-            } catch (e) {
-                this.emit('message', new TextEncoder().encode(data));
+            } else if (json.type === 'init' || json.type === 'op' || json.op) {
+                // If we receive legacy JSON ops, convert to binary but strip nothing?
+                // Just emit the raw original bytes (without OpCode stripping if it was text)
+                // But here 'data' is the decoded text payload.
+                this.emit('message', new TextEncoder().encode(JSON.stringify(json)));
+            } else {
+                this.emit('ephemeral', json);
             }
-        } else if (typeof data === 'object' && data !== null) {
-            // Relaxed check for ArrayBuffer/Uint8Array compatibility
-            try {
-                const bytes = new Uint8Array(data as any);
-                this.emit('message', bytes);
-            } catch (e) {
-                console.error('[WebSocketTransport] Failed to convert binary data', e);
-            }
+        } catch (e) {
+            console.error('Failed to parse system message', e);
         }
     }
 

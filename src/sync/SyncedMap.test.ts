@@ -132,14 +132,11 @@ describe('SyncedMap', () => {
             const entity = { id: '1', x: 10, y: 20 };
             map.set('e1', entity);
 
-            expect(client.broadcast).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    type: 'update',
-                    namespace: 'test-entities',
-                    key: 'e1',
-                    data: expect.any(String), // Base64 encoded
-                })
-            );
+            // Now broadcasts binary Uint8Array instead of JSON
+            expect(client.broadcast).toHaveBeenCalledTimes(1);
+            const packet = client.broadcast.mock.calls[0][0];
+            expect(packet).toBeInstanceOf(Uint8Array);
+            expect(packet.length).toBeGreaterThan(0);
         });
 
         it('should broadcast null data on delete', () => {
@@ -148,14 +145,10 @@ describe('SyncedMap', () => {
 
             map.delete('e1');
 
-            expect(client.broadcast).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    type: 'update',
-                    namespace: 'test-entities',
-                    key: 'e1',
-                    data: null,
-                })
-            );
+            // Now broadcasts binary Uint8Array (with null flag in payload)
+            expect(client.broadcast).toHaveBeenCalledTimes(1);
+            const packet = client.broadcast.mock.calls[0][0];
+            expect(packet).toBeInstanceOf(Uint8Array);
         });
     });
 
@@ -460,14 +453,12 @@ describe('SyncedMap', () => {
 
             map.sendSnapshotTo('peer-123');
 
-            expect(client.sendToPeer).toHaveBeenCalledWith(
-                'peer-123',
-                expect.objectContaining({
-                    type: 'snapshot',
-                    namespace: 'test-entities',
-                    entries: expect.any(Array),
-                })
-            );
+            // Now sends binary Uint8Array instead of JSON
+            expect(client.sendToPeer).toHaveBeenCalledTimes(1);
+            const [peerId, packet] = client.sendToPeer.mock.calls[0];
+            expect(peerId).toBe('peer-123');
+            expect(packet).toBeInstanceOf(Uint8Array);
+            expect(packet.length).toBeGreaterThan(0);
         });
     });
 

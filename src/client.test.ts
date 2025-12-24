@@ -86,9 +86,13 @@ class MockWebSocket {
     }
 
     simulateBinaryMessage(data: unknown) {
+        // Prefix with OpCode.ENGINE (0x01) for proper binary framing
         const jsonBytes = new TextEncoder().encode(JSON.stringify(data));
+        const framedBytes = new Uint8Array(jsonBytes.length + 1);
+        framedBytes[0] = 0x01; // OpCode.ENGINE
+        framedBytes.set(jsonBytes, 1);
         if (this.onmessage) {
-            this.onmessage({ data: jsonBytes.buffer });
+            this.onmessage({ data: framedBytes.buffer });
         }
     }
 

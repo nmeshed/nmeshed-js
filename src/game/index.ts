@@ -1,12 +1,14 @@
 /**
  * Game module exports.
  * 
- * Provides high-level client for game-like use cases with WASM integration.
+ * Re-exports useful utilities for game-like use cases.
+ * Note: GameClient has been deprecated. Use NMeshedClient directly.
  */
-
-export { GameClient } from './GameClient';
-export type { GameClientConfig } from './GameClient';
 
 // Re-export SyncedMap for convenience
 export { createSyncedMap, SyncedMap } from '../sync/SyncedMap';
 export type { SyncedMapConfig } from '../sync/SyncedMap';
+
+// Re-export NMeshedClient as the primary client
+export { NMeshedClient } from '../client';
+export type { NMeshedConfig } from '../types';
