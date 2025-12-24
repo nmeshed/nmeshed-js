@@ -169,3 +169,7 @@ export interface ChaosOptions {
     jitter?: number;
     packetLoss?: number;
 }
+/**
+ * Unsubscribe function returned by event listeners.
+ */
+export type Unsubscribe = () => void;

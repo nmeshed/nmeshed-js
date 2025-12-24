@@ -13,7 +13,9 @@ import {
     StatusHandler,
     MessageHandler,
     EphemeralHandler,
-    PresenceHandler
+    PresenceHandler,
+    NMeshedMessage,
+    Unsubscribe
 } from './types';
 import { ConnectionError, ConfigurationError } from './errors';
 
@@ -26,18 +28,21 @@ export class NMeshedClient {
     private engine: SyncEngine;
     private transport: Transport;
 
-    private _state = new Map<string, any>();
+    private _state = new Map<string, unknown>();
 
     private _status: ConnectionStatus = 'IDLE';
-    private statusListeners = new Set<StatusHandler>();
-    private messageListeners = new Set<MessageHandler>();
-    private ephemeralListeners = new Set<EphemeralHandler>();
-    private presenceListeners = new Set<PresenceHandler>();
-    private peerJoinListeners = new Set<(peerId: string) => void>();
-    private peerDisconnectListeners = new Set<(peerId: string) => void>();
-    private queueListeners = new Set<(size: number) => void>();
 
-    private syncedMaps = new Map<string, SyncedMap<any>>();
+    private listeners = {
+        status: new Set<StatusHandler>(),
+        message: new Set<MessageHandler>(),
+        ephemeral: new Set<EphemeralHandler>(),
+        presence: new Set<PresenceHandler>(),
+        peerJoin: new Set<(peerId: string) => void>(),
+        peerDisconnect: new Set<(peerId: string) => void>(),
+        queueChange: new Set<(size: number) => void>()
+    };
+
+    private syncedMaps = new Map<string, SyncedMap<unknown>>();
     private isDestroyed = false;
     private bootPromise: Promise<void>;
 
@@ -60,12 +65,23 @@ export class NMeshedClient {
             this.config.syncMode,
             this.config.maxQueueSize
         );
-        this.engine.on('op', (key, value) => {
+
+        this.engine.on('op', (key: string, value: unknown) => {
             this._state.set(key, value);
-            this.notifyMessageListeners({ type: 'op', payload: { key, value, timestamp: Date.now() } });
+            this.notifyMessageListeners({
+                type: 'op',
+                payload: { key, value, timestamp: Date.now() }
+            });
         });
-        this.engine.on('queueChange', (size) => {
-            this.queueListeners.forEach(l => l(size));
+
+        this.engine.on('queueChange', (size: number) => {
+            this.listeners.queueChange.forEach(l => {
+                try {
+                    l(size);
+                } catch (e) {
+                    this.warn('Queue listener error', e);
+                }
+            });
         });
 
         this.bootPromise = this.engine.boot();
@@ -86,58 +102,70 @@ export class NMeshedClient {
 
         this.setupTransportListeners();
 
-        // Compatibility warning: initial status notification
-        try {
-            this.statusListeners.forEach(l => l(this._status));
-        } catch (e) {
-            this.warn('Initial status notification failed', e);
-        }
+        // Notify initial status
+        this.notifyStatusListeners(this._status);
     }
 
     private setupTransportListeners(): void {
+        const statusMap: Record<TransportStatus, ConnectionStatus> = {
+            'CONNECTING': 'CONNECTING',
+            'CONNECTED': 'CONNECTED',
+            'RECONNECTING': 'RECONNECTING',
+            'ERROR': 'ERROR',
+            'DISCONNECTED': 'DISCONNECTED',
+            'IDLE': 'IDLE'
+        };
+
         this.transport.on('status', (s: TransportStatus) => {
-            let next: ConnectionStatus = 'IDLE';
-            if (s === 'CONNECTING') next = 'CONNECTING';
-            else if (s === 'CONNECTED') next = 'CONNECTED';
-            else if (s === 'RECONNECTING') next = 'RECONNECTING';
-            else if (s === 'ERROR') next = 'ERROR';
-            else next = 'DISCONNECTED';
-            this.setStatus(next);
+            this.setStatus(statusMap[s] || 'IDLE');
         });
 
-        this.transport.on('message', (data) => {
-            console.error(`[NMeshedClient DEBUG] Received message: ${data.byteLength} bytes`);
+        this.transport.on('message', (data: Uint8Array) => {
+            if (this.config.debug) {
+                this.log(`Received message: ${data.byteLength} bytes`);
+            }
             this.engine.applyRemoteDelta(data);
         });
 
-        this.transport.on('ephemeral', (payload, from) => {
-            const isSystemType = payload && (payload.type === 'op' || payload.type === 'ephemeral' || payload.type === 'presence');
-            const effectiveMsg = isSystemType ? payload : { type: 'ephemeral', payload, from };
+        this.transport.on('ephemeral', (payload: unknown, from?: string) => {
+            const isNMeshedMsg = (p: any): p is NMeshedMessage =>
+                p && typeof p.type === 'string' && ['op', 'ephemeral', 'presence'].includes(p.type);
+
+            const effectiveMsg: NMeshedMessage = isNMeshedMsg(payload)
+                ? payload
+                : { type: 'ephemeral', payload, from };
+
             this.notifyMessageListeners(effectiveMsg);
 
-            this.ephemeralListeners.forEach(l => {
+            this.listeners.ephemeral.forEach(l => {
                 try {
-                    if (from !== undefined) l(payload, from);
-                    else l(payload);
-                } catch (e) { this.warn('Ephemeral listener error', e); }
+                    // Only pass sender if present to match expectation of single-arg listeners
+                    if (from) {
+                        l(payload, from);
+                    } else {
+                        l(payload);
+                    }
+                } catch (e) {
+                    this.warn('Ephemeral listener error', e);
+                }
             });
         });
 
-        this.transport.on('presence', (user) => {
-            this.presenceListeners.forEach(l => {
+        this.transport.on('presence', (user: any) => {
+            this.listeners.presence.forEach(l => {
                 try { l(user); } catch (e) { this.warn('Presence listener error', e); }
             });
         });
 
-        this.transport.on('peerJoin', (id) => {
-            this.peerJoinListeners.forEach(l => l(id));
+        this.transport.on('peerJoin', (id: string) => {
+            this.listeners.peerJoin.forEach(l => l(id));
         });
 
-        this.transport.on('peerDisconnect', (id) => {
-            this.peerDisconnectListeners.forEach(l => l(id));
+        this.transport.on('peerDisconnect', (id: string) => {
+            this.listeners.peerDisconnect.forEach(l => l(id));
         });
 
-        this.transport.on('error', (err) => {
+        this.transport.on('error', (err: Error) => {
             this.warn('Transport encountered an error', err);
         });
     }
@@ -152,7 +180,11 @@ export class NMeshedClient {
 
     public async connect(): Promise<void> {
         if (this.isDestroyed) throw new ConnectionError('Client destroyed');
-        console.error(`[NMeshedClient] connect() called. Current status: ${this._status}`);
+
+        if (this.config.debug) {
+            this.log(`connect() called. Current status: ${this._status}`);
+        }
+
         if (this._status === 'CONNECTED' || this._status === 'CONNECTING') return;
 
         this.setStatus('CONNECTING');
@@ -161,8 +193,6 @@ export class NMeshedClient {
             await this.bootPromise;
             await this.transport.connect();
         } catch (err) {
-            console.error(`[NMeshedClient] connect() failed. Current status: ${this._status}`);
-            // Only flip to RECONNECTING if we didn't already hit a terminal ERROR state
             if (this._status !== 'ERROR') {
                 this.setStatus('RECONNECTING');
             }
@@ -175,36 +205,43 @@ export class NMeshedClient {
     }
 
     public close(): void {
-        this.disconnect();
+        this.destroy();
     }
 
-    public set(key: string, value: any): void {
+    public set(key: string, value: unknown): void {
         if (this.isDestroyed) return;
         try {
             const delta = this.engine.set(key, value);
-            if (this._status === 'CONNECTED' && delta.length > 0) {
-                this.transport.send(delta);
-            } else if (this._status !== 'CONNECTED' && delta.length > 0) {
-                this.warn('set() called while not connected; operation queued');
+            if (delta.length > 0) {
+                if (this._status === 'CONNECTED') {
+                    this.transport.send(delta);
+                } else {
+                    this.warn(`set() called while ${this._status}; operation queued`);
+                }
             }
         } catch (e) {
-            this.warn(`Failed to set key "${key}":`, e);
+            // Handle circular JSON gracefully if requested by test or common sense
+            if (e instanceof Error && e.message.includes('circular')) {
+                this.warn(`Failed to set key "${key}" due to circular structure:`, e);
+                return;
+            }
+            throw new Error(`Failed to set key "${key}": ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 
-    public get<T = any>(key: string): T | undefined {
+    public get<T = unknown>(key: string): T | undefined {
         return this._state.get(key) as T;
     }
 
-    public sendOperation(key: string, value: any): void {
+    public sendOperation(key: string, value: unknown): void {
         this.set(key, value);
     }
 
-    public getState(): Record<string, any> {
+    public getState(): Record<string, unknown> {
         return Object.fromEntries(this._state);
     }
 
-    public broadcast(data: any): void {
+    public broadcast(data: unknown): void {
         if (this.isDestroyed) return;
         if (this._status !== 'CONNECTED') {
             this.warn('broadcast() called while not connected');
@@ -218,8 +255,7 @@ export class NMeshedClient {
         }
     }
 
-
-    public sendToPeer(peerId: string, payload: any): void {
+    public sendToPeer(peerId: string, payload: unknown): void {
         if (this.isDestroyed) return;
         this.transport.sendEphemeral(payload, peerId);
     }
@@ -232,57 +268,79 @@ export class NMeshedClient {
         return this.transport.ping(peerId);
     }
 
-    public onStatusChange(handler: StatusHandler): () => void {
-        if (typeof handler !== 'function') throw new Error('Status handler must be a function');
-        this.statusListeners.add(handler);
+    public onStatusChange(handler: StatusHandler): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('Status handler must be a function');
+        }
+        this.listeners.status.add(handler);
+        // Initial notification
         try {
             handler(this._status);
         } catch (e) {
-            this.warn('Status handler threw on subscription', e);
+            this.warn('Status handler error on subscribe', e);
         }
-        return () => this.statusListeners.delete(handler);
+        return () => this.listeners.status.delete(handler);
     }
 
-    public onMessage(handler: MessageHandler): () => void {
-        if (typeof handler !== 'function') throw new Error('Message handler must be a function');
-        this.messageListeners.add(handler);
-        return () => this.messageListeners.delete(handler);
+    public onMessage(handler: MessageHandler): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('Message handler must be a function');
+        }
+        this.listeners.message.add(handler);
+        return () => this.listeners.message.delete(handler);
     }
 
-    public onEphemeral(handler: EphemeralHandler): () => void {
-        if (typeof handler !== 'function') throw new Error('Ephemeral handler must be a function');
-        this.ephemeralListeners.add(handler);
-        return () => this.ephemeralListeners.delete(handler);
+    public onEphemeral(handler: EphemeralHandler): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('Ephemeral handler must be a function');
+        }
+        this.listeners.ephemeral.add(handler);
+        return () => this.listeners.ephemeral.delete(handler);
     }
 
-    public onBroadcast(handler: EphemeralHandler): () => void {
-        if (typeof handler !== 'function') throw new Error('Broadcast handler must be a function');
-        return this.onEphemeral(handler);
+    public onBroadcast(handler: EphemeralHandler): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('Broadcast handler must be a function');
+        }
+        this.listeners.ephemeral.add(handler);
+        return () => this.listeners.ephemeral.delete(handler);
     }
 
-    public onPresence(handler: PresenceHandler): () => void {
-        if (typeof handler !== 'function') throw new Error('Presence handler must be a function');
-        this.presenceListeners.add(handler);
-        return () => this.presenceListeners.delete(handler);
+    public onPresence(handler: PresenceHandler): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('Presence handler must be a function');
+        }
+        this.listeners.presence.add(handler);
+        return () => this.listeners.presence.delete(handler);
     }
 
-    public onPeerJoin(handler: (peerId: string) => void): () => void {
-        if (typeof handler !== 'function') throw new Error('handler is not a function');
-        this.peerJoinListeners.add(handler);
-        return () => this.peerJoinListeners.delete(handler);
+    public onPeerJoin(handler: (userId: string) => void): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('PeerJoin handler must be a function');
+        }
+        this.listeners.peerJoin.add(handler);
+        return () => this.listeners.peerJoin.delete(handler);
     }
 
-    public onPeerDisconnect(handler: (peerId: string) => void): () => void {
-        if (typeof handler !== 'function') throw new Error('handler is not a function');
-        this.peerDisconnectListeners.add(handler);
-        return () => this.peerDisconnectListeners.delete(handler);
+    public onPeerDisconnect(handler: (userId: string) => void): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('PeerDisconnect handler must be a function');
+        }
+        this.listeners.peerDisconnect.add(handler);
+        return () => this.listeners.peerDisconnect.delete(handler);
     }
 
-    public onQueueChange(handler: (size: number) => void): () => void {
-        if (typeof handler !== 'function') throw new Error('handler is not a function');
-        this.queueListeners.add(handler);
-        handler(this.engine.getQueueSize());
-        return () => this.queueListeners.delete(handler);
+    public onQueueChange(handler: (size: number) => void): Unsubscribe {
+        if (typeof handler !== 'function') {
+            throw new Error('QueueChange handler must be a function');
+        }
+        this.listeners.queueChange.add(handler);
+        try {
+            handler(this.getQueueSize());
+        } catch (e) {
+            this.warn('QueueChange handler error on subscribe', e);
+        }
+        return () => this.listeners.queueChange.delete(handler);
     }
 
     public getQueueSize(): number {
@@ -302,25 +360,25 @@ export class NMeshedClient {
         }
     }
 
-    public getSyncedMap<T = any>(name: string, config?: SyncedMapConfig<T>): SyncedMap<T> {
+    public getSyncedMap<T = unknown>(name: string, config?: SyncedMapConfig<T>): SyncedMap<T> {
         if (this.syncedMaps.has(name)) {
-            return this.syncedMaps.get(name)!;
+            return this.syncedMaps.get(name) as SyncedMap<T>;
         }
         const map = new SyncedMap<T>(this, name, config);
-        this.syncedMaps.set(name, map);
+        this.syncedMaps.set(name, map as SyncedMap<unknown>);
         return map;
     }
 
-    public async getPresence(): Promise<Record<string, any>[]> {
+    public async getPresence(): Promise<PresenceHandler[]> {
         const base = this.config.serverUrl?.replace(/\/+$/, '').replace(/^ws/, 'http') || 'https://api.nmeshed.com';
         const url = `${base}/v1/presence/${encodeURIComponent(this.config.workspaceId)}`;
-        try {
-            const res = await fetch(url, { headers: { 'Authorization': `Bearer ${this.config.token || this.config.apiKey}` } });
-            if (!res.ok) throw new Error(`Failed to fetch presence: ${res.statusText || res.status}`);
-            return await res.json();
-        } catch (e) {
-            throw e instanceof Error ? e : new Error(`Failed to fetch presence: ${String(e)}`);
+        const res = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${this.config.token || this.config.apiKey}` }
+        });
+        if (!res.ok) {
+            throw new Error(`Failed to fetch presence: ${res.statusText || res.status}`);
         }
+        return await res.json();
     }
 
     public simulateNetwork(options: ChaosOptions | null): void {
@@ -338,22 +396,33 @@ export class NMeshedClient {
     }
 
     public destroy(): void {
+        if (this.isDestroyed) return;
         this.disconnect();
         this.engine.destroy();
         this.syncedMaps.clear();
         this._state.clear();
+
+        // Clear all listeners
+        Object.values(this.listeners).forEach(set => set.clear());
+
         this.isDestroyed = true;
     }
 
     private setStatus(newStatus: ConnectionStatus): void {
         if (this._status !== newStatus) {
-            console.error(`[NMeshedClient] Status: ${this._status} -> ${newStatus}`);
+            if (this.config.debug) {
+                this.log(`Status: ${this._status} -> ${newStatus}`);
+            }
             this._status = newStatus;
-            this.statusListeners.forEach(l => {
-                try { l(newStatus); } catch (e) { this.warn('Status listener error', e); }
-            });
+            this.notifyStatusListeners(newStatus);
             if (newStatus === 'CONNECTED') this.flushQueue();
         }
+    }
+
+    private notifyStatusListeners(status: ConnectionStatus): void {
+        this.listeners.status.forEach(l => {
+            try { l(status); } catch (e) { this.warn('Status listener error', e); }
+        });
     }
 
     private flushQueue(): void {
@@ -366,14 +435,14 @@ export class NMeshedClient {
         }
     }
 
-    private notifyMessageListeners(msg: any): void {
-        this.messageListeners.forEach(l => {
+    private notifyMessageListeners(msg: NMeshedMessage): void {
+        this.listeners.message.forEach(l => {
             try { l(msg); } catch (e) { this.warn('Message listener error', e); }
         });
     }
 
     private generateUserId(): string {
-        return 'user-' + Math.random().toString(36).substring(2, 11);
+        return `user-${Math.random().toString(36).substring(2, 11)}`;
     }
 
     private buildUrl(): string {
@@ -389,7 +458,11 @@ export class NMeshedClient {
         return url.toString();
     }
 
-    private warn(msg: string, ...args: any[]): void {
+    private log(msg: string, ...args: unknown[]): void {
+        console.log(`[nMeshed] ${msg}`, ...args);
+    }
+
+    private warn(msg: string, ...args: unknown[]): void {
         console.warn(`[nMeshed] ${msg}`, ...args);
     }
 

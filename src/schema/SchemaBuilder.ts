@@ -26,8 +26,8 @@ export interface SchemaDefinition {
  */
 export interface Schema<T extends SchemaDefinition> {
     definition: T;
-    encode: (data: any) => Uint8Array;
-    decode: (buffer: Uint8Array) => any;
+    encode: (data: InferObject<T>) => Uint8Array;
+    decode: (buffer: Uint8Array) => InferObject<T>;
 }
 
 // ============================================================================
@@ -93,8 +93,8 @@ export type InferSchema<T extends Schema<any>> =
 export function defineSchema<T extends SchemaDefinition>(definition: T): Schema<T> {
     return {
         definition,
-        encode: (data: any) => SchemaSerializer.encode(definition, data),
-        decode: (buffer: Uint8Array) => SchemaSerializer.decode(definition, buffer)
+        encode: (data: InferObject<T>) => SchemaSerializer.encode(definition, data),
+        decode: (buffer: Uint8Array) => SchemaSerializer.decode(definition, buffer) as InferObject<T>
     };
 }
 

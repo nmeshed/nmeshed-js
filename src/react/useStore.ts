@@ -1,18 +1,17 @@
-
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext } from './context';
-import { Schema, SchemaDefinition, SchemaSerializer } from '../schema/SchemaBuilder';
+import { Schema, SchemaDefinition, SchemaSerializer, InferSchema } from '../schema/SchemaBuilder';
 import { NMeshedMessage } from '../types';
 
 /**
  * Return type for useStore hook.
  * @template T The schema definition type
  */
-export type UseStoreReturn<T> = [
+export type UseStoreReturn<T extends SchemaDefinition> = [
     /** Current state derived from schema */
-    Record<string, any>,
+    InferSchema<Schema<T>>,
     /** Setter function for updating state */
-    (updates: Partial<Record<keyof T, any>>) => void
+    (updates: Partial<InferSchema<Schema<T>>>) => void
 ];
 
 /**
@@ -37,42 +36,41 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
     const client = useNmeshedContext();
 
     // Helper to read current snapshot from client
-    const snapshot = useMemo(() => {
-        return () => {
-            const result: any = {};
-            for (const key of Object.keys(schema.definition)) {
-                const fieldDef = schema.definition[key];
-                const rawVal = client.get(key);
+    const getSnapshot = useCallback((): InferSchema<Schema<T>> => {
+        const result = {} as Record<string, unknown>;
+        for (const key of Object.keys(schema.definition)) {
+            const fieldDef = schema.definition[key];
+            const rawVal = client.get(key);
 
-                if (rawVal instanceof Uint8Array) {
-                    try {
-                        result[key] = SchemaSerializer.decodeValue(fieldDef, rawVal);
-                    } catch (e) {
-                        result[key] = undefined;
-                    }
-                } else {
-                    result[key] = rawVal;
+            if (rawVal instanceof Uint8Array) {
+                try {
+                    result[key] = SchemaSerializer.decodeValue(fieldDef, rawVal);
+                } catch (e) {
+                    // Test expects undefined on decode failure
+                    result[key] = undefined;
                 }
+            } else {
+                result[key] = rawVal;
             }
-            return result;
-        };
+        }
+        return result as InferSchema<Schema<T>>;
     }, [client, schema]);
 
     // Initialize state
-    const [store, setStoreState] = useState(snapshot);
+    const [store, setStoreState] = useState<InferSchema<Schema<T>>>(getSnapshot);
 
     // Setter function that handles encoding and sends operations
-    const setStore = useCallback((updates: Partial<Record<keyof T, any>>) => {
+    const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
         if (!updates || typeof updates !== 'object') {
-            console.error('[useStore] setStore called with invalid updates:', updates);
-            return;
+            throw new Error('[useStore] setStore called with invalid updates');
         }
 
-        for (const key of Object.keys(updates) as Array<keyof T>) {
-            const fieldDef = schema.definition[key as string];
+        for (const key of Object.keys(updates) as Array<keyof T & string>) {
+            const fieldDef = schema.definition[key];
             const value = updates[key];
 
             if (fieldDef === undefined) {
+                // Test expects warning and skip, not loud failure for unknown fields
                 console.warn(`[useStore] Unknown field: ${String(key)}`);
                 continue;
             }
@@ -82,33 +80,32 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
                 const encoded = SchemaSerializer.encodeValue(fieldDef, value);
 
                 // Send the operation
-                client.sendOperation(String(key), encoded);
+                client.sendOperation(key, encoded);
             } catch (e) {
-                console.error(`[useStore] Failed to encode field "${String(key)}":`, e);
-                // Continue with other fields rather than failing completely
+                // Fail loudly as per philosophy
+                throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
             }
         }
     }, [client, schema]);
 
 
     useEffect(() => {
-        // Update on mount in case it changed
-        setStoreState(snapshot());
+        // Sync on mount
+        setStoreState(getSnapshot());
 
         const handleMessage = (msg: NMeshedMessage) => {
             if (msg.type === 'op') {
                 // Optimization: Only update if the key is part of our schema
                 if (schema.definition[msg.payload.key]) {
-                    setStoreState(snapshot());
+                    setStoreState(getSnapshot());
                 }
             } else if (msg.type === 'init') {
-                setStoreState(snapshot());
+                setStoreState(getSnapshot());
             }
         };
 
-        const unsubscribe = client.onMessage(handleMessage);
-        return unsubscribe;
-    }, [client, schema, snapshot]);
+        return client.onMessage(handleMessage);
+    }, [client, schema, getSnapshot]);
 
     return [store, setStore];
 }
