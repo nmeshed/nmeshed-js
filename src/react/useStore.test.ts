@@ -2,18 +2,39 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 
-// Mock the context
-const mockSendOperation = vi.fn();
-const mockGet = vi.fn();
-const mockOnMessage = vi.fn(() => () => { });
+// 1. FORENSIC MOCK STABILITY: Use vi.hoisted to ensure a STABLE object reference.
+// The previous implementation returned a new object literal on every call, 
+// triggering an infinite React render loop due to unstable dependencies in useMemo/useEffect.
+const { mockClient } = vi.hoisted(() => {
+    return {
+        mockClient: {
+            get: vi.fn(),
+            sendOperation: vi.fn(),
+            onMessage: vi.fn(() => vi.fn()),
+        }
+    };
+});
 
-vi.mock('./context', () => ({
-    useNmeshedContext: () => ({
-        get: mockGet,
-        sendOperation: mockSendOperation,
-        onMessage: mockOnMessage,
-    }),
+// Mock WASM core to prevent OOM during jsdom environment setup
+vi.mock('../wasm/nmeshed_core', () => ({
+    default: vi.fn(),
+    NMeshedCore: vi.fn().mockImplementation(() => ({
+        state: {},
+        apply_local_op: vi.fn(),
+        merge_remote_delta: vi.fn(),
+        get_state: vi.fn(() => ({})),
+    })),
 }));
+
+// 2. STABLE CONTEXT MOCK: Returns the same object reference every time.
+vi.mock('./context', () => ({
+    useNmeshedContext: () => mockClient,
+}));
+
+// Destructure for easy use in tests while maintaining reference stability
+const { get: mockGet, sendOperation: mockSendOperation, onMessage: mockOnMessage } = mockClient;
+
+
 
 // Import after mocking
 import { useStore, UseStoreReturn } from './useStore';
