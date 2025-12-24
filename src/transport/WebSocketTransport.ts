@@ -92,11 +92,14 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
                     }
                 };
 
-                this.ws.onerror = () => {
-                    const err = new Error('WebSocket Error');
+                this.ws.onerror = (event: any) => {
+                    // In WS lib, event IS the error. In browser, it's an Event.
+                    const errDetail = event instanceof Error ? event : (event.error || event.message || event);
+                    const err = new Error(`WebSocket Error: ${errDetail}`);
+                    console.error('WS DEBUG ERROR:', errDetail);
                     this.handleError(err);
                     if (this.status === 'CONNECTING') {
-                        reject(new ConnectionError('WebSocket error during connection'));
+                        reject(new ConnectionError(`WebSocket error during connection: ${errDetail}`));
                     }
                 };
             } catch (err) {
