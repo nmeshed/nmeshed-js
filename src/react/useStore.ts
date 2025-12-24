@@ -11,7 +11,9 @@ export type UseStoreReturn<T extends SchemaDefinition> = [
     /** Current state derived from schema */
     InferSchema<Schema<T>>,
     /** Setter function for updating state */
-    (updates: Partial<InferSchema<Schema<T>>>) => void
+    (updates: Partial<InferSchema<Schema<T>>>) => void,
+    /** Metadata about the current store state */
+    { pending: Set<keyof T & string> }
 ];
 
 /**
@@ -52,27 +54,37 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
         return result as InferSchema<Schema<T>>;
     });
 
+    const [pending, setPending] = useState<Set<keyof T & string>>(new Set());
+
     // Stability: Memoize setStore to prevent downstream re-renders
     const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
         if (!updates || typeof updates !== 'object') {
             throw new Error('[useStore] setStore called with invalid updates');
         }
 
-        for (const key of Object.keys(updates) as Array<keyof T & string>) {
-            const fieldDef = schema.definition[key];
-            const value = updates[key];
+        const applyUpdates = () => {
+            for (const key of Object.keys(updates) as Array<keyof T & string>) {
+                const fieldDef = schema.definition[key];
+                const value = updates[key];
 
-            if (fieldDef === undefined) {
-                console.warn(`[useStore] Unknown field: ${String(key)}`);
-                continue;
-            }
+                if (fieldDef === undefined) {
+                    console.warn(`[useStore] Unknown field: ${String(key)}`);
+                    continue;
+                }
 
-            try {
-                const encoded = SchemaSerializer.encodeValue(fieldDef, value);
-                client.sendOperation(key, encoded);
-            } catch (e) {
-                throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
+                try {
+                    const encoded = SchemaSerializer.encodeValue(fieldDef, value);
+                    client.sendOperation(key, encoded);
+                } catch (e) {
+                    throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
+                }
             }
+        };
+
+        if ((client as any).transaction) {
+            (client as any).transaction(applyUpdates);
+        } else {
+            applyUpdates();
         }
     }, [client, schema]);
 
@@ -116,14 +128,19 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
             if (changed) {
                 setSnapshot(nextSnapshot as InferSchema<Schema<T>>);
             }
+
+            // Sync pending status
+            const currentPending = new Set<keyof T & string>();
+            for (const key of Object.keys(schema.definition) as Array<keyof T & string>) {
+                if ((client as any).isPending && (client as any).isPending(key)) {
+                    currentPending.add(key);
+                }
+            }
+            setPending(currentPending);
         };
 
         const handleMessage = (msg: NMeshedMessage) => {
-            if (msg.type === 'op') {
-                if (schema.definition[msg.payload.key]) {
-                    updateSnapshot();
-                }
-            } else if (msg.type === 'init') {
+            if (msg.type === 'op' || msg.type === 'init') {
                 updateSnapshot();
             }
         };
@@ -134,7 +151,7 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
         updateSnapshot();
 
         return unsubscribe;
-    }, [client, schema, snapshot]);
+    }, [client, schema]);
 
-    return [snapshot, setStore];
+    return [snapshot, setStore, { pending }];
 }

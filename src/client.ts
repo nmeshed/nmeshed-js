@@ -30,6 +30,9 @@ export class NMeshedClient {
     private transport: Transport;
 
     private _state = new Map<string, unknown>();
+    private _pendingKeys = new Set<string>();
+    private _isInsideTransaction = false;
+    private _transactionDeltas: Uint8Array[] = [];
 
     private _status: ConnectionStatus = 'IDLE';
 
@@ -67,11 +70,17 @@ export class NMeshedClient {
             this.config.maxQueueSize
         );
 
-        this.engine.on('op', (key: string, value: unknown) => {
+        this.engine.on('op', (key: string, value: unknown, isOptimistic: boolean) => {
             this._state.set(key, value);
+            if (isOptimistic) {
+                this._pendingKeys.add(key);
+            } else {
+                this._pendingKeys.delete(key);
+            }
+
             this.notifyMessageListeners({
                 type: 'op',
-                payload: { key, value, timestamp: Date.now() }
+                payload: { key, value, timestamp: Date.now(), isOptimistic }
             });
         });
 
@@ -220,7 +229,9 @@ export class NMeshedClient {
         try {
             const delta = this.engine.set(key, value);
             if (delta.length > 0) {
-                if (this._status === 'CONNECTED') {
+                if (this._isInsideTransaction) {
+                    this._transactionDeltas.push(delta);
+                } else if (this._status === 'CONNECTED') {
                     this.transport.send(delta);
                 } else {
                     this.warn(`set() called while ${this._status}; operation queued`);
@@ -236,8 +247,33 @@ export class NMeshedClient {
         }
     }
 
+    /**
+     * Groups multiple set operations into a single atomic-ish broadcast.
+     */
+    public transaction(fn: () => void): void {
+        this._isInsideTransaction = true;
+        this._transactionDeltas = [];
+        try {
+            fn();
+            if (this._transactionDeltas.length > 0 && this._status === 'CONNECTED') {
+                // For now, we just send them individually but in the same tick
+                this._transactionDeltas.forEach(d => this.transport.send(d));
+            }
+        } finally {
+            this._isInsideTransaction = false;
+            this._transactionDeltas = [];
+        }
+    }
+
     public get<T = unknown>(key: string): T | undefined {
         return this._state.get(key) as T;
+    }
+
+    /**
+     * Returns true if the key has a value that hasn't been confirmed by the server.
+     */
+    public isPending(key: string): boolean {
+        return this._pendingKeys.has(key);
     }
 
     public sendOperation(key: string, value: unknown): void {

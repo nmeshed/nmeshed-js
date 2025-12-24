@@ -53,12 +53,14 @@ describe('useStore', () => {
     });
 
     describe('Tuple API', () => {
-        it('should return [state, setStore] tuple', () => {
+        it('should return [state, setStore, metadata] tuple', () => {
             const { result } = renderHook(() => useStore(TestSchema));
 
             expect(Array.isArray(result.current)).toBe(true);
-            expect(result.current.length).toBe(2);
+            expect(result.current.length).toBe(3);
             expect(typeof result.current[1]).toBe('function');
+            expect(typeof result.current[2]).toBe('object');
+            expect(result.current[2].pending).toBeInstanceOf(Set);
         });
 
         it('should provide state as first element', () => {
@@ -74,6 +76,14 @@ describe('useStore', () => {
             const [, setStore] = result.current;
 
             expect(typeof setStore).toBe('function');
+        });
+
+        it('should provide metadata as third element', () => {
+            const { result } = renderHook(() => useStore(TestSchema));
+            const [, , metadata] = result.current;
+
+            expect(metadata).toBeDefined();
+            expect(metadata.pending).toBeInstanceOf(Set);
         });
     });
 

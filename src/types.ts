@@ -85,6 +85,7 @@ export interface Operation {
     key: string;
     value: unknown;
     timestamp: number;
+    isOptimistic?: boolean;
 }
 
 /**

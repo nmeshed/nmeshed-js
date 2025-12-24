@@ -4,7 +4,7 @@ import { encodeValue, decodeValue } from '../codec';
 import { saveQueue, loadQueue } from '../persistence';
 
 export interface SyncEngineEvents {
-    op: [string, unknown];
+    op: [string, unknown, boolean]; // key, value, isOptimistic
     queueChange: [number];
     [key: string]: any[];
 }
@@ -22,6 +22,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
     // Manual State/Queue management
     private preConnectState: Record<string, unknown> = {};
+    private pendingOps: Map<string, unknown[]> = new Map();
     private operationQueue: Uint8Array[] = [];
     private maxQueueSize: number;
 
@@ -58,12 +59,17 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         const valBytes = encodeValue(value);
         const timestamp = BigInt(Date.now() * 1000);
 
+        // Track as pending for optimistic UI
+        const pending = this.pendingOps.get(key) || [];
+        pending.push(value);
+        this.pendingOps.set(key, pending);
+
         if (this.core) {
             const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as unknown;
             const delta = res instanceof Uint8Array ? res : (res instanceof ArrayBuffer ? new Uint8Array(res) : new TextEncoder().encode(JSON.stringify(res)));
             this.addToQueue(delta);
             this.saveState();
-            this.emit('op', key, value); // Notify listeners of local change
+            this.emit('op', key, value, true); // true = isOptimistic
             return delta;
         } else {
             this.preConnectState[key] = value;
@@ -73,7 +79,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 delete this.preConnectState[keys[0]];
             }
             this.saveState();
-            this.emit('op', key, value); // Notify listeners of local change
+            this.emit('op', key, value, true); // true = isOptimistic
             this.emit('queueChange', Object.keys(this.preConnectState).length);
             return new Uint8Array();
         }
@@ -99,7 +105,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         if (result.type === 'init' && result.data) {
             for (let [k, v] of Object.entries(result.data)) {
                 if (v instanceof Uint8Array || v instanceof ArrayBuffer) v = decodeValue(v);
-                this.emit('op', k, v);
+                this.emit('op', k, v, false);
             }
             return;
         }
@@ -110,7 +116,18 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 (result.value && typeof result.value === 'object' && 'byteLength' in result.value);
 
             const val = isBinary ? decodeValue(result.value) : result.value;
-            this.emit('op', result.key, val);
+
+            // Clear pending op if it matches the value (simplified echo detection)
+            const pending = this.pendingOps.get(result.key);
+            if (pending) {
+                const index = pending.indexOf(val);
+                if (index !== -1) {
+                    pending.splice(index, 1);
+                    if (pending.length === 0) this.pendingOps.delete(result.key);
+                }
+            }
+
+            this.emit('op', result.key, val, false); // false = not optimistic (confirmed)
             return;
         }
 
@@ -121,10 +138,12 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 const ops = Array.isArray(parsed) ? parsed : [parsed];
                 ops.forEach((op: unknown) => {
                     if (op && typeof op === 'object' && 'key' in op && 'value' in op) {
-                        this.emit('op', (op as any).key, (op as any).value);
+                        this.emit('op', (op as any).key, (op as any).value, false);
                     }
                 });
-            } catch { /* Raw delta */ }
+            } catch (e) {
+                /* Raw delta */
+            }
         }
     }
 
