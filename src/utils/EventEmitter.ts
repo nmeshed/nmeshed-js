@@ -42,6 +42,17 @@ export class EventEmitter<T extends Record<string, any[]> & { [K: string]: any[]
     }
 
     /**
+     * Subscribe to an event once.
+     */
+    once<K extends keyof T>(event: K, handler: (...args: T[K]) => void): () => void {
+        const wrapper = (...args: T[K]) => {
+            this.off(event, wrapper);
+            handler(...args);
+        };
+        return this.on(event, wrapper);
+    }
+
+    /**
      * Remove all listeners.
      */
     removeAllListeners(): void {

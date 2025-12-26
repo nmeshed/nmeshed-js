@@ -5,11 +5,12 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { MsgType } from '../nmeshed/msg-type.js';
-import { Op, OpT } from '../nmeshed/op.js';
-import { Signal, SignalT } from '../nmeshed/signal.js';
+import { Op } from '../nmeshed/op.js';
+import { Signal } from '../nmeshed/signal.js';
+import { SyncPacket } from '../nmeshed/sync-packet.js';
 
 
-export class WirePacket implements flatbuffers.IUnpackableObject<WirePacketT> {
+export class WirePacket {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):WirePacket {
@@ -57,8 +58,13 @@ signal(obj?:Signal):Signal|null {
   return offset ? (obj || new Signal()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
 }
 
+sync(obj?:SyncPacket):SyncPacket|null {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? (obj || new SyncPacket()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
 static startWirePacket(builder:flatbuffers.Builder) {
-  builder.startObject(4);
+  builder.startObject(5);
 }
 
 static addMsgType(builder:flatbuffers.Builder, msgType:MsgType) {
@@ -89,6 +95,10 @@ static addSignal(builder:flatbuffers.Builder, signalOffset:flatbuffers.Offset) {
   builder.addFieldOffset(3, signalOffset, 0);
 }
 
+static addSync(builder:flatbuffers.Builder, syncOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(4, syncOffset, 0);
+}
+
 static endWirePacket(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
@@ -102,45 +112,4 @@ static finishSizePrefixedWirePacketBuffer(builder:flatbuffers.Builder, offset:fl
   builder.finish(offset, undefined, true);
 }
 
-
-unpack(): WirePacketT {
-  return new WirePacketT(
-    this.msgType(),
-    (this.op() !== null ? this.op()!.unpack() : null),
-    this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength()),
-    (this.signal() !== null ? this.signal()!.unpack() : null)
-  );
-}
-
-
-unpackTo(_o: WirePacketT): void {
-  _o.msgType = this.msgType();
-  _o.op = (this.op() !== null ? this.op()!.unpack() : null);
-  _o.payload = this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength());
-  _o.signal = (this.signal() !== null ? this.signal()!.unpack() : null);
-}
-}
-
-export class WirePacketT implements flatbuffers.IGeneratedObject {
-constructor(
-  public msgType: MsgType = MsgType.Unknown,
-  public op: OpT|null = null,
-  public payload: (number)[] = [],
-  public signal: SignalT|null = null
-){}
-
-
-pack(builder:flatbuffers.Builder): flatbuffers.Offset {
-  const op = (this.op !== null ? this.op!.pack(builder) : 0);
-  const payload = WirePacket.createPayloadVector(builder, this.payload);
-  const signal = (this.signal !== null ? this.signal!.pack(builder) : 0);
-
-  WirePacket.startWirePacket(builder);
-  WirePacket.addMsgType(builder, this.msgType);
-  WirePacket.addOp(builder, op);
-  WirePacket.addPayload(builder, payload);
-  WirePacket.addSignal(builder, signal);
-
-  return WirePacket.endWirePacket(builder);
-}
 }

@@ -7,6 +7,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebSocketTransport } from './WebSocketTransport';
 import { OpCode } from './protocol';
 
+import * as flatbuffers from 'flatbuffers';
+import { WirePacket } from '../schema/nmeshed/wire-packet';
+import { MsgType } from '../schema/nmeshed/msg-type';
+import { Op } from '../schema/nmeshed/op';
+import { SyncPacket } from '../schema/nmeshed/sync-packet';
+
 // Mock WebSocket
 class MockWebSocket {
     static CONNECTING = 0;
@@ -35,8 +41,9 @@ class MockWebSocket {
         this.onopen?.();
     }
 
-    simulateBinaryMessage(data: ArrayBuffer) {
-        this.onmessage?.({ data });
+    simulateBinaryMessage(data: ArrayBuffer | Uint8Array) {
+        const buffer = data instanceof Uint8Array ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
+        this.onmessage?.({ data: buffer as ArrayBuffer });
     }
 
     simulateTextMessage(data: string) {
@@ -45,20 +52,48 @@ class MockWebSocket {
 }
 
 describe('WebSocketTransport', () => {
-    const originalWebSocket = global.WebSocket;
+    const originalWebSocket = globalThis.WebSocket;
 
     beforeEach(() => {
         MockWebSocket.instances = [];
-        global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+        (globalThis as any).WebSocket = MockWebSocket;
     });
 
     afterEach(() => {
-        global.WebSocket = originalWebSocket;
+        (globalThis as any).WebSocket = originalWebSocket;
         vi.restoreAllMocks();
     });
 
+    function createWireOp(key: string, value: Uint8Array): Uint8Array {
+        const builder = new flatbuffers.Builder(1024);
+        const keyOffset = builder.createString(key);
+        const valOffset = Op.createValueVector(builder, value);
+        Op.startOp(builder);
+        Op.addKey(builder, keyOffset);
+        Op.addValue(builder, valOffset);
+        const opOffset = Op.endOp(builder);
+
+        WirePacket.startWirePacket(builder);
+        WirePacket.addMsgType(builder, MsgType.Op);
+        WirePacket.addOp(builder, opOffset);
+        const packetOffset = WirePacket.endWirePacket(builder);
+        builder.finish(packetOffset);
+        return builder.asUint8Array().slice();
+    }
+
+    function createWireSync(payload: Uint8Array): Uint8Array {
+        const builder = new flatbuffers.Builder(1024);
+        const payOffset = WirePacket.createPayloadVector(builder, payload);
+        WirePacket.startWirePacket(builder);
+        WirePacket.addMsgType(builder, MsgType.Sync);
+        WirePacket.addPayload(builder, payOffset);
+        const packetOffset = WirePacket.endWirePacket(builder);
+        builder.finish(packetOffset);
+        return builder.asUint8Array().slice();
+    }
+
     describe('Binary Protocol - send()', () => {
-        it('prefixes data with OpCode.ENGINE', () => {
+        it('passes through binary data without re-wrapping (assumes Pre-Framed)', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
@@ -68,15 +103,14 @@ describe('WebSocketTransport', () => {
 
             expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
             const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-            expect(sentData[0]).toBe(OpCode.ENGINE);
-            expect(sentData.slice(1)).toEqual(payload);
+            expect(sentData).toEqual(payload);
 
             transport.disconnect();
         });
     });
 
     describe('Binary Protocol - sendEphemeral()', () => {
-        it('uses OpCode.EPHEMERAL for broadcast Uint8Array', () => {
+        it('uses MsgType.Sync for binary payloads', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
@@ -86,46 +120,34 @@ describe('WebSocketTransport', () => {
 
             expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
             const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-            expect(sentData[0]).toBe(OpCode.EPHEMERAL);
-            expect(sentData.slice(1)).toEqual(payload);
+
+            const buf = new flatbuffers.ByteBuffer(sentData);
+            const wire = WirePacket.getRootAsWirePacket(buf);
+            expect(wire.msgType()).toBe(MsgType.Sync);
+            expect(wire.payloadArray()).toEqual(payload);
 
             transport.disconnect();
         });
 
-        it('uses OpCode.DIRECT for targeted Uint8Array', () => {
+        it('sends raw JSON for control/administrative messages', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
 
-            const payload = new Uint8Array([10, 20, 30]);
-            transport.sendEphemeral(payload, 'peer-123');
-
-            expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
-            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-            expect(sentData[0]).toBe(OpCode.DIRECT);
-            // Byte 1 = peer ID length, rest = peer ID + payload
-
-            transport.disconnect();
-        });
-
-        it('uses OpCode.SYSTEM for JSON objects', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const payload = { type: 'presence', userId: 'test' };
+            const payload = { type: 'presence', status: 'online' };
             transport.sendEphemeral(payload);
 
             expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
-            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-            expect(sentData[0]).toBe(OpCode.SYSTEM);
+            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as string;
+            expect(typeof sentData).toBe('string');
+            expect(sentData).toContain('"presence"');
 
             transport.disconnect();
         });
     });
 
     describe('Binary Protocol - handleMessage()', () => {
-        it('routes OpCode.ENGINE to message event', () => {
+        it('routes MsgType.Op to message event', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
             const messageHandler = vi.fn();
             transport.on('message', messageHandler);
@@ -133,89 +155,101 @@ describe('WebSocketTransport', () => {
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
 
-            // Create ENGINE message with JSON payload
-            const jsonPayload = JSON.stringify({ type: 'op', key: 'a', value: 1 });
-            const jsonBytes = new TextEncoder().encode(jsonPayload);
-            const framedMessage = new Uint8Array(jsonBytes.length + 1);
-            framedMessage[0] = OpCode.ENGINE;
-            framedMessage.set(jsonBytes, 1);
-
-            MockWebSocket.instances[0].simulateBinaryMessage(framedMessage.buffer);
+            const opPacket = createWireOp('testKey', new Uint8Array([42]));
+            MockWebSocket.instances[0].simulateBinaryMessage(opPacket);
 
             expect(messageHandler).toHaveBeenCalled();
             transport.disconnect();
         });
 
-        it('routes OpCode.EPHEMERAL to ephemeral event', () => {
+        it('routes MsgType.Sync to sync event', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const ephemeralHandler = vi.fn();
-            transport.on('ephemeral', ephemeralHandler);
+            const syncHandler = vi.fn();
+            transport.on('sync', syncHandler);
 
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
 
-            // Create EPHEMERAL message
-            const payload = new Uint8Array([5, 6, 7]);
-            const framedMessage = new Uint8Array(payload.length + 1);
-            framedMessage[0] = OpCode.EPHEMERAL;
-            framedMessage.set(payload, 1);
+            const syncPacket = createWireSync(new Uint8Array([1, 2, 3]));
+            MockWebSocket.instances[0].simulateBinaryMessage(syncPacket);
 
-            MockWebSocket.instances[0].simulateBinaryMessage(framedMessage.buffer);
-
-            expect(ephemeralHandler).toHaveBeenCalled();
+            expect(syncHandler).toHaveBeenCalled();
             transport.disconnect();
         });
 
-        it('routes OpCode.SYSTEM to JSON handler', () => {
+        it('handles raw JSON control messages via heuristic', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const presenceHandler = vi.fn();
-            transport.on('presence', presenceHandler);
+            const peerJoinHandler = vi.fn();
+            transport.on('peerJoin', peerJoinHandler);
 
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
 
-            // Create SYSTEM message with presence JSON
-            const jsonPayload = JSON.stringify({ type: 'presence', payload: { userId: 'u1' } });
-            const jsonBytes = new TextEncoder().encode(jsonPayload);
-            const framedMessage = new Uint8Array(jsonBytes.length + 1);
-            framedMessage[0] = OpCode.SYSTEM;
-            framedMessage.set(jsonBytes, 1);
+            const json = JSON.stringify({ type: 'peer_join', userId: 'user1' });
+            const bytes = new TextEncoder().encode(json);
+            MockWebSocket.instances[0].simulateBinaryMessage(bytes);
 
-            MockWebSocket.instances[0].simulateBinaryMessage(framedMessage.buffer);
+            expect(peerJoinHandler).toHaveBeenCalledWith('user1');
+            transport.disconnect();
+        });
+    });
+    describe('Heartbeat', () => {
+        beforeEach(() => {
+            vi.useFakeTimers();
+        });
 
-            expect(presenceHandler).toHaveBeenCalled();
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('resets missedHeartbeats when __pong__ is received', () => {
+            const transport = new WebSocketTransport({
+                url: 'wss://test.com',
+                heartbeatInterval: 1000,
+                heartbeatMaxMissed: 3
+            });
+            transport.connect();
+            MockWebSocket.instances[0].simulateOpen();
+
+            // Advance time to trigger one heartbeat
+            vi.advanceTimersByTime(1100);
+            expect(MockWebSocket.instances[0].send).toHaveBeenCalledWith('__ping__');
+
+            // At this point missedHeartbeats should be 1
+            // Simulate receiving __pong__
+            MockWebSocket.instances[0].simulateTextMessage('__pong__');
+
+            // Advance time to trigger another heartbeat
+            vi.advanceTimersByTime(1000);
+
+            // If missedHeartbeats was reset, it should now be 1 again, not 2.
+            // Advance another 1000ms
+            vi.advanceTimersByTime(1000);
+
+            // Total of 3 heartbeats triggered since first pong. 
+            // If reset worked, we should NOT have closed yet.
+            expect(MockWebSocket.instances[0].close).not.toHaveBeenCalled();
+
             transport.disconnect();
         });
 
-        it('warns and drops unknown OpCodes', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
-
+        it('closes connection after max missed heartbeats', () => {
+            const transport = new WebSocketTransport({
+                url: 'wss://test.com',
+                heartbeatInterval: 1000,
+                heartbeatMaxMissed: 2
+            });
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
 
-            // Create message with unknown OpCode 0xFF
-            const framedMessage = new Uint8Array([0xFF, 1, 2, 3]);
-            MockWebSocket.instances[0].simulateBinaryMessage(framedMessage.buffer);
+            // Trigger 1 missed heartbeat
+            vi.advanceTimersByTime(1000);
+            expect(MockWebSocket.instances[0].close).not.toHaveBeenCalled();
 
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown OpCode'));
-            warnSpy.mockRestore();
-            transport.disconnect();
-        });
+            // Trigger 2nd missed heartbeat -> Should close
+            vi.advanceTimersByTime(1000);
+            expect(MockWebSocket.instances[0].close).toHaveBeenCalledWith(4000, 'Heartbeat Timeout');
 
-        it('routes string messages to JSON handler', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const messageHandler = vi.fn();
-            transport.on('message', messageHandler);
-
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            // String init message should be converted to binary and emitted as 'message'
-            const jsonMessage = JSON.stringify({ type: 'init', data: { a: 1 } });
-            MockWebSocket.instances[0].simulateTextMessage(jsonMessage);
-
-            expect(messageHandler).toHaveBeenCalled();
             transport.disconnect();
         });
     });

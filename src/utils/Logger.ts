@@ -1,119 +1,97 @@
 /**
- * @file Logger.ts
- * @brief Conditional logging utility for zero-overhead production builds.
- *
- * Provides structured logging with categories and conditional compilation.
- * In production builds, debug/info logs can be disabled via configuration
- * to eliminate console overhead in hot paths.
- *
- * @example
- * ```typescript
- * import { logger } from './utils/Logger';
- *
- * logger.net('Connecting...'); // [NET] Connecting...
- * logger.debug('Verbose info'); // Only when debug enabled
- * ```
+ * Internal logging utility for the nMeshed SDK.
+ * Provides structured logging with levels and tags, allowing for
+ * easy control of log noise in production environments.
  */
-
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-interface LoggerConfig {
-    enabled: boolean;
-    level: LogLevel;
-    categories: {
-        net: boolean;
-        mesh: boolean;
-        sig: boolean;
-        conn: boolean;
-    };
+export enum LogLevel {
+    DEBUG = 0,
+    INFO = 1,
+    WARN = 2,
+    ERROR = 3,
+    NONE = 4
 }
 
-const LOG_LEVELS: Record<LogLevel, number> = {
-    debug: 0,
-    info: 1,
-    warn: 2,
-    error: 3,
-};
+export class Logger {
+    private level: LogLevel = LogLevel.INFO;
+    private tag: string;
+    private useJson: boolean = false;
 
-/**
- * Default configuration - can be overridden at runtime.
- */
-const config: LoggerConfig = {
-    enabled: typeof process !== 'undefined'
-        ? process.env.NODE_ENV !== 'production'
-        : true,
-    level: 'info',
-    categories: {
-        net: true,
-        mesh: true,
-        sig: true,
-        conn: true,
-    },
-};
+    constructor(tag: string = 'nMeshed', debug: boolean = false) {
+        this.tag = tag;
+        if (debug) {
+            this.level = LogLevel.DEBUG;
+        }
+    }
 
-function shouldLog(level: LogLevel): boolean {
-    if (!config.enabled) return false;
-    return LOG_LEVELS[level] >= LOG_LEVELS[config.level];
+    public setLogLevel(level: LogLevel): void {
+        this.level = level;
+    }
+
+    public setJson(enabled: boolean): void {
+        this.useJson = enabled;
+    }
+
+    private log(method: 'debug' | 'info' | 'warn' | 'error', levelName: string, message: string, ...args: any[]): void {
+        if (this.useJson) {
+            const entry = {
+                timestamp: new Date().toISOString(),
+                tag: this.tag,
+                level: levelName,
+                message,
+                data: args.length > 0 ? args : undefined
+            };
+            console[method](JSON.stringify(entry));
+        } else {
+            const prefix = `[${this.tag}]${levelName === 'DEBUG' ? ' (DEBUG)' : ''}${levelName === 'WARN' ? ' ⚠️' : ''}${levelName === 'ERROR' ? ' ❌' : ''}`;
+            console[method](`${prefix} ${message}`, ...args);
+        }
+    }
+
+    public debug(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.DEBUG) {
+            this.log('debug', 'DEBUG', message, ...args);
+        }
+    }
+
+    public info(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.INFO) {
+            this.log('info', 'INFO', message, ...args);
+        }
+    }
+
+    public warn(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.WARN) {
+            this.log('warn', 'WARN', message, ...args);
+        }
+    }
+
+    public error(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.ERROR) {
+            this.log('error', 'ERROR', message, ...args);
+        }
+    }
+
+    /**
+     * Creates a child logger with an extended tag.
+     */
+    public child(subTag: string): Logger {
+        const child = new Logger(`${this.tag}:${subTag}`);
+        child.setLogLevel(this.level);
+        child.setJson(this.useJson);
+        return child;
+    }
+
+    /**
+     * Support for JSON.stringify(logger)
+     */
+    public toJSON() {
+        return {
+            tag: this.tag,
+            level: this.level,
+            useJson: this.useJson
+        };
+    }
 }
 
-/**
- * Structured logger with category prefixes.
- */
-export const logger = {
-    /** Configure logger at runtime */
-    configure: (updates: Partial<LoggerConfig>) => {
-        Object.assign(config, updates);
-    },
-
-    /** Enable debug logging */
-    enableDebug: () => {
-        config.level = 'debug';
-    },
-
-    /** Network logs */
-    net: (message: string, ...args: unknown[]) => {
-        if (config.categories.net && shouldLog('info')) {
-            console.log(`[NET] ${message}`, ...args);
-        }
-    },
-
-    /** Mesh client logs */
-    mesh: (message: string, ...args: unknown[]) => {
-        if (config.categories.mesh && shouldLog('info')) {
-            console.log(`[MESH] ${message}`, ...args);
-        }
-    },
-
-    /** Signaling client logs */
-    sig: (message: string, ...args: unknown[]) => {
-        if (config.categories.sig && shouldLog('info')) {
-            console.log(`[SIG] ${message}`, ...args);
-        }
-    },
-
-    /** Connection manager logs */
-    conn: (message: string, ...args: unknown[]) => {
-        if (config.categories.conn && shouldLog('info')) {
-            console.log(`[CONN] ${message}`, ...args);
-        }
-    },
-
-    /** Debug-level logs (disabled in production) */
-    debug: (message: string, ...args: unknown[]) => {
-        if (shouldLog('debug')) {
-            console.log(`[DEBUG] ${message}`, ...args);
-        }
-    },
-
-    /** Warning logs */
-    warn: (message: string, ...args: unknown[]) => {
-        if (shouldLog('warn')) {
-            console.warn(`[WARN] ${message}`, ...args);
-        }
-    },
-
-    /** Error logs (always enabled) */
-    error: (message: string, ...args: unknown[]) => {
-        console.error(`[ERROR] ${message}`, ...args);
-    },
-};
+// Global default logger
+export const logger = new Logger('nMeshed');

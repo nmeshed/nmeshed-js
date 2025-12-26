@@ -9,6 +9,8 @@ import { Offer } from '../../schema/nmeshed/offer';
 import { Answer } from '../../schema/nmeshed/answer';
 import { Candidate } from '../../schema/nmeshed/candidate';
 import { Relay } from '../../schema/nmeshed/relay';
+import { SyncPacket } from '../../schema/nmeshed/sync-packet';
+import { StateVectorEntry } from '../../schema/nmeshed/state-vector-entry';
 import { SignalMessage } from './types';
 
 export class ProtocolUtils {
@@ -95,6 +97,45 @@ export class ProtocolUtils {
         WirePacket.startWirePacket(builder);
         WirePacket.addMsgType(builder, MsgType.Sync);
         WirePacket.addPayload(builder, payloadOffset);
+        const wire = WirePacket.endWirePacket(builder);
+
+        builder.finish(wire);
+        return builder.asUint8Array();
+    }
+
+    /**
+     * Creates a specialized SyncPacket for state synchronization (State Vectors/Snapshots).
+     */
+    public static createStateSyncPacket(options: { stateVector?: Map<string, bigint>, snapshot?: Uint8Array, ackSeq?: bigint }): Uint8Array {
+        const builder = this.builder;
+        builder.clear();
+
+        let svOffset = 0;
+        if (options.stateVector) {
+            const entries = Array.from(options.stateVector.entries()).map(([peerId, seq]) => {
+                const idOffset = builder.createString(peerId);
+                StateVectorEntry.startStateVectorEntry(builder);
+                StateVectorEntry.addPeerId(builder, idOffset);
+                StateVectorEntry.addSeq(builder, seq);
+                return StateVectorEntry.endStateVectorEntry(builder);
+            });
+            svOffset = SyncPacket.createStateVectorVector(builder, entries);
+        }
+
+        let snapOffset = 0;
+        if (options.snapshot) {
+            snapOffset = SyncPacket.createSnapshotVector(builder, options.snapshot);
+        }
+
+        SyncPacket.startSyncPacket(builder);
+        if (svOffset) SyncPacket.addStateVector(builder, svOffset);
+        if (snapOffset) SyncPacket.addSnapshot(builder, snapOffset);
+        if (options.ackSeq !== undefined) SyncPacket.addAckSeq(builder, options.ackSeq);
+        const syncOffset = SyncPacket.endSyncPacket(builder);
+
+        WirePacket.startWirePacket(builder);
+        WirePacket.addMsgType(builder, MsgType.Sync);
+        WirePacket.addSync(builder, syncOffset);
         const wire = WirePacket.endWirePacket(builder);
 
         builder.finish(wire);

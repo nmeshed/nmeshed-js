@@ -81,7 +81,7 @@ export class SignalingClient {
             url += `${separator}token=${encodeURIComponent(this.config.token)}`;
         }
 
-        logger.sig(`Connecting to ${url}...`);
+        logger.debug(`Connecting to ${url}...`);
 
         try {
             this.ws = new WebSocket(url);
@@ -127,8 +127,13 @@ export class SignalingClient {
 
     public sendEphemeral(payload: any, to?: string) {
         if (!this.connected) return;
-        const msg = JSON.stringify({ type: 'ephemeral', to, payload });
-        this.ws!.send(msg);
+        // Wrap ephemeral in a Sync packet (generic payload for now, inside WirePacket)
+        // If it's already a Uint8Array, send as is. Otherwise JSON-stringify then send.
+        const data = payload instanceof Uint8Array
+            ? payload
+            : new TextEncoder().encode(JSON.stringify({ type: 'ephemeral', to, payload }));
+
+        this.sendSync(data);
     }
 
     private clearReconnectTimer() {
@@ -159,7 +164,7 @@ export class SignalingClient {
 
         const delay = this.getReconnectDelay();
         this.reconnectAttempts++;
-        logger.sig(`Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${SignalingClient.MAX_RECONNECT_ATTEMPTS})...`);
+        logger.debug(`Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${SignalingClient.MAX_RECONNECT_ATTEMPTS})...`);
 
         this.reconnectTimer = setTimeout(() => {
             this.connect();
@@ -167,7 +172,7 @@ export class SignalingClient {
     }
 
     private handleOpen() {
-        logger.sig('WS Connected');
+        logger.debug('WS Connected');
         this.reconnectAttempts = 0;
 
         // Auto-join the workspace
@@ -199,8 +204,27 @@ export class SignalingClient {
             const msgType = wire.msgType();
 
             if (msgType === MsgType.Sync) {
+                // Check for new specialized SyncPacket first
+                const sync = wire.sync();
+                if (sync) {
+                    // This is a specialized state sync/snapshot
+                    this.listeners.onInit?.(sync); // Pass the sync packet to init handler
+                    return;
+                }
+
+                // Fallback to legacy generic payload
                 const payload = wire.payloadArray();
                 if (payload) {
+                    // Attempt to parse as JSON if it's an ephemeral/presence message
+                    if (payload[0] === 123) { // '{'
+                        try {
+                            const json = JSON.parse(new TextDecoder().decode(payload));
+                            if (json.type === 'ephemeral' || json.type === 'presence') {
+                                this.handleJsonMessage(JSON.stringify(json));
+                                return;
+                            }
+                        } catch { /* ignore */ }
+                    }
                     this.listeners.onServerMessage?.(payload);
                 }
             } else if (msgType === MsgType.Signal) {
@@ -279,7 +303,7 @@ export class SignalingClient {
     }
 
     private handleClose(e: CloseEvent) {
-        logger.sig(`Disconnected: ${e.code} ${e.reason}`);
+        logger.debug(`Disconnected: ${e.code} ${e.reason}`);
         this.listeners.onDisconnect?.();
 
         const normalClosureCodes = [1000, 1001];

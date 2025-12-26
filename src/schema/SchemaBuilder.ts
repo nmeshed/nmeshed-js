@@ -98,42 +98,134 @@ export function defineSchema<T extends SchemaDefinition>(definition: T): Schema<
     };
 }
 
+// ============================================================================
+// Schema Registry
+// ============================================================================
+
+/**
+ * Global registry for schemas to support "Invisible Schema Registration".
+ */
+export const SchemaRegistry = new Map<string, Schema<any>>();
+
+/**
+ * Registers a schema globally for a specific key pattern.
+ */
+export function registerGlobalSchema(keyPattern: string, schema: Schema<any>): void {
+    SchemaRegistry.set(keyPattern, schema);
+}
+
+/**
+ * Automatically find a schema for a key.
+ */
+export function findSchema(key: string): Schema<any> | undefined {
+    // Exact match
+    if (SchemaRegistry.has(key)) return SchemaRegistry.get(key);
+    // Prefix match
+    for (const [pattern, schema] of SchemaRegistry) {
+        if (pattern !== '' && key.startsWith(pattern)) return schema;
+    }
+    return SchemaRegistry.get('');
+}
+
 /**
  * Internal Serializer Logic.
- * precise layout:
- * [Field Count: uint8]
- * [Field 1 ID: uint8] [Field 1 Size: varint (skip for fixed)] [Field 1 Data]
- * ...
- * 
- * Note: This is a simplified binary format. 
- * For 'object' types, we flatten or nest? 
- * Let's assume recursion.
  */
 export class SchemaSerializer {
     private static textEncoder = new TextEncoder();
     private static textDecoder = new TextDecoder();
+    private static scratchBuffer = new Uint8Array(65536); // 64KB scratch
 
     static encode(schema: SchemaDefinition, data: any): Uint8Array {
-        const parts: Uint8Array[] = [];
-        let totalSize = 0;
-
-        const keys = Object.keys(schema).sort(); // Deterministic order
+        const keys = Object.keys(schema).sort();
+        let offset = 0;
 
         for (const key of keys) {
             const fieldType = schema[key];
             const value = data[key];
-            const chunk = this.encodeValue(fieldType, value);
-            parts.push(chunk);
-            totalSize += chunk.byteLength;
+            offset = this.encodeFieldInto(fieldType, value, this.scratchBuffer, offset);
         }
 
-        const result = new Uint8Array(totalSize);
-        let offset = 0;
-        for (const part of parts) {
-            result.set(part, offset);
-            offset += part.byteLength;
+        return this.scratchBuffer.slice(0, offset);
+    }
+
+    private static encodeFieldInto(type: SchemaField, value: any, target: Uint8Array, offset: number): number {
+        const view = new DataView(target.buffer, target.byteOffset);
+
+        if (typeof type === 'string') {
+            switch (type) {
+                case 'boolean':
+                    target[offset++] = value ? 1 : 0;
+                    return offset;
+                case 'uint8':
+                    target[offset++] = value & 0xFF;
+                    return offset;
+                case 'uint16':
+                    view.setUint16(offset, value || 0, true);
+                    return offset + 2;
+                case 'int32':
+                    view.setInt32(offset, value || 0, true);
+                    return offset + 4;
+                case 'uint32':
+                    view.setUint32(offset, value || 0, true);
+                    return offset + 4;
+                case 'float32':
+                    view.setFloat32(offset, value || 0, true);
+                    return offset + 4;
+                case 'float64':
+                    view.setFloat64(offset, value || 0, true);
+                    return offset + 8;
+                case 'int64':
+                    view.setBigInt64(offset, BigInt(value || 0), true);
+                    return offset + 8;
+                case 'uint64':
+                    view.setBigUint64(offset, BigInt(value || 0), true);
+                    return offset + 8;
+                case 'string': {
+                    const str = String(value || "");
+                    const { written } = this.textEncoder.encodeInto(str, target.subarray(offset + 2));
+                    view.setUint16(offset, written, true);
+                    return offset + 2 + written;
+                }
+            }
         }
-        return result;
+
+        if (type.type === 'object') {
+            const keys = Object.keys(type.schema).sort();
+            for (const key of keys) {
+                offset = this.encodeFieldInto(type.schema[key], value[key], target, offset);
+            }
+            return offset;
+        }
+
+        if (type.type === 'array') {
+            const arr = value as any[];
+            view.setUint16(offset, arr ? arr.length : 0, true);
+            offset += 2;
+            if (arr) {
+                for (const item of arr) {
+                    offset = this.encodeFieldInto(type.itemType, item, target, offset);
+                }
+            }
+            return offset;
+        }
+
+        if (type.type === 'map') {
+            const entries = value instanceof Map ? Array.from(value.entries()) : Object.entries(value || {});
+            view.setUint16(offset, entries.length, true);
+            offset += 2;
+            for (const [k, v] of entries) {
+                // Encode key (string)
+                offset = this.encodeFieldInto('string', String(k), target, offset);
+                // Encode value (object schema)
+                const subKeys = Object.keys(type.schema).sort();
+                for (const skey of subKeys) {
+                    offset = this.encodeFieldInto(type.schema[skey], (v as any)[skey], target, offset);
+                }
+            }
+            return offset;
+        }
+
+        return offset;
     }
 
     static decode(schema: SchemaDefinition, buffer: Uint8Array): any {

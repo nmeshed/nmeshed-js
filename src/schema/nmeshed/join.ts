@@ -4,9 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-
-
-export class Join implements flatbuffers.IUnpackableObject<JoinT> {
+export class Join {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Join {
@@ -48,31 +46,5 @@ static createJoin(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Off
   Join.startJoin(builder);
   Join.addWorkspaceId(builder, workspaceIdOffset);
   return Join.endJoin(builder);
-}
-
-unpack(): JoinT {
-  return new JoinT(
-    this.workspaceId()
-  );
-}
-
-
-unpackTo(_o: JoinT): void {
-  _o.workspaceId = this.workspaceId();
-}
-}
-
-export class JoinT implements flatbuffers.IGeneratedObject {
-constructor(
-  public workspaceId: string|Uint8Array|null = null
-){}
-
-
-pack(builder:flatbuffers.Builder): flatbuffers.Offset {
-  const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
-
-  return Join.createJoin(builder,
-    workspaceId
-  );
 }
 }

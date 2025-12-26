@@ -4,9 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-
-
-export class Op implements flatbuffers.IUnpackableObject<OpT> {
+export class Op {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Op {
@@ -102,45 +100,5 @@ static createOp(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offse
   Op.addTimestamp(builder, timestamp);
   Op.addValue(builder, valueOffset);
   return Op.endOp(builder);
-}
-
-unpack(): OpT {
-  return new OpT(
-    this.workspaceId(),
-    this.key(),
-    this.timestamp(),
-    this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength())
-  );
-}
-
-
-unpackTo(_o: OpT): void {
-  _o.workspaceId = this.workspaceId();
-  _o.key = this.key();
-  _o.timestamp = this.timestamp();
-  _o.value = this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength());
-}
-}
-
-export class OpT implements flatbuffers.IGeneratedObject {
-constructor(
-  public workspaceId: string|Uint8Array|null = null,
-  public key: string|Uint8Array|null = null,
-  public timestamp: bigint = BigInt('0'),
-  public value: (number)[] = []
-){}
-
-
-pack(builder:flatbuffers.Builder): flatbuffers.Offset {
-  const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
-  const key = (this.key !== null ? builder.createString(this.key!) : 0);
-  const value = Op.createValueVector(builder, this.value);
-
-  return Op.createOp(builder,
-    workspaceId,
-    key,
-    this.timestamp,
-    value
-  );
 }
 }

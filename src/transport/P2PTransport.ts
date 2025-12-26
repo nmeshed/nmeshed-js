@@ -3,6 +3,11 @@ import { Transport, TransportEvents, TransportStatus } from './Transport';
 import { SignalingClient } from './p2p/SignalingClient';
 import { ConnectionManager } from './p2p/ConnectionManager';
 import { SignalEnvelope, OfferSignal, AnswerSignal, CandidateSignal } from './p2p/types';
+import * as flatbuffers from 'flatbuffers';
+import { WirePacket } from '../schema/nmeshed/wire-packet';
+import { MsgType } from '../schema/nmeshed/msg-type';
+import { Op } from '../schema/nmeshed/op';
+import { SyncPacket } from '../schema/nmeshed/sync-packet';
 
 /**
  * P2P Transport implementation using WebRTC Mesh.
@@ -74,10 +79,26 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
     }
 
     public send(data: Uint8Array): void {
-        // In P2P mode, we might want to target a specific peer or broadcast.
-        // For the unified client, 'send' usually means 'send to authority/everyone'.
-        // We'll broadcast for now as that's what MeshClient.broadcast does for state.
-        this.broadcast(data);
+        // Wrap raw CRDT delta into a WirePacket [MsgType.Op] before broadcasting
+        const builder = new flatbuffers.Builder(1024);
+        const valOffset = Op.createValueVector(builder, data);
+        const workspaceOffset = builder.createString('');
+        const keyOffset = builder.createString('');
+
+        Op.startOp(builder);
+        Op.addWorkspaceId(builder, workspaceOffset);
+        Op.addKey(builder, keyOffset);
+        Op.addTimestamp(builder, BigInt(Date.now()));
+        Op.addValue(builder, valOffset);
+        const opOffset = Op.endOp(builder);
+
+        WirePacket.startWirePacket(builder);
+        WirePacket.addMsgType(builder, MsgType.Op);
+        WirePacket.addOp(builder, opOffset);
+        const packetOffset = WirePacket.endWirePacket(builder);
+        builder.finish(packetOffset);
+
+        this.broadcast(builder.asUint8Array());
     }
 
     public broadcast(data: Uint8Array | ArrayBuffer): void {
@@ -176,19 +197,17 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
             onDisconnect: () => {
                 this.setStatus('DISCONNECTED');
             },
-            onSignal: (envelope) => this.handleSignal(envelope),
-            onPresence: (userId, status, meshId) => this.handlePresence(userId, status, meshId),
-            onError: (err) => {
+            onSignal: (envelope: SignalEnvelope) => this.handleSignal(envelope),
+            onPresence: (userId: string, status: string, meshId?: string) => this.handlePresence(userId, status, meshId),
+            onError: (err: Error) => {
                 this.setStatus('ERROR');
                 this.emit('error', err);
             },
-            onServerMessage: (data) => {
-                this.emit('message', new Uint8Array(data));
+            onInit: (sync: SyncPacket) => {
+                // Emit raw bytes of the SyncPacket so NMeshedClient/SyncEngine can decode it
+                this.emit('sync', sync.bb!.bytes());
             },
-            onInit: (_data) => {
-                // Handle init if needed
-            },
-            onEphemeral: (payload, from) => {
+            onEphemeral: (payload: any, from?: string) => {
                 if (payload && payload.type === '__ping__') {
                     this.sendEphemeral({
                         type: '__pong__',
@@ -212,19 +231,19 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
         });
 
         this.connections.setListeners({
-            onSignal: (to, signal) => this.signaling.sendSignal(to, signal),
-            onMessage: (_peerId, data) => {
-                this.emit('message', new Uint8Array(data));
+            onSignal: (to: string, signal: any) => this.signaling.sendSignal(to, signal),
+            onMessage: (_peerId: string, data: Uint8Array | ArrayBuffer) => {
+                this.handleRawMessage(new Uint8Array(data));
             },
-            onPeerJoin: (peerId) => {
+            onPeerJoin: (peerId: string) => {
                 this.peerStatus.set(peerId, 'p2p');
                 this.emit('peerJoin', peerId);
             },
-            onPeerDisconnect: (peerId) => {
+            onPeerDisconnect: (peerId: string) => {
                 this.peerStatus.set(peerId, 'relay');
                 this.emit('peerDisconnect', peerId);
             },
-            onError: (_peerId, err) => {
+            onError: (_peerId: string, err: Error) => {
                 this.emit('error', err);
             }
         });
@@ -249,13 +268,47 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
                 this.connections.handleCandidate(from, (signal as CandidateSignal).candidate);
                 break;
             case 'relay': {
-                const arrayBuffer = (signal as any).data.buffer.slice(
-                    (signal as any).data.byteOffset,
-                    (signal as any).data.byteOffset + (signal as any).data.byteLength
-                );
-                this.emit('message', new Uint8Array(arrayBuffer));
+                const data = (signal as any).data;
+                if (data) this.handleRawMessage(new Uint8Array(data));
                 break;
             }
+        }
+    }
+
+    private handleRawMessage(bytes: Uint8Array): void {
+        try {
+            const buf = new flatbuffers.ByteBuffer(bytes);
+            const wire = WirePacket.getRootAsWirePacket(buf);
+            const msgType = wire.msgType();
+
+            if (msgType === MsgType.Op) {
+                const op = wire.op();
+                if (op) {
+                    const val = op.valueArray();
+                    if (val) this.emit('message', val);
+                }
+            } else if (msgType === MsgType.Sync) {
+                const sync = wire.sync();
+                if (sync) {
+                    this.emit('sync', bytes);
+                } else {
+                    const payload = wire.payloadArray();
+                    if (payload) {
+                        // Attempt to parse as JSON if it's an ephemeral message
+                        if (payload[0] === 123) { // '{'
+                            try {
+                                const json = JSON.parse(new TextDecoder().decode(payload));
+                                this.emit('ephemeral', json.payload, json.from);
+                                return;
+                            } catch { /* ignore */ }
+                        }
+                        this.emit('ephemeral', payload);
+                    }
+                }
+            }
+        } catch (err) {
+            // Fallback: emit entire buffer if it's not a WirePacket
+            this.emit('message', bytes);
         }
     }
 

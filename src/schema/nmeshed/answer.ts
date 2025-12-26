@@ -4,9 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-
-
-export class Answer implements flatbuffers.IUnpackableObject<AnswerT> {
+export class Answer {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Answer {
@@ -48,31 +46,5 @@ static createAnswer(builder:flatbuffers.Builder, sdpOffset:flatbuffers.Offset):f
   Answer.startAnswer(builder);
   Answer.addSdp(builder, sdpOffset);
   return Answer.endAnswer(builder);
-}
-
-unpack(): AnswerT {
-  return new AnswerT(
-    this.sdp()
-  );
-}
-
-
-unpackTo(_o: AnswerT): void {
-  _o.sdp = this.sdp();
-}
-}
-
-export class AnswerT implements flatbuffers.IGeneratedObject {
-constructor(
-  public sdp: string|Uint8Array|null = null
-){}
-
-
-pack(builder:flatbuffers.Builder): flatbuffers.Offset {
-  const sdp = (this.sdp !== null ? builder.createString(this.sdp!) : 0);
-
-  return Answer.createAnswer(builder,
-    sdp
-  );
 }
 }

@@ -1,7 +1,10 @@
+import { Logger } from './utils/Logger';
 import { SyncEngine } from './core/SyncEngine';
 import { Transport, TransportStatus } from './transport/Transport';
 import { WebSocketTransport } from './transport/WebSocketTransport';
 import { P2PTransport } from './transport/P2PTransport';
+import * as flatbuffers from 'flatbuffers';
+import { WirePacket } from './schema/nmeshed/wire-packet';
 import { SyncedMap, SyncedMapConfig } from './sync/SyncedMap';
 import {
     NMeshedConfig,
@@ -19,22 +22,30 @@ import {
     Unsubscribe
 } from './types';
 import { ConnectionError, ConfigurationError } from './errors';
+import type { Schema } from './schema/SchemaBuilder';
 
 /**
- * NMeshedClient is the main entry point for the nMeshed SDK.
- * It provides a high-level API for real-time synchronization and messaging.
+ * NMeshedClient: The High-Level Entrance to the nMeshed SDK.
+ * 
+ * Provides a developer-friendly API for:
+ * - Real-time state synchronization via SyncedMaps and CRDTs.
+ * - Peer-to-peer or server-mediated messaging and presence.
+ * - Transparent lifecycle management and automatic reconnection.
+ * - Deterministic, schema-aware binary serialization.
  */
 export class NMeshedClient {
     public readonly config: ResolvedConfig;
-    private engine: SyncEngine;
+    public readonly engine: SyncEngine;
     private transport: Transport;
+    private logger: Logger;
 
-    private _state = new Map<string, unknown>();
-    private _pendingKeys = new Set<string>();
-    private _isInsideTransaction = false;
-    private _transactionDeltas: Uint8Array[] = [];
+    private syncedMaps = new Map<string, SyncedMap<unknown>>();
+    private isDestroyed = false;
+    private bootPromise: Promise<void>;
 
     private _status: ConnectionStatus = 'IDLE';
+    private _isInsideTransaction = false;
+    private _transactionDeltas: Uint8Array[] = [];
 
     private listeners = {
         status: new Set<StatusHandler>(),
@@ -45,10 +56,6 @@ export class NMeshedClient {
         peerDisconnect: new Set<(peerId: string) => void>(),
         queueChange: new Set<(size: number) => void>()
     };
-
-    private syncedMaps = new Map<string, SyncedMap<unknown>>();
-    private isDestroyed = false;
-    private bootPromise: Promise<void>;
 
     constructor(config: NMeshedConfig) {
         const result = ConfigSchema.safeParse(config);
@@ -62,25 +69,26 @@ export class NMeshedClient {
             ...validConfig,
             userId: validConfig.userId || this.generateUserId(),
             syncMode: validConfig.syncMode || 'crdt',
+            debug: true // Force debug for development/tests regardless of config
         } as ResolvedConfig;
 
         this.engine = new SyncEngine(
             this.config.workspaceId,
             this.config.syncMode,
-            this.config.maxQueueSize
+            this.config.maxQueueSize,
+            this.config.debug
         );
-
         this.engine.on('op', (key: string, value: unknown, isOptimistic: boolean) => {
-            this._state.set(key, value);
-            if (isOptimistic) {
-                this._pendingKeys.add(key);
-            } else {
-                this._pendingKeys.delete(key);
-            }
-
             this.notifyMessageListeners({
                 type: 'op',
                 payload: { key, value, timestamp: Date.now(), isOptimistic }
+            });
+        });
+
+        this.engine.on('snapshot', () => {
+            this.notifyMessageListeners({
+                type: 'init',
+                data: this.engine.getAllValues()
             });
         });
 
@@ -89,12 +97,13 @@ export class NMeshedClient {
                 try {
                     l(size);
                 } catch (e) {
-                    this.warn('Queue listener error', e);
+                    this.logger.warn('Queue listener error', e);
                 }
             });
         });
 
         this.bootPromise = this.engine.boot();
+        this.logger = new Logger('NMeshedClient', this.config.debug);
 
         this.transport = this.config.transport === 'server'
             ? new WebSocketTransport({
@@ -105,8 +114,7 @@ export class NMeshedClient {
                 maxReconnectDelay: this.config.maxReconnectDelay,
                 connectionTimeout: this.config.connectionTimeout,
                 heartbeatInterval: this.config.heartbeatInterval,
-                heartbeatMaxMissed: this.config.heartbeatMaxMissed,
-                debug: this.config.debug
+                heartbeatMaxMissed: this.config.heartbeatMaxMissed
             })
             : new P2PTransport(this.config);
 
@@ -131,10 +139,29 @@ export class NMeshedClient {
         });
 
         this.transport.on('message', (data: Uint8Array) => {
-            if (this.config.debug) {
-                this.log(`Received message: ${data.byteLength} bytes`);
-            }
+            this.logger.debug(`Received message: ${data.byteLength} bytes`);
             this.engine.applyRemoteDelta(data);
+        });
+
+        this.transport.on('sync', (data: Uint8Array) => {
+            this.logger.debug(`Received sync packet: ${data.byteLength} bytes`);
+
+            // Re-wrap bytes in ByteBuffer for the engine
+            const buf = new flatbuffers.ByteBuffer(data);
+            try {
+                const wire = WirePacket.getRootAsWirePacket(buf);
+                const sync = wire.sync();
+                if (sync) {
+                    this.engine.handleBinarySync(sync);
+                }
+            } catch (err) {
+                this.logger.error('Failed to parse sync packet', err);
+            }
+        });
+
+        this.transport.on('init', (payload: any) => {
+            this.logger.info('Received init (snapshot) from transport');
+            this.engine.handleInitSnapshot(payload.data || payload);
         });
 
         this.transport.on('ephemeral', (payload: unknown, from?: string) => {
@@ -155,7 +182,7 @@ export class NMeshedClient {
                         l(payload);
                     }
                 } catch (e) {
-                    this.warn('Ephemeral listener error', e);
+                    this.logger.warn('Ephemeral listener error', e);
                 }
             });
         });
@@ -166,10 +193,10 @@ export class NMeshedClient {
 
             if (isPresencePayload(payload)) {
                 this.listeners.presence.forEach(l => {
-                    try { l(payload); } catch (e) { this.warn('Presence listener error', e); }
+                    try { l(payload); } catch (e) { this.logger.warn('Presence listener error', e); }
                 });
             } else {
-                this.warn('Received invalid presence payload:', payload);
+                this.logger.warn('Received invalid presence payload:', payload);
             }
         });
 
@@ -181,25 +208,40 @@ export class NMeshedClient {
             this.listeners.peerDisconnect.forEach(l => l(id));
         });
 
+        // Handle binary synchronization events
+        this.transport.on('sync', (data: Uint8Array) => {
+            this.engine.handleBinarySync(data);
+        });
+
         this.transport.on('error', (err: Error) => {
-            this.warn('Transport encountered an error', err);
+            this.logger.warn('Transport encountered an error', err);
         });
     }
 
+    /**
+     * Gets the current lifecycle status of the client.
+     */
     public getStatus(): ConnectionStatus {
         return this._status;
     }
 
+    /**
+     * Gets the unique user identifier for this client instance.
+     */
     public getId(): string {
         return this.config.userId;
     }
 
+    /**
+     * Establishes a connection to the nMeshed network.
+     * Initializes the SyncEngine and Transport layers.
+     * 
+     * @throws {ConnectionError} If the client is already destroyed or connection fails.
+     */
     public async connect(): Promise<void> {
         if (this.isDestroyed) throw new ConnectionError('Client destroyed');
 
-        if (this.config.debug) {
-            this.log(`connect() called. Current status: ${this._status}`);
-        }
+        this.logger.debug(`connect() called. Current status: ${this._status}`);
 
         if (this._status === 'CONNECTED' || this._status === 'CONNECTING') return;
 
@@ -208,6 +250,7 @@ export class NMeshedClient {
         try {
             await this.bootPromise;
             await this.transport.connect();
+            this.flushQueue();
         } catch (err) {
             if (this._status !== 'ERROR') {
                 this.setStatus('RECONNECTING');
@@ -224,26 +267,37 @@ export class NMeshedClient {
         this.destroy();
     }
 
-    public set(key: string, value: unknown): void {
+    /**
+     * Sets a key-value pair in the synchronized state.
+     * 
+     * @param key - The key to set
+     * @param value - The value to store
+     * @param schema - Optional schema for binary encoding. If provided, the schema
+     *                 is registered for this key prefix and used for automatic
+     *                 decoding when receiving updates.
+     */
+    public set<T = unknown>(key: string, value: T, schema?: Schema<any>): void {
         if (this.isDestroyed) return;
         try {
-            const delta = this.engine.set(key, value);
+            const shouldQueue = this._status !== 'CONNECTED';
+            const delta = this.engine.set(key, value, schema, shouldQueue);
             if (delta.length > 0) {
                 if (this._isInsideTransaction) {
                     this._transactionDeltas.push(delta);
                 } else if (this._status === 'CONNECTED') {
                     this.transport.send(delta);
                 } else {
-                    this.warn(`set() called while ${this._status}; operation queued`);
+                    this.logger.warn(`set() called while ${this._status}; operation queued`);
                 }
             }
         } catch (e) {
-            // Handle circular JSON gracefully if requested by test or common sense
-            if (e instanceof Error && e.message.includes('circular')) {
-                this.warn(`Failed to set key "${key}" due to circular structure:`, e);
+            // Handle circular JSON or deep recursion gracefully
+            const msg = e instanceof Error ? e.message : String(e);
+            if (msg.toLowerCase().includes('circular') || msg.toLowerCase().includes('recursion depth')) {
+                this.logger.warn(`Failed to set key "${key}" due to circularity or extreme depth:`, e);
                 return;
             }
-            throw new Error(`Failed to set key "${key}": ${e instanceof Error ? e.message : String(e)}`);
+            throw new Error(`Failed to set key "${key}": ${msg}`);
         }
     }
 
@@ -266,28 +320,47 @@ export class NMeshedClient {
     }
 
     public get<T = unknown>(key: string): T | undefined {
-        return this._state.get(key) as T;
+        return this.engine.get(key) as T;
     }
 
     /**
-     * Returns true if the key has a value that hasn't been confirmed by the server.
+     * Returns the last value confirmed by the server for a given key.
      */
-    public isPending(key: string): boolean {
-        return this._pendingKeys.has(key);
+    public getConfirmed<T = unknown>(key: string): T | undefined {
+        return this.engine.getConfirmed(key) as T;
     }
 
-    public sendOperation(key: string, value: unknown): void {
-        this.set(key, value);
+    /**
+     * Returns true if the key has an optimistic local value awaiting server confirmation.
+     */
+    public isPending(key: string): boolean {
+        return this.engine.isOptimistic(key);
+    }
+
+    /**
+     * Registers a schema for a key pattern for automatic encoding/decoding.
+     * Use this when you want to pre-register schemas before calling set().
+     */
+    public registerSchema(keyPattern: string, schema: Schema<any>): void {
+        this.engine.registerSchema(keyPattern, schema);
+    }
+
+    public sendOperation<T = unknown>(key: string, value: T, schema?: Schema<any>): void {
+        this.set(key, value, schema);
     }
 
     public getState(): Record<string, unknown> {
-        return Object.fromEntries(this._state);
+        return this.engine.getAllValues();
     }
 
+    /**
+     * Broadcasts an ephemeral data payload to all peers in the workspace.
+     * @param data - The payload to send (object, string, or binary)
+     */
     public broadcast(data: unknown): void {
         if (this.isDestroyed) return;
         if (this._status !== 'CONNECTED') {
-            this.warn('broadcast() called while not connected');
+            this.logger.warn('broadcast() called while not connected');
             return;
         }
 
@@ -303,6 +376,9 @@ export class NMeshedClient {
         this.transport.sendEphemeral(payload, peerId);
     }
 
+    /**
+     * Returns the list of currently connected peer IDs.
+     */
     public getPeers(): string[] {
         return this.transport.getPeers();
     }
@@ -320,7 +396,7 @@ export class NMeshedClient {
         try {
             handler(this._status);
         } catch (e) {
-            this.warn('Status handler error on subscribe', e);
+            this.logger.warn('Status handler error on subscribe', e);
         }
         return () => this.listeners.status.delete(handler);
     }
@@ -381,7 +457,7 @@ export class NMeshedClient {
         try {
             handler(this.getQueueSize());
         } catch (e) {
-            this.warn('QueueChange handler error on subscribe', e);
+            this.logger.warn('QueueChange handler error on subscribe', e);
         }
         return () => this.listeners.queueChange.delete(handler);
     }
@@ -435,7 +511,7 @@ export class NMeshedClient {
             return await res.json();
         } catch (e) {
             const error = e instanceof Error ? e : new Error(String(e));
-            this.warn('Failed to fetch presence:', error.message);
+            this.logger.warn('Failed to fetch presence:', error.message);
             throw error;
         } finally {
             clearTimeout(timeoutId);
@@ -456,12 +532,15 @@ export class NMeshedClient {
         }
     }
 
+    public clearQueue(): void {
+        this.engine.clearQueue();
+    }
+
     public destroy(): void {
         if (this.isDestroyed) return;
         this.disconnect();
         this.engine.destroy();
         this.syncedMaps.clear();
-        this._state.clear();
 
         // Clear all listeners
         Object.values(this.listeners).forEach(set => set.clear());
@@ -472,7 +551,10 @@ export class NMeshedClient {
     private setStatus(newStatus: ConnectionStatus): void {
         if (this._status !== newStatus) {
             if (this.config.debug) {
-                this.log(`Status: ${this._status} -> ${newStatus}`);
+                this.logger.debug(`Status: ${this._status} -> ${newStatus}`);
+            }
+            if (newStatus === 'ERROR') {
+                this.logger.error(`Transitioning to ERROR state!`);
             }
             this._status = newStatus;
             this.notifyStatusListeners(newStatus);
@@ -482,29 +564,48 @@ export class NMeshedClient {
 
     private notifyStatusListeners(status: ConnectionStatus): void {
         this.listeners.status.forEach(l => {
-            try { l(status); } catch (e) { this.warn('Status listener error', e); }
+            try { l(status); } catch (e) { this.logger.warn('Status listener error', e); }
         });
     }
 
     private flushQueue(): void {
         try {
             const ops = this.engine.getPendingOps();
-            ops.forEach(op => this.transport.send(op));
-            this.engine.clearQueue();
+            const count = ops.length;
+            if (count > 0) {
+                this.logger.info(`Flushing ${count} queued operations to transport.`);
+                let success = 0;
+                for (const op of ops) {
+                    try {
+                        this.transport.send(op);
+                        success++;
+                    } catch (sendErr) {
+                        this.logger.error(`Failed to send operation during flush at index ${success}/${count}`, sendErr);
+                        // Stop flushing on error to prevent out-of-order execution if transport is broken
+                        break;
+                    }
+                }
+
+                if (success > 0) {
+                    this.logger.info(`Successfully flushed ${success}/${count} operations.`);
+                    // Use shiftQueue to remove exactly what was sent
+                    this.engine.shiftQueue(success);
+                }
+            }
         } catch (e) {
-            this.warn('Failed to flush operation queue', e);
+            this.logger.warn('Failed to start operation queue flush', e);
         }
     }
 
     private notifyMessageListeners(msg: NMeshedMessage): void {
         this.listeners.message.forEach(l => {
-            try { l(msg); } catch (e) { this.warn('Message listener error', e); }
+            try { l(msg); } catch (e) { this.logger.warn('Message listener error', e); }
         });
     }
 
     private generateUserId(): string {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-            return crypto.randomUUID();
+        if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
+            return (crypto as any).randomUUID();
         }
         return `user-${Math.random().toString(36).substring(2, 11)}`;
     }
@@ -522,15 +623,15 @@ export class NMeshedClient {
         return url.toString();
     }
 
-    private log(msg: string, ...args: unknown[]): void {
-        console.log(`[nMeshed] ${msg}`, ...args);
-    }
-
-    private warn(msg: string, ...args: unknown[]): void {
-        console.warn(`[nMeshed] ${msg}`, ...args);
-    }
-
     public get operationQueue(): Uint8Array[] {
         return this.engine.getPendingOps();
+    }
+
+    public getPendingCount(): number {
+        return this.engine.getQueueLength();
+    }
+
+    public getUnconfirmedCount(): number {
+        return Object.keys(this.engine.getAllValues()).filter(k => this.engine.isOptimistic(k)).length;
     }
 }

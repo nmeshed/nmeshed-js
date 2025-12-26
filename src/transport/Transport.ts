@@ -8,7 +8,8 @@ export type TransportStatus = 'IDLE' | 'DISCONNECTED' | 'CONNECTING' | 'CONNECTE
 export interface TransportEvents {
     [key: string]: any[];
     status: [status: TransportStatus];
-    message: [data: Uint8Array];           // Reliable binary (CRDTs)
+    message: [data: Uint8Array | { key: string, value: Uint8Array }]; // Reliable data (binary or keyed op)
+    sync: [data: Uint8Array];              // Specialized binary sync (snapshots, state vectors)
     ephemeral: [payload: any, from?: string]; // Unreliable/Lossy (Cursors)
     presence: [user: any];
     peerJoin: [peerId: string];

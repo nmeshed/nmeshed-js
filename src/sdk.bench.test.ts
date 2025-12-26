@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import init from './wasm/nmeshed_core';
 import { SyncEngine } from './core/SyncEngine';
 import { NMeshedClient } from './client';
@@ -17,6 +17,12 @@ class MockTransport extends EventEmitter<TransportEvents> implements Transport {
     getPeers() { return []; }
     async ping() { return 0; }
 }
+
+// Mock persistence to avoid IndexedDB errors
+vi.mock('./persistence', () => ({
+    loadQueue: vi.fn().mockResolvedValue([]),
+    saveQueue: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('SDK High-Level Benchmarks', () => {
     let wasmBuffer: Buffer;

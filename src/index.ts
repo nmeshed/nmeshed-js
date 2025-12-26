@@ -49,6 +49,7 @@ export { encodeValue, decodeValue, isBinary } from './codec';
 // Schema and Serialization
 export type { Schema, SchemaDefinition, SchemaField, InferSchema } from './schema/SchemaBuilder';
 export { defineSchema, SchemaSerializer } from './schema/SchemaBuilder';
+export { SystemSchemas, TickSyncSchema, PresenceSchema } from './schema/SystemSchema';
 
 // Debug Utilities (development only)
 export { debugPacket, hexDump, tryParseAsJson, formatBytes, startTimer } from './debug';

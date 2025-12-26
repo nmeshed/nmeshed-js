@@ -19,8 +19,6 @@ export interface NMeshedConfig {
     heartbeatMaxMissed?: number;
     maxQueueSize?: number;
     debug?: boolean;
-    /** When true, all messages use JSON format for debugging. Default: false (binary protocol). */
-    debugProtocol?: boolean;
     transport?: 'server' | 'p2p' | 'hybrid';
 }
 
@@ -45,7 +43,6 @@ export const ConfigSchema = z.object({
     heartbeatMaxMissed: z.number().int().min(1).optional().default(3),
     maxQueueSize: z.number().int().min(0).optional().default(1000),
     debug: z.boolean().optional().default(false),
-    debugProtocol: z.boolean().optional().default(false),
     transport: z.enum(['server', 'p2p', 'hybrid']).optional().default('server')
 }).refine(data => !!(data.token || data.apiKey), {
     message: "Either token or apiKey must be provided",
@@ -63,7 +60,6 @@ export const DEFAULT_CONFIG: Partial<ResolvedConfig> = {
     heartbeatMaxMissed: 3,
     maxQueueSize: 1000,
     debug: false,
-    debugProtocol: false,
     transport: 'server'
 };
 

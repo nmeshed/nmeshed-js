@@ -129,10 +129,12 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
 
     // Connect on mount
     useEffect(() => {
+        let isMounted = true;
         const currentClient = client;
 
         // Subscribe to status changes
         const unsubscribeStatus = currentClient.onStatusChange((newStatus) => {
+            if (!isMounted) return;
             setStatus(newStatus);
 
             if (newStatus === 'CONNECTED') {
@@ -146,11 +148,12 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
 
         // Subscribe to queue changes
         const unsubscribeQueue = currentClient.onQueueChange((size) => {
-            setQueueSize(size);
+            if (isMounted) setQueueSize(size);
         });
 
         // Subscribe to messages
         const unsubscribeMessage = currentClient.onMessage((message: NMeshedMessage) => {
+            if (!isMounted) return;
             if (message.type === 'init') {
                 setState(message.data);
             } else if (message.type === 'op') {
@@ -163,11 +166,12 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
 
         // Connect
         currentClient.connect().catch((error) => {
-            onError?.(error);
+            if (isMounted) onError?.(error);
         });
 
         // Cleanup
         return () => {
+            isMounted = false;
             unsubscribeStatus();
             unsubscribeQueue();
             unsubscribeMessage();
