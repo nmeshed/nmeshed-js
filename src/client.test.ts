@@ -654,16 +654,7 @@ describe('NMeshedClient', () => {
             });
         });
 
-        it('handles close() alias', async () => {
-            const client = new NMeshedClient(defaultConfig);
-            const connectPromise = client.connect();
-            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-            MockWebSocket.instances[0].simulateOpen();
-            await connectPromise;
 
-            client.close();
-            expect(client.getStatus()).toBe('DISCONNECTED');
-        });
 
         it('respects maxQueueSize config', async () => {
             // Test that maxQueueSize is respected by checking via public API

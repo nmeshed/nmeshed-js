@@ -246,13 +246,7 @@ export class NMeshedClient {
         this.transport.disconnect();
     }
 
-    /**
-     * @deprecated Use `destroy()` instead. This alias will be removed in v1.0.
-     */
-    public close(): void {
-        this.logger.warn('close() is deprecated. Use destroy() instead.');
-        this.destroy();
-    }
+
 
     /**
      * Sets a key-value pair in the synchronized state.
@@ -332,13 +326,7 @@ export class NMeshedClient {
         this.engine.registerSchema(keyPattern, schema);
     }
 
-    /**
-     * @deprecated Use `set()` instead. This alias will be removed in v1.0.
-     */
-    public sendOperation<T = unknown>(key: string, value: T, schema?: Schema<any>): void {
-        this.logger.warn('sendOperation() is deprecated. Use set() instead.');
-        this.set(key, value, schema);
-    }
+
 
     public getState(): Record<string, unknown> {
         return this.engine.getAllValues();
@@ -408,17 +396,7 @@ export class NMeshedClient {
         return () => this.listeners.ephemeral.delete(handler);
     }
 
-    /**
-     * @deprecated Use `onEphemeral()` instead. This alias will be removed in v1.0.
-     */
-    public onBroadcast(handler: EphemeralHandler): Unsubscribe {
-        this.logger.warn('onBroadcast() is deprecated. Use onEphemeral() instead.');
-        if (typeof handler !== 'function') {
-            throw new Error('Broadcast handler must be a function');
-        }
-        this.listeners.ephemeral.add(handler);
-        return () => this.listeners.ephemeral.delete(handler);
-    }
+
 
     public onPresence(handler: PresenceHandler): Unsubscribe {
         if (typeof handler !== 'function') {
@@ -466,7 +444,7 @@ export class NMeshedClient {
             case 'status': return this.onStatusChange(handler as StatusHandler);
             case 'message': return this.onMessage(handler as MessageHandler);
             case 'ephemeral': return this.onEphemeral(handler as EphemeralHandler);
-            case 'broadcast': return this.onBroadcast(handler as EphemeralHandler);
+
             case 'peerJoin': return this.onPeerJoin(handler as (peerId: string) => void);
             case 'peerDisconnect': return this.onPeerDisconnect(handler as (peerId: string) => void);
             case 'queueChange': return this.onQueueChange(handler as (size: number) => void);
