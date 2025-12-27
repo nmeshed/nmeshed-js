@@ -5,13 +5,16 @@ import React from 'react';
 // 1. FORENSIC MOCK STABILITY: Use vi.hoisted to ensure a STABLE object reference.
 // The previous implementation returned a new object literal on every call, 
 // triggering an infinite React render loop due to unstable dependencies in useMemo/useEffect.
-const { mockClient } = vi.hoisted(() => {
+const { mockClient, mockSet } = vi.hoisted(() => {
+    const sendOp = vi.fn();
     return {
         mockClient: {
             get: vi.fn(),
-            sendOperation: vi.fn(),
+            sendOperation: sendOp,
+            set: sendOp,  // Alias for migration: useStore now uses set()
             onMessage: vi.fn(() => vi.fn()),
-        }
+        },
+        mockSet: sendOp,
     };
 });
 
@@ -32,7 +35,7 @@ vi.mock('./context', () => ({
 }));
 
 // Destructure for easy use in tests while maintaining reference stability
-const { get: mockGet, sendOperation: mockSendOperation, onMessage: mockOnMessage } = mockClient;
+const { get: mockGet, onMessage: mockOnMessage } = mockClient;
 
 
 
@@ -88,7 +91,7 @@ describe('useStore', () => {
     });
 
     describe('setStore', () => {
-        it('should call sendOperation with encoded value for single field', () => {
+        it('should call set with encoded value for single field', () => {
             const { result } = renderHook(() => useStore(TestSchema));
             const [, setStore] = result.current;
 
@@ -96,11 +99,11 @@ describe('useStore', () => {
                 setStore({ title: 'New Title' });
             });
 
-            expect(mockSendOperation).toHaveBeenCalledTimes(1);
-            expect(mockSendOperation).toHaveBeenCalledWith('title', expect.any(Uint8Array));
+            expect(mockSet).toHaveBeenCalledTimes(1);
+            expect(mockSet).toHaveBeenCalledWith('title', expect.any(Uint8Array));
         });
 
-        it('should call sendOperation for each field when updating multiple', () => {
+        it('should call set for each field when updating multiple', () => {
             const { result } = renderHook(() => useStore(TestSchema));
             const [, setStore] = result.current;
 
@@ -108,7 +111,7 @@ describe('useStore', () => {
                 setStore({ title: 'Test', count: 42 });
             });
 
-            expect(mockSendOperation).toHaveBeenCalledTimes(2);
+            expect(mockSet).toHaveBeenCalledTimes(2);
         });
 
         it('should encode string values correctly', () => {
@@ -119,7 +122,7 @@ describe('useStore', () => {
                 setStore({ title: 'Hello' });
             });
 
-            const encodedArg = mockSendOperation.mock.calls[0][1];
+            const encodedArg = mockSet.mock.calls[0][1];
             const decoded = SchemaSerializer.decodeValue('string', encodedArg);
             expect(decoded).toBe('Hello');
         });
@@ -132,7 +135,7 @@ describe('useStore', () => {
                 setStore({ count: 123 });
             });
 
-            const encodedArg = mockSendOperation.mock.calls[0][1];
+            const encodedArg = mockSet.mock.calls[0][1];
             const decoded = SchemaSerializer.decodeValue('int32', encodedArg);
             expect(decoded).toBe(123);
         });
@@ -145,7 +148,7 @@ describe('useStore', () => {
                 setStore({ active: true });
             });
 
-            const encodedArg = mockSendOperation.mock.calls[0][1];
+            const encodedArg = mockSet.mock.calls[0][1];
             const decoded = SchemaSerializer.decodeValue('boolean', encodedArg);
             expect(decoded).toBe(true);
         });
@@ -161,7 +164,7 @@ describe('useStore', () => {
             });
 
             expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown field'));
-            expect(mockSendOperation).not.toHaveBeenCalled();
+            expect(mockSet).not.toHaveBeenCalled();
 
             consoleSpy.mockRestore();
         });
@@ -252,6 +255,6 @@ describe('useStore with Map schema', () => {
             setStore({ tasks });
         });
 
-        expect(mockSendOperation).toHaveBeenCalledWith('tasks', expect.any(Uint8Array));
+        expect(mockSet).toHaveBeenCalledWith('tasks', expect.any(Uint8Array));
     });
 });

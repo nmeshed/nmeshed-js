@@ -49,13 +49,10 @@ describe('SyncEngine Regression Tests', () => {
             engine.on('op', (k, v) => emitted.push({ k, v }));
 
             // Simulate init message with snapshot data
-            // We pass an object because our mock returns it directly to SyncEngine logic
-            engine.applyRemoteDelta({
-                type: 'init',
-                data: {
-                    '12345': encoded
-                }
-            } as any);
+            // We pass the data directly to handleInitSnapshot
+            engine.handleInitSnapshot({
+                '12345': encoded
+            });
 
             expect(emitted).toHaveLength(1);
             expect(emitted[0].k).toBe('12345');
@@ -73,13 +70,10 @@ describe('SyncEngine Regression Tests', () => {
             const emitted: any[] = [];
             engine.on('op', (k, v) => emitted.push({ k, v }));
 
-            engine.applyRemoteDelta({
-                type: 'init',
-                data: {
-                    'key1': 'val1',
-                    'key2': 'val2'
-                }
-            } as any);
+            engine.handleInitSnapshot({
+                'key1': 'val1',
+                'key2': 'val2'
+            });
 
             expect(emitted).toHaveLength(2);
             expect(emitted).toContainEqual({ k: 'key1', v: 'val1' });

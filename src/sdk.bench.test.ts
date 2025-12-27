@@ -56,18 +56,18 @@ describe('SDK High-Level Benchmarks', () => {
             console.log(`[SyncEngine] set: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
         });
 
-        it('Benchmark: SyncEngine.applyRemoteDelta (merge + decode)', async () => {
+        it('Benchmark: SyncEngine.applyRawMessage (parse + merge + decode)', async () => {
             const engine = new SyncEngine(workspaceId, 'crdt');
             await engine.boot();
             const delta = engine.set('bench', { x: 10, y: 20 });
 
             const start = performance.now();
             for (let i = 0; i < ITERATIONS; i++) {
-                engine.applyRemoteDelta(delta);
+                engine.applyRawMessage(delta);
             }
             const end = performance.now();
             const time = end - start;
-            console.log(`[SyncEngine] applyRemoteDelta: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
+            console.log(`[SyncEngine] applyRawMessage: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
         });
     });
 

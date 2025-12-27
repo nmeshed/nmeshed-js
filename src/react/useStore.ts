@@ -74,7 +74,7 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
 
                 try {
                     const encoded = SchemaSerializer.encodeValue(fieldDef, value);
-                    client.sendOperation(key, encoded);
+                    client.set(key, encoded);
                 } catch (e) {
                     throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
                 }

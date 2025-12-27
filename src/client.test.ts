@@ -42,7 +42,7 @@ const defaultConfig = {
 
 describe('NMeshedClient', () => {
     // Global WebSocket Stubbing for all tests in this file
-    const originalWebSocket = global.WebSocket;
+    const originalWebSocket = (globalThis as any).WebSocket;
 
     beforeAll(() => {
         class TestMockWebSocket extends MockWebSocket {
@@ -52,7 +52,7 @@ describe('NMeshedClient', () => {
         }
 
         // Force override both global and window
-        global.WebSocket = TestMockWebSocket as any;
+        (globalThis as any).WebSocket = TestMockWebSocket as any;
         if (typeof window !== 'undefined') {
             (window as any).WebSocket = TestMockWebSocket;
         }
@@ -60,7 +60,7 @@ describe('NMeshedClient', () => {
     });
 
     afterAll(() => {
-        global.WebSocket = originalWebSocket;
+        (globalThis as any).WebSocket = originalWebSocket;
         if (typeof window !== 'undefined') {
             (window as any).WebSocket = originalWebSocket;
         }
@@ -470,7 +470,7 @@ describe('NMeshedClient', () => {
         it('handles ephemeral events from server', async () => {
             const client = new NMeshedClient(defaultConfig);
             const ephemeralHandler = vi.fn();
-            client.onBroadcast(ephemeralHandler);
+            client.onEphemeral(ephemeralHandler);
             const connectPromise = client.connect();
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
             MockWebSocket.instances[0].simulateOpen();
@@ -527,7 +527,7 @@ describe('NMeshedClient', () => {
 
             client.on('ephemeral', handler);
             client.broadcast('msg');
-            // triggers onBroadcast which handler is subscribed to
+            // triggers onEphemeral which handler is subscribed to
 
             client.on('presence', handler);
             client.on('status', handler);
@@ -556,7 +556,7 @@ describe('NMeshedClient', () => {
             const client = new NMeshedClient(defaultConfig);
             const badHandler = () => { throw new Error('Bad'); };
             client.onMessage(badHandler);
-            client.onBroadcast(badHandler);
+            client.onEphemeral(badHandler);
             client.onPresence(badHandler);
             client.onStatusChange(badHandler);
 
@@ -631,7 +631,7 @@ describe('NMeshedClient', () => {
             });
 
             // Client should have responded with pong
-            const sendCalls = MockWebSocket.instances[0].send.mock.calls;
+            const sendCalls = (MockWebSocket.instances[0].send as ReturnType<typeof vi.fn>).mock.calls;
             const pongCall = sendCalls.find((call: any) => {
                 const data = call[0];
                 const str = typeof data === 'string' ? data : new TextDecoder().decode(data);
@@ -749,9 +749,9 @@ describe('NMeshedClient', () => {
             expect(client.getStatus()).toBe('CONNECTED');
         });
 
-        it('throws if onBroadcast handler is not a function', () => {
+        it('throws if onEphemeral handler is not a function', () => {
             const client = new NMeshedClient(defaultConfig);
-            expect(() => client.onBroadcast('not-a-function' as any)).toThrow('Broadcast handler must be a function');
+            expect(() => client.onEphemeral('not-a-function' as any)).toThrow('Ephemeral handler must be a function');
         });
 
         it('throws if onPresence handler is not a function', () => {

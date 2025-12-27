@@ -21,7 +21,7 @@ export function useBroadcast(handler?: BroadcastHandler) {
     useEffect(() => {
         if (!handlerRef.current) return;
 
-        const unsubscribe = client.onBroadcast((payload) => {
+        const unsubscribe = client.onEphemeral((payload) => {
             if (handlerRef.current) {
                 handlerRef.current(payload);
             }
