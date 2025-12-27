@@ -9,6 +9,7 @@ import { SystemSchemas } from '../schema/SystemSchema';
 import { Logger } from '../utils/Logger';
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
+import { MsgType } from '../schema/nmeshed/msg-type';
 import { SyncPacket } from '../schema/nmeshed/sync-packet';
 
 
@@ -52,6 +53,7 @@ export interface SyncEngineEvents {
     op: [string, unknown, boolean]; // key, value, isOptimistic
     queueChange: [number];
     snapshot: [];
+    ephemeral: [unknown, string];   // payload, from
     [key: string]: any[];
 }
 
@@ -278,7 +280,78 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     }
 
     /**
+     * Entry point for ALL incoming binary messages from transport.
+     * Handles WirePacket parsing and routes to appropriate handler.
+     */
+    public applyRawMessage(binary: Uint8Array): void {
+        if (this.isDestroyed || !binary || binary.length === 0) return;
+
+        if (!this.core) {
+            this.logger.debug('Core not ready, queuing raw message');
+            this.bootQueue.push({ type: 'delta', data: binary });
+            return;
+        }
+
+        try {
+            const buf = new flatbuffers.ByteBuffer(binary);
+            const wire = WirePacket.getRootAsWirePacket(buf);
+            const msgType = wire.msgType();
+
+            switch (msgType) {
+                case MsgType.Op: {
+                    const op = wire.op();
+                    if (op) {
+                        const key = op.key();
+                        const valBytes = op.valueArray();
+                        if (key && valBytes) {
+                            const decoded = this.decodeBinary(key, valBytes);
+                            this.handleRemoteOp(key, decoded);
+                        } else if (key) {
+                            // Delete operation (empty value)
+                            this.handleRemoteOp(key, null);
+                        }
+                    }
+                    break;
+                }
+                case MsgType.Sync: {
+                    const sync = wire.sync();
+                    if (sync) {
+                        this.processBinarySyncInternal(sync);
+                    } else {
+                        // Fallback: try payload as raw sync data
+                        const payload = wire.payloadArray();
+                        if (payload) {
+                            this.processBinarySyncInternal(payload);
+                        }
+                    }
+                    break;
+                }
+                case MsgType.Signal: {
+                    // Ephemeral data - emit for client handling
+                    const payload = wire.payloadArray();
+                    if (payload) {
+                        try {
+                            const decoded = this.decodeBinary('', payload);
+                            this.emit('ephemeral', decoded, 'server');
+                        } catch {
+                            this.emit('ephemeral', payload, 'server');
+                        }
+                    }
+                    break;
+                }
+                default:
+                    this.logger.warn(`Unknown MsgType: ${msgType}`);
+            }
+        } catch (e) {
+            this.logger.debug('WirePacket parse failed, attempting fallback decode:', e);
+            // Fallback: try as raw encoded value
+            this.applyRemoteDelta(binary);
+        }
+    }
+
+    /**
      * Entry point for incoming remote deltas (Ops or Snapshots).
+     * @deprecated Use applyRawMessage for new code
      */
     public applyRemoteDelta(binary: Uint8Array): void {
         if (this.isDestroyed || !binary) return;

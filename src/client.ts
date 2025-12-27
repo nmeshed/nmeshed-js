@@ -3,8 +3,6 @@ import { SyncEngine } from './core/SyncEngine';
 import { Transport, TransportStatus } from './transport/Transport';
 import { WebSocketTransport } from './transport/WebSocketTransport';
 import { P2PTransport } from './transport/P2PTransport';
-import * as flatbuffers from 'flatbuffers';
-import { WirePacket } from './schema/nmeshed/wire-packet';
 import { SyncedMap, SyncedMapConfig } from './sync/SyncedMap';
 import {
     NMeshedConfig,
@@ -138,30 +136,15 @@ export class NMeshedClient {
             this.setStatus(statusMap[s] || 'IDLE');
         });
 
+        // Transport is a dumb pipe - passes raw bytes to SyncEngine for parsing
         this.transport.on('message', (data: Uint8Array) => {
             this.logger.debug(`Received message: ${data.byteLength} bytes`);
-            this.engine.applyRemoteDelta(data);
+            this.engine.applyRawMessage(data);
         });
 
-        this.transport.on('sync', (data: Uint8Array) => {
-            this.logger.debug(`Received sync packet: ${data.byteLength} bytes`);
-
-            // Re-wrap bytes in ByteBuffer for the engine
-            const buf = new flatbuffers.ByteBuffer(data);
-            try {
-                const wire = WirePacket.getRootAsWirePacket(buf);
-                const sync = wire.sync();
-                if (sync) {
-                    this.engine.handleBinarySync(sync);
-                }
-            } catch (err) {
-                this.logger.error('Failed to parse sync packet', err);
-            }
-        });
-
-        this.transport.on('init', (payload: any) => {
+        this.transport.on('init', (payload: Record<string, unknown>) => {
             this.logger.info('Received init (snapshot) from transport');
-            this.engine.handleInitSnapshot(payload.data || payload);
+            this.engine.handleInitSnapshot(payload.data as Record<string, unknown> || payload);
         });
 
         this.transport.on('ephemeral', (payload: unknown, from?: string) => {
@@ -263,7 +246,11 @@ export class NMeshedClient {
         this.transport.disconnect();
     }
 
+    /**
+     * @deprecated Use `destroy()` instead. This alias will be removed in v1.0.
+     */
     public close(): void {
+        this.logger.warn('close() is deprecated. Use destroy() instead.');
         this.destroy();
     }
 
@@ -345,7 +332,11 @@ export class NMeshedClient {
         this.engine.registerSchema(keyPattern, schema);
     }
 
+    /**
+     * @deprecated Use `set()` instead. This alias will be removed in v1.0.
+     */
     public sendOperation<T = unknown>(key: string, value: T, schema?: Schema<any>): void {
+        this.logger.warn('sendOperation() is deprecated. Use set() instead.');
         this.set(key, value, schema);
     }
 
@@ -417,7 +408,11 @@ export class NMeshedClient {
         return () => this.listeners.ephemeral.delete(handler);
     }
 
+    /**
+     * @deprecated Use `onEphemeral()` instead. This alias will be removed in v1.0.
+     */
     public onBroadcast(handler: EphemeralHandler): Unsubscribe {
+        this.logger.warn('onBroadcast() is deprecated. Use onEphemeral() instead.');
         if (typeof handler !== 'function') {
             throw new Error('Broadcast handler must be a function');
         }

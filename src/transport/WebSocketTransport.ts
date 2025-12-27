@@ -1,11 +1,9 @@
 import { EventEmitter } from '../utils/EventEmitter';
 import { Transport, TransportEvents, TransportStatus } from './Transport';
 import { ConnectionError } from '../errors';
-
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
 import { MsgType } from '../schema/nmeshed/msg-type';
-import { Op } from '../schema/nmeshed/op';
 
 export interface WebSocketTransportConfig {
     url: string;
@@ -268,52 +266,8 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             } catch { /* Not JSON, try binary */ }
         }
 
-        try {
-            const buf = new flatbuffers.ByteBuffer(bytes);
-            const wire = WirePacket.getRootAsWirePacket(buf);
-            const msgType = wire.msgType();
-
-
-
-            switch (msgType) {
-                case MsgType.Op: {
-                    // STRICT BINARY PROTOCOL: Use Op table from FlatBuffers
-                    const op = wire.op();
-                    if (op) {
-                        const key = op.key();
-                        const valBytes = op.valueArray();
-
-                        // Propagate { key, value } to SyncEngine
-                        // Even deletes (null/empty value) should be propagated if they have a key
-                        if (key) {
-                            this.emit('message', {
-                                key: key,
-                                value: valBytes || new Uint8Array(0)
-                            });
-                        }
-                    }
-                    break;
-                }
-                case MsgType.Sync: {
-                    const payload = wire.payloadArray();
-                    if (payload) {
-                        this.emit('sync', payload);
-                    }
-                    break;
-                }
-                case MsgType.Signal: {
-                    const payload = wire.payloadArray();
-                    if (payload) {
-                        this.emit('ephemeral', payload, 'server');
-                    }
-                    break;
-                }
-                default:
-                    this.log(`Unknown MsgType: ${msgType}`);
-            }
-        } catch (e) {
-            this.log(`FB Decode failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        // Transport is a dumb pipe - emit raw bytes, let SyncEngine handle parsing
+        this.emit('message', bytes);
     }
 
     private handleMessage(event: MessageEvent): void {

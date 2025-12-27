@@ -147,7 +147,7 @@ describe('WebSocketTransport', () => {
     });
 
     describe('Binary Protocol - handleMessage()', () => {
-        it('routes MsgType.Op to message event', () => {
+        it('emits raw bytes for MsgType.Op packets', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
             const messageHandler = vi.fn();
             transport.on('message', messageHandler);
@@ -159,13 +159,16 @@ describe('WebSocketTransport', () => {
             MockWebSocket.instances[0].simulateBinaryMessage(opPacket);
 
             expect(messageHandler).toHaveBeenCalled();
+            // Verify raw bytes are emitted (not parsed object)
+            const emittedData = messageHandler.mock.calls[0][0];
+            expect(emittedData).toBeInstanceOf(Uint8Array);
             transport.disconnect();
         });
 
-        it('routes MsgType.Sync to sync event', () => {
+        it('emits raw bytes for MsgType.Sync packets', () => {
             const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const syncHandler = vi.fn();
-            transport.on('sync', syncHandler);
+            const messageHandler = vi.fn();
+            transport.on('message', messageHandler);
 
             transport.connect();
             MockWebSocket.instances[0].simulateOpen();
@@ -173,7 +176,10 @@ describe('WebSocketTransport', () => {
             const syncPacket = createWireSync(new Uint8Array([1, 2, 3]));
             MockWebSocket.instances[0].simulateBinaryMessage(syncPacket);
 
-            expect(syncHandler).toHaveBeenCalled();
+            expect(messageHandler).toHaveBeenCalled();
+            // Verify raw bytes are emitted
+            const emittedData = messageHandler.mock.calls[0][0];
+            expect(emittedData).toBeInstanceOf(Uint8Array);
             transport.disconnect();
         });
 
