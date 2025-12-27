@@ -22,7 +22,7 @@ export class MockWebSocket {
     onclose: ((event: any) => void) | null = null;
     onerror: ((event: any) => void) | null = null;
 
-    constructor(public url: string, private server: MockRelayServer) {
+    constructor(public url: string, public server: MockRelayServer) {
         MockWebSocket.instances.push(this);
         // Do not auto-connect. Tests call simulateOpen().
     }
@@ -176,7 +176,9 @@ export class MockWebSocket {
     }
 
     simulateTextMessage(data: any) {
-        this.simulateServerMessage(data);
+        if (!this.onmessage) return;
+        const text = typeof data === 'string' ? data : JSON.stringify(data);
+        this.onmessage({ data: text });
     }
 
     simulateRawBinaryMessage(data: ArrayBuffer) {
@@ -241,6 +243,7 @@ export const defaultMockServer = new MockRelayServer();
 
 export class MockWasmCore {
     state: Record<string, any> = {};
+    workspaceId: string = 'test-ws';
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     constructor(_token: string) {
@@ -255,6 +258,10 @@ export class MockWasmCore {
         return this.state;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async set(key: string, value: any) {
+        // Mock implementation
+    }
     apply_local_op(key: string, value: Uint8Array) {
 
         // Update server state 
@@ -289,7 +296,7 @@ export class MockWasmCore {
         builder.finish(packetOffset);
 
         // Debug the generated packet
-        const packet = builder.asUint8Array();
+        // const packet = builder.asUint8Array();
         // console.log(`[MockWasmCore] Generated Packet first 20 bytes: ${Array.from(packet.slice(0, 20))}`);
 
 
@@ -341,4 +348,164 @@ export function teardownTestMocks() {
     defaultMockServer.reset();
     MockWebSocket.instances = [];
     vi.restoreAllMocks();
+}
+
+MockWebSocket.instances = [];
+// Removed vi.restoreAllMocks() from here
+
+/**
+ * A mock version of the NMeshedClient for use in React hooks and component tests.
+ */
+export class MockNMeshedClient {
+    public status = 'DISCONNECTED';
+    private listeners: Record<string, Function> = {};
+    private presence: any[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    constructor(config?: any) {
+        // No-op
+    }
+
+    async connect() {
+        this.status = 'READY';
+    }
+
+    disconnect() {
+        this.status = 'DISCONNECTED';
+    }
+
+    on(event: string, handler: Function) {
+        this.listeners[event] = handler;
+        return () => { delete this.listeners[event]; };
+    }
+
+    off(event: string) {
+        delete this.listeners[event];
+    }
+
+    onStatusChange(handler: Function) {
+        return this.on('status', handler);
+    }
+
+    onQueueChange(handler: Function) {
+        return this.on('queue', handler);
+    }
+
+    onMessage(handler: Function) {
+        return this.on('message', handler);
+    }
+
+    async getPresence() {
+        return this.presence;
+    }
+
+    // Test helper to set presence
+    setPresence(users: any[]) {
+        this.presence = users;
+    }
+
+    // Test helper to trigger events
+    emit(event: string, ...args: any[]) {
+        if (this.listeners[event]) {
+            this.listeners[event](...args);
+        }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async ping(userId: string) {
+        return 10;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async set(key: string, value: any) {
+        // Mock implementation
+    }
+}
+// WebRTC Mocks
+export class MockRTCDataChannel {
+    readyState = 'connecting';
+    binaryType = 'blob';
+    onopen: (() => void) | null = null;
+    onmessage: ((event: any) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: ((event: any) => void) | null = null;
+    label: string;
+
+    constructor(label: string) {
+        this.label = label;
+        setTimeout(() => {
+            this.readyState = 'open';
+            if (this.onopen) this.onopen();
+        }, 10);
+    }
+
+    send(data: any) {
+        // Echo or mock send
+    }
+
+    close() {
+        this.readyState = 'closed';
+        if (this.onclose) this.onclose();
+    }
+}
+
+export class MockRTCPeerConnection {
+    iceServers: any;
+    signalingState = 'stable';
+    remoteDescription: any = null;
+    localDescription: any = null;
+    onicecandidate: ((event: any) => void) | null = null;
+    ondatachannel: ((event: any) => void) | null = null;
+    dataChannels: MockRTCDataChannel[] = [];
+
+    constructor(config: any) {
+        this.iceServers = config.iceServers;
+    }
+
+    createDataChannel(label: string) {
+        const dc = new MockRTCDataChannel(label);
+        this.dataChannels.push(dc);
+        return dc;
+    }
+
+    async createOffer() {
+        return { type: 'offer', sdp: 'mock-sdp-offer' };
+    }
+
+    async createAnswer() {
+        return { type: 'answer', sdp: 'mock-sdp-answer' };
+    }
+
+    async setLocalDescription(desc: any) {
+        this.localDescription = desc;
+    }
+
+    async setRemoteDescription(desc: any) {
+        this.remoteDescription = desc;
+        this.signalingState = 'stable'; // simplified
+    }
+
+    async addIceCandidate(candidate: any) {
+        // no-op
+    }
+
+    close() {
+        this.signalingState = 'closed';
+    }
+}
+
+export class MockRTCSessionDescription {
+    type: string;
+    sdp: string;
+    constructor(init: { type: string, sdp: string }) {
+        this.type = init.type;
+        this.sdp = init.sdp;
+    }
+}
+
+export class MockRTCIceCandidate {
+    candidate: string;
+    constructor(init: { candidate: string }) {
+        this.candidate = init.candidate;
+    }
 }

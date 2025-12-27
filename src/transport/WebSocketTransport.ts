@@ -126,7 +126,8 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
     }
 
     public send(data: Uint8Array | string): void {
-        if (this.status !== 'CONNECTED' || !this.ws) return;
+        const isReady = this.status === 'CONNECTED' || (this.ws && (this.ws.readyState === 1 || this.ws.readyState === (globalThis as any).WebSocket?.OPEN));
+        if (!isReady || !this.ws) return;
 
         if (this.packetLoss > 0 && Math.random() < this.packetLoss) {
             this.log('Packet dropped (simulated)');
@@ -158,7 +159,9 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
     public sendEphemeral(payload: unknown, to?: string): void {
         const sendReady = (data: string | Uint8Array) => {
-            if (!this.ws) return;
+            const isReady = this.status === 'CONNECTED' || (this.ws && (this.ws.readyState === 1 || this.ws.readyState === (globalThis as any).WebSocket?.OPEN));
+            if (!isReady || !this.ws) return;
+
             if (this.packetLoss > 0 && Math.random() < this.packetLoss) {
                 this.log('Packet dropped (simulated)');
                 return;
@@ -166,7 +169,6 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
             const deliver = () => {
                 if (!this.ws) return;
-
                 this.ws.send(data);
             };
 

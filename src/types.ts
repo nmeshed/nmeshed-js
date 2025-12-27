@@ -20,6 +20,7 @@ export interface NMeshedConfig {
     maxQueueSize?: number;
     debug?: boolean;
     transport?: 'server' | 'p2p' | 'hybrid';
+    replicationFactor?: number;
 }
 
 /**
@@ -43,7 +44,8 @@ export const ConfigSchema = z.object({
     heartbeatMaxMissed: z.number().int().min(1).optional().default(3),
     maxQueueSize: z.number().int().min(0).optional().default(1000),
     debug: z.boolean().optional().default(false),
-    transport: z.enum(['server', 'p2p', 'hybrid']).optional().default('server')
+    transport: z.enum(['server', 'p2p', 'hybrid']).optional().default('server'),
+    replicationFactor: z.number().int().min(1).optional().default(20)
 }).refine(data => !!(data.token || data.apiKey), {
     message: "Either token or apiKey must be provided",
     path: ["token"]
@@ -60,16 +62,24 @@ export const DEFAULT_CONFIG: Partial<ResolvedConfig> = {
     heartbeatMaxMissed: 3,
     maxQueueSize: 1000,
     debug: false,
-    transport: 'server'
+    transport: 'server',
+    replicationFactor: 20
 };
 
 /**
  * Connection status of the nMeshed client.
+ * 
+ * Lifecycle: IDLE → CONNECTING → CONNECTED → SYNCING → READY
+ * 
+ * - SYNCING: WebSocket connected, awaiting initial state snapshot
+ * - READY: Initial sync complete, all operations allowed
  */
 export type ConnectionStatus =
     | 'IDLE'
     | 'CONNECTING'
     | 'CONNECTED'
+    | 'SYNCING'
+    | 'READY'
     | 'DISCONNECTED'
     | 'RECONNECTING'
     | 'ERROR';

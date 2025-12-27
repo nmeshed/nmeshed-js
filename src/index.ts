@@ -19,6 +19,12 @@
  * @packageDocumentation
  */
 
+export * from './react/useNmeshed';
+export * from './react/context';
+export * from './react/useStore';
+export * from './react/usePresence';
+export * from './react/useSyncSession';
+
 export { NMeshedClient } from './client';
 
 // Types
@@ -48,7 +54,7 @@ export { encodeValue, decodeValue, isBinary } from './codec';
 
 // Schema and Serialization
 export type { Schema, SchemaDefinition, SchemaField, InferSchema } from './schema/SchemaBuilder';
-export { defineSchema, SchemaSerializer } from './schema/SchemaBuilder';
+export { defineSchema, SchemaSerializer, findSchema, registerGlobalSchema } from './schema/SchemaBuilder';
 export { SystemSchemas, TickSyncSchema, PresenceSchema } from './schema/SystemSchema';
 
 // Debug Utilities (development only)

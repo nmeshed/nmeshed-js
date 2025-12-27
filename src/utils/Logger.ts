@@ -59,6 +59,12 @@ export class Logger {
         }
     }
 
+    public conn(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.DEBUG) {
+            this.log('debug', 'CONN', message, ...args);
+        }
+    }
+
     public warn(message: string, ...args: any[]): void {
         if (this.level <= LogLevel.WARN) {
             this.log('warn', 'WARN', message, ...args);

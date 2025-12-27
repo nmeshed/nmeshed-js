@@ -33,41 +33,23 @@ const advance = async (ms: number) => {
 // TESTS
 // --------------------------------------------------------------------------
 
-// Define TestMockWebSocket at module level
-class TestMockWebSocket extends MockWebSocket {
-    constructor(url: string) {
-        super(url, defaultMockServer);
-        // Auto-connect for hooks tests using microtask
-        Promise.resolve().then(() => {
-            this.simulateOpen();
-        });
-    }
-}
+import { installGlobalMockWebSocket } from '../test-utils/setup';
 
 // Global WebSocket Stubbing for all tests in this file
-const originalWebSocket = global.WebSocket;
+let restoreWS: () => void;
 
 beforeAll(() => {
     // No-op
 });
 
 afterAll(() => {
-    global.WebSocket = originalWebSocket;
-    if (typeof window !== 'undefined') {
-        (window as any).WebSocket = originalWebSocket;
-    }
+    if (restoreWS) restoreWS();
 });
 
 beforeEach(() => {
     setupTestMocks();
-
-    // Force override both global and window in beforeEach to survive env resets
-    global.WebSocket = TestMockWebSocket as any;
-    if (typeof window !== 'undefined') {
-        (window as any).WebSocket = TestMockWebSocket;
-    }
-    // vi.stubGlobal('WebSocket', TestMockWebSocket);
-    // console.log(`[TEST SETUP] WebSocket is: ${global.WebSocket.name}, window.WebSocket is: ${(window as any).WebSocket?.name}`);
+    // Auto-connect set to true for hooks tests
+    restoreWS = installGlobalMockWebSocket({ autoConnect: true });
 });
 
 afterEach(() => {
@@ -92,7 +74,7 @@ describe('useNmeshed', () => {
     it('connects and updates status', async () => {
         const { result } = renderHook(() => useNmeshed(defaultConfig));
         await advance(100);
-        await waitFor(() => expect(result.current.status).toBe('CONNECTED'));
+        await waitFor(() => expect(['CONNECTED', 'SYNCING', 'READY']).toContain(result.current.status));
     });
 
     it('triggers onError callback on connection failure', async () => {
@@ -100,7 +82,7 @@ describe('useNmeshed', () => {
         const { result } = renderHook(() => useNmeshed({ ...defaultConfig, onError }));
 
         await advance(100);
-        await waitFor(() => expect(result.current.status).toBe('CONNECTED'));
+        await waitFor(() => expect(['CONNECTED', 'SYNCING', 'READY']).toContain(result.current.status));
 
         // Simulate connection error by closing with a non-reconnectable code after max retries
         const ws = Array.from(defaultMockServer.clients)[0];

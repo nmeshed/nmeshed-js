@@ -68,7 +68,8 @@ function packMessage(namespace: string, key: string, value: Uint8Array | null): 
     return buf;
 }
 
-function unpackMessage(buf: Uint8Array): { namespace: string, key: string, data: Uint8Array | null } | null {
+/** @internal */
+export function unpackMessage(buf: Uint8Array): { namespace: string, key: string, data: Uint8Array | null } | null {
     if (buf.length < 3) return null;
     let offset = 0;
 
@@ -128,7 +129,8 @@ function packSnapshot(entries: Map<string, Uint8Array>): Uint8Array {
     return buf;
 }
 
-function unpackSnapshot(buf: Uint8Array): Map<string, Uint8Array> {
+/** @internal */
+export function unpackSnapshot(buf: Uint8Array): Map<string, Uint8Array> {
     const entries = new Map<string, Uint8Array>();
     if (buf.length < 4) return entries;
 

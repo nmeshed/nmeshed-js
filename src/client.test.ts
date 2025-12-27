@@ -44,22 +44,18 @@ describe('NMeshedClient', () => {
     // Global WebSocket Stubbing for all tests in this file
     const originalWebSocket = (globalThis as any).WebSocket;
 
-    beforeAll(() => {
-        class TestMockWebSocket extends MockWebSocket {
-            constructor(url: string) {
-                super(url, defaultMockServer);
-            }
+    class TestMockWebSocket extends MockWebSocket {
+        constructor(url: string) {
+            super(url, defaultMockServer);
         }
+    }
 
-        // Force override both global and window
-        (globalThis as any).WebSocket = TestMockWebSocket as any;
-        if (typeof window !== 'undefined') {
-            (window as any).WebSocket = TestMockWebSocket;
-        }
-        vi.stubGlobal('WebSocket', TestMockWebSocket);
+    beforeAll(() => {
+        // No-op
     });
 
     afterAll(() => {
+        vi.stubGlobal('WebSocket', originalWebSocket);
         (globalThis as any).WebSocket = originalWebSocket;
         if (typeof window !== 'undefined') {
             (window as any).WebSocket = originalWebSocket;
@@ -68,6 +64,13 @@ describe('NMeshedClient', () => {
 
     beforeEach(() => {
         vi.useFakeTimers();
+
+        // Enforce mock in beforeEach to survive environment resets
+        vi.stubGlobal('WebSocket', TestMockWebSocket);
+        (globalThis as any).WebSocket = TestMockWebSocket;
+        if (typeof window !== 'undefined') {
+            (window as any).WebSocket = TestMockWebSocket;
+        }
 
         // Reset centralized mocks (instances, server state)
         setupTestMocks();
@@ -133,7 +136,10 @@ describe('NMeshedClient', () => {
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
-            expect(client.getStatus()).toBe('CONNECTED');
+            // Zen: CONNECTED is now transient. 
+            // Depending on mock server speed, we might be SYNCING or already READY.
+            const status = client.getStatus();
+            expect(['SYNCING', 'READY']).toContain(status);
         });
 
         it('resolves immediately if already connected', async () => {
@@ -157,12 +163,34 @@ describe('NMeshedClient', () => {
         it('times out if connection takes too long', async () => {
             const client = new NMeshedClient({
                 ...defaultConfig,
-                connectionTimeout: 1000,
+                connectionTimeout: 100,
             });
             const connectPromise = client.connect();
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-            vi.advanceTimersByTime(1001);
-            await expect(connectPromise).rejects.toThrow('timed out');
+
+            // Trigger timeout
+            vi.advanceTimersByTime(200);
+
+            await expect(connectPromise).rejects.toThrow(/timed out/i);
+        });
+
+        it('awaitReady resolves when sync is complete', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            client.connect(); // Start connection
+            const readyPromise = client.awaitReady();
+
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+
+            // Should still be pending until init message
+            let resolved = false;
+            readyPromise.then(() => { resolved = true; });
+            vi.advanceTimersByTime(0); // Process microtasks
+            expect(resolved).toBe(false);
+
+            MockWebSocket.instances[0].simulateBinaryMessage({ type: 'init', data: {} });
+            await readyPromise;
+            expect(client.getStatus()).toBe('READY');
         });
     });
 
@@ -260,9 +288,35 @@ describe('NMeshedClient', () => {
             expect(l1).not.toHaveBeenCalled();
             expect(l2).toHaveBeenCalledTimes(1);
         });
+
+        it('onKeyChange filters by pattern and provides typed values', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const handler = vi.fn();
+            client.onKeyChange('player:*', handler);
+
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            // Matching key
+            MockWebSocket.instances[0].simulateBinaryMessage({
+                type: 'op',
+                payload: { key: 'player:123', value: { x: 10 }, timestamp: 100 }
+            });
+
+            // Non-matching key
+            MockWebSocket.instances[0].simulateBinaryMessage({
+                type: 'op',
+                payload: { key: 'config:main', value: { d: 1 }, timestamp: 101 }
+            });
+
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(handler).toHaveBeenCalledWith('player:123', { x: 10 }, expect.objectContaining({ isOptimistic: false }));
+        });
     });
 
-    describe('sendOperation', () => {
+    describe('set', () => {
         it('sends operation when connected', async () => {
             const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
@@ -339,7 +393,10 @@ describe('NMeshedClient', () => {
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
             MockWebSocket.instances[0].simulateOpen();
             await connectPromise;
-            expect(listener).toHaveBeenCalledWith('CONNECTED');
+            // Depending on timing, we might see SYNCING or move straight to READY
+            const calls = listener.mock.calls.map(c => c[0]);
+            expect(calls).toContain('CONNECTING');
+            expect(calls.some(s => s === 'SYNCING' || s === 'READY')).toBe(true);
         });
     });
 
@@ -480,7 +537,8 @@ describe('NMeshedClient', () => {
                 payload: { userId: 'user-456', cursor: { x: 100, y: 200 } },
             });
             expect(ephemeralHandler).toHaveBeenCalledWith(
-                expect.objectContaining({ userId: 'user-456' })
+                expect.objectContaining({ userId: 'user-456' }),
+                undefined
             );
         });
 
@@ -737,7 +795,8 @@ describe('NMeshedClient', () => {
 
             // Advance time to trigger heartbeat - should not throw
             vi.advanceTimersByTime(200);
-            expect(client.getStatus()).toBe('CONNECTED');
+            const status = client.getStatus();
+            expect(['SYNCING', 'READY']).toContain(status);
         });
 
         it('throws if onEphemeral handler is not a function', () => {
@@ -959,8 +1018,8 @@ describe('NMeshedClient', () => {
             it('warns when broadcast is called while disconnected', () => {
                 const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
                 const client = new NMeshedClient(defaultConfig);
-                client.broadcast({ msg: 'test' });
-                expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not connected'));
+                client.broadcast({ type: 'test' });
+                expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/broadcast.*called while/i));
                 warnSpy.mockRestore();
             });
         });

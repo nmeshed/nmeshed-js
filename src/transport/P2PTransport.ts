@@ -292,16 +292,9 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
                 if (sync) {
                     this.emit('sync', bytes);
                 } else {
+                    // Ephemeral message in payload - emit binary directly (no JSON fallback)
                     const payload = wire.payloadArray();
                     if (payload) {
-                        // Attempt to parse as JSON if it's an ephemeral message
-                        if (payload[0] === 123) { // '{'
-                            try {
-                                const json = JSON.parse(new TextDecoder().decode(payload));
-                                this.emit('ephemeral', json.payload, json.from);
-                                return;
-                            } catch { /* ignore */ }
-                        }
                         this.emit('ephemeral', payload);
                     }
                 }

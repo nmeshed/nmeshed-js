@@ -221,7 +221,7 @@ export function NMeshedHUD() {
  * Status badge with dynamic styling based on connection state.
  */
 function StatusBadge({ status }: StatusBadgeProps) {
-    const isConnected = status === 'ACTIVE' || status === 'CONNECTED';
+    const isConnected = status === 'ACTIVE' || status === 'CONNECTED' || status === 'SYNCING' || status === 'READY';
     const badgeStyle: React.CSSProperties = {
         fontSize: '10px',
         fontWeight: 600,

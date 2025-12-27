@@ -137,7 +137,7 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
             if (!isMounted) return;
             setStatus(newStatus);
 
-            if (newStatus === 'CONNECTED') {
+            if (newStatus === 'READY') {
                 onConnect?.();
             } else if (newStatus === 'DISCONNECTED') {
                 onDisconnect?.();
@@ -199,7 +199,7 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
         set,
         get,
         status,
-        isConnected: status === 'CONNECTED',
+        isConnected: status === 'CONNECTED' || status === 'SYNCING' || status === 'READY',
         client,
         connect,
         disconnect,

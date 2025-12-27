@@ -84,7 +84,7 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
         let mounted = true;
 
         const fetchInitial = async () => {
-            if (client.getStatus() === 'CONNECTED') {
+            if (client.isLive) {
                 try {
                     const initialUsers = await client.getPresence();
                     if (mounted) {
@@ -99,7 +99,7 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
         fetchInitial();
 
         const unsubscribeStatus = client.onStatusChange((status) => {
-            if (status === 'CONNECTED') {
+            if (status === 'CONNECTED' || status === 'READY') {
                 fetchInitial();
             }
         });
@@ -130,7 +130,7 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
 
     // 2. Periodic Latency Updates (Pings)
     useEffect(() => {
-        if (client.getStatus() !== 'CONNECTED') return;
+        if (!client.isLive) return;
 
         // Type-safe ping using type guard
         if (!hasPingMethod(client)) return;

@@ -73,7 +73,7 @@ describe('Integration: Host Rejoin', () => {
         // Use advanceTimers logic
         await vi.advanceTimersByTimeAsync(100);
         await hostConnect;
-        expect(host.getStatus()).toBe('CONNECTED');
+        expect(host.getStatus()).toBe('READY');
 
         // 2. Host Sets State
         host.set('x', 1);
@@ -111,7 +111,7 @@ describe('Integration: Host Rejoin', () => {
         const host2Connect = host2.connect();
         await vi.advanceTimersByTimeAsync(100);
         await host2Connect;
-        expect(host2.getStatus()).toBe('CONNECTED');
+        expect(host2.getStatus()).toBe('READY');
 
         // 8. Verify Host2 has Full State
         expect(host2.get('x')).toBe(1);
@@ -176,7 +176,7 @@ describe('Integration: Host Rejoin', () => {
             // 1. Random Churn (Connect/Disconnect)
             const toggleUserIdx = Math.floor(Math.random() * CLIENT_COUNT);
             const toggler = clients[toggleUserIdx];
-            if (toggler.getStatus() === 'CONNECTED') {
+            if (toggler.isLive) {
                 toggler.disconnect();
             } else if (toggler.getStatus() === 'DISCONNECTED' || toggler.getStatus() === 'IDLE') {
                 // Async connect, let simulation proceed
@@ -206,7 +206,7 @@ describe('Integration: Host Rejoin', () => {
         // --- Convergence & Final Assertion ---
         // 1. Connect ALL users
         for (const c of clients) {
-            if (c.getStatus() !== 'CONNECTED') {
+            if (!c.isLive) {
                 c.connect().catch(() => { });
             }
         }

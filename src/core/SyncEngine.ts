@@ -9,8 +9,8 @@ import { SystemSchemas } from '../schema/SystemSchema';
 import { Logger } from '../utils/Logger';
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
-import { MsgType } from '../schema/nmeshed/msg-type';
 import { SyncPacket } from '../schema/nmeshed/sync-packet';
+import { MessageRouter, IncomingMessage, OpMessage, SyncMessage, InitMessage, SignalMessage } from './MessageRouter';
 
 
 /**
@@ -95,6 +95,9 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     // Schema registry for automatic encoding/decoding
     private schemaRegistry = new Map<string, Schema<any>>();
 
+    // The Single Parsing Gateway
+    private router: MessageRouter;
+
     constructor(workspaceId: string, mode: string = 'crdt', maxQueueSize: number = 1000, debug: boolean = false) {
         super();
         this.workspaceId = workspaceId;
@@ -102,6 +105,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         this.maxQueueSize = maxQueueSize;
         this.dbName = `nmeshed_q_${workspaceId}`;
         this.logger = new Logger('SyncEngine', debug);
+        this.router = new MessageRouter(debug);
     }
 
     public async boot(): Promise<void> {
@@ -279,9 +283,111 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
     }
 
+    // =========================================================================
+    // THE SINGLE GATE: Unified Message Entry Point
+    // =========================================================================
+
+    /**
+     * The Single Entry Point for ALL incoming messages.
+     * 
+     * This is the Zen Gateway - all parsed messages flow through here.
+     * The type system guides the developer to handle each case explicitly.
+     * 
+     * @param message A pre-parsed IncomingMessage from MessageRouter
+     */
+    public receive(message: IncomingMessage): void {
+        if (this.isDestroyed) return;
+
+        if (!this.core) {
+            this.logger.debug('Core not ready, queuing message');
+            // Convert back to queueable format
+            if (message.type === 'op' || message.type === 'sync') {
+                this.bootQueue.push({ type: 'delta', data: message });
+            }
+            return;
+        }
+
+        switch (message.type) {
+            case 'op':
+                this.processOp(message);
+                break;
+            case 'sync':
+                this.processSync(message);
+                break;
+            case 'init':
+                this.processInit(message);
+                break;
+            case 'signal':
+                this.processSignal(message);
+                break;
+        }
+    }
+
+    /**
+     * Process an Op (operation) message.
+     */
+    private processOp(msg: OpMessage): void {
+        const { key, value } = msg;
+        if (value) {
+            const decoded = this.decodeBinary(key, value);
+            this.handleRemoteOp(key, decoded);
+        } else {
+            // Delete operation
+            this.handleRemoteOp(key, null);
+        }
+    }
+
+    /**
+     * Process a Sync (snapshot/state vector) message.
+     */
+    private processSync(msg: SyncMessage): void {
+        if (msg.snapshot) {
+            this.logger.info(`Received binary snapshot (${msg.snapshot.byteLength} bytes)`);
+            this.applyRemoteDelta(msg.snapshot);
+        }
+
+        if (msg.stateVector && msg.stateVector.size > 0) {
+            this.logger.debug(`Received state vector with ${msg.stateVector.size} entries`);
+            // TODO: Use state vector to produce minimal catch-up delta
+        }
+
+        if (msg.ackSeq && msg.ackSeq > 0n) {
+            this.logger.debug(`Received ACK for sequence ${msg.ackSeq}`);
+            // TODO: Clear local queue up to ackSeq
+        }
+    }
+
+    /**
+     * Process an Init (initial snapshot) message.
+     */
+    private processInit(msg: InitMessage): void {
+        this.handleInitSnapshot(msg.data);
+    }
+
+    /**
+     * Process a Signal (ephemeral) message.
+     */
+    private processSignal(msg: SignalMessage): void {
+        const { payload, from } = msg;
+        if (payload instanceof Uint8Array) {
+            try {
+                const decoded = this.decodeBinary('', payload);
+                this.emit('ephemeral', decoded, from || 'server');
+            } catch {
+                this.emit('ephemeral', payload, from || 'server');
+            }
+        } else {
+            this.emit('ephemeral', payload, from || 'server');
+        }
+    }
+
+    // =========================================================================
+    // LEGACY ENTRY POINTS (Backward Compatibility)
+    // =========================================================================
+
     /**
      * Entry point for ALL incoming binary messages from transport.
-     * Handles WirePacket parsing and routes to appropriate handler.
+     * Now delegates to the unified receive() method via MessageRouter.
      */
     public applyRawMessage(binary: Uint8Array): void {
         if (this.isDestroyed || !binary || binary.length === 0) return;
@@ -292,59 +398,13 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             return;
         }
 
-        try {
-            const buf = new flatbuffers.ByteBuffer(binary);
-            const wire = WirePacket.getRootAsWirePacket(buf);
-            const msgType = wire.msgType();
-
-            switch (msgType) {
-                case MsgType.Op: {
-                    const op = wire.op();
-                    if (op) {
-                        const key = op.key();
-                        const valBytes = op.valueArray();
-                        if (key && valBytes) {
-                            const decoded = this.decodeBinary(key, valBytes);
-                            this.handleRemoteOp(key, decoded);
-                        } else if (key) {
-                            // Delete operation (empty value)
-                            this.handleRemoteOp(key, null);
-                        }
-                    }
-                    break;
-                }
-                case MsgType.Sync: {
-                    const sync = wire.sync();
-                    if (sync) {
-                        this.processBinarySyncInternal(sync);
-                    } else {
-                        // Fallback: try payload as raw sync data
-                        const payload = wire.payloadArray();
-                        if (payload) {
-                            this.processBinarySyncInternal(payload);
-                        }
-                    }
-                    break;
-                }
-                case MsgType.Signal: {
-                    // Ephemeral data - emit for client handling
-                    const payload = wire.payloadArray();
-                    if (payload) {
-                        try {
-                            const decoded = this.decodeBinary('', payload);
-                            this.emit('ephemeral', decoded, 'server');
-                        } catch {
-                            this.emit('ephemeral', payload, 'server');
-                        }
-                    }
-                    break;
-                }
-                default:
-                    this.logger.warn(`Unknown MsgType: ${msgType}`);
-            }
-        } catch (e) {
-            this.logger.debug('WirePacket parse failed, attempting fallback decode:', e);
-            // Fallback: try as raw encoded value
+        // Use the Single Parsing Gateway
+        const message = this.router.parse(binary);
+        if (message) {
+            this.receive(message);
+        } else {
+            // Fallback for non-WirePacket data (legacy or raw CRDT deltas)
+            this.logger.debug('Router could not parse message, attempting fallback');
             this.applyRemoteDelta(binary);
         }
     }
