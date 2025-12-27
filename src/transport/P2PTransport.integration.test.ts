@@ -147,33 +147,34 @@ describe('P2PTransport Integration Tests', () => {
             expect(emittedData).toBeInstanceOf(Uint8Array);
         });
 
-        it('emits sync event for MsgType.Sync with SyncPacket', () => {
+        it('emits message event for MsgType.Sync packets (dumb pipe architecture)', () => {
             transport.connect();
-            const syncSpy = vi.fn();
-            transport.on('sync', syncSpy);
+            const messageSpy = vi.fn();
+            transport.on('message', messageSpy);
 
             const syncPacket = createSyncPacket(encodeValue({ syncData: 123 }));
 
-            // Simulate receiving via P2P
+            // Simulate receiving via P2P - Transport emits raw bytes, SyncEngine parses
             connectionListeners.onMessage('peer-1', syncPacket);
 
-            expect(syncSpy).toHaveBeenCalled();
+            expect(messageSpy).toHaveBeenCalled();
         });
 
-        it('emits ephemeral with binary payload when MsgType.Sync has no SyncPacket', () => {
+        it('emits message event for MsgType.Sync with payload (dumb pipe architecture)', () => {
             transport.connect();
-            const ephemeralSpy = vi.fn();
-            transport.on('ephemeral', ephemeralSpy);
+            const messageSpy = vi.fn();
+            transport.on('message', messageSpy);
 
             // Binary ephemeral payload (not JSON - strict binary protocol)
             const binaryPayload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]);
             const packet = createSyncPayloadPacket(binaryPayload);
 
+            // Transport emits raw bytes - SyncEngine's MessageRouter handles parsing
             connectionListeners.onMessage('peer-1', packet);
 
-            expect(ephemeralSpy).toHaveBeenCalled();
-            // Verify binary was emitted directly, not parsed
-            const emittedPayload = ephemeralSpy.mock.calls[0][0];
+            expect(messageSpy).toHaveBeenCalled();
+            // Verify the raw WirePacket is emitted (not parsed components)
+            const emittedPayload = messageSpy.mock.calls[0][0];
             expect(emittedPayload).toBeInstanceOf(Uint8Array);
         });
 

@@ -7,9 +7,6 @@ import type { Schema } from '../schema/SchemaBuilder';
 import { findSchema } from '../schema/SchemaBuilder';
 import { SystemSchemas } from '../schema/SystemSchema';
 import { Logger } from '../utils/Logger';
-import * as flatbuffers from 'flatbuffers';
-import { WirePacket } from '../schema/nmeshed/wire-packet';
-import { SyncPacket } from '../schema/nmeshed/sync-packet';
 import { MessageRouter, IncomingMessage, OpMessage, SyncMessage, InitMessage, SignalMessage } from './MessageRouter';
 
 
@@ -152,11 +149,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             const queue = [...this.bootQueue];
             this.bootQueue = [];
             for (const item of queue) {
-                if (item.type === 'delta') {
-                    this.applyRemoteDelta(item.data);
-                } else {
-                    this.handleBinarySync(item.data);
-                }
+                this.applyRawMessage(item.data);
             }
         }
     }
@@ -343,7 +336,17 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private processSync(msg: SyncMessage): void {
         if (msg.snapshot) {
             this.logger.info(`Received binary snapshot (${msg.snapshot.byteLength} bytes)`);
-            this.applyRemoteDelta(msg.snapshot);
+            if (this.core) {
+                const result = this.core.merge_remote_delta(msg.snapshot);
+                if (result) {
+                    // Result can be a single op or an array of ops
+                    if (Array.isArray(result)) {
+                        result.forEach(op => this.handleOpUpdate(op));
+                    } else {
+                        this.handleOpUpdate(result);
+                    }
+                }
+            }
         }
 
         if (msg.stateVector && msg.stateVector.size > 0) {
@@ -403,94 +406,11 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         if (message) {
             this.receive(message);
         } else {
-            // Fallback for non-WirePacket data (legacy or raw CRDT deltas)
-            this.logger.debug('Router could not parse message, attempting fallback');
-            this.applyRemoteDelta(binary);
+            // If MessageRouter can't parse, log and ignore (strict binary protocol)
+            this.logger.warn('MessageRouter could not parse binary message');
         }
     }
 
-    /**
-     * Entry point for incoming remote deltas (Ops or Snapshots).
-     * @deprecated Use applyRawMessage for new code
-     */
-    public applyRemoteDelta(binary: Uint8Array): void {
-        if (this.isDestroyed || !binary) return;
-
-        if (!this.core) {
-            this.logger.debug('Core not ready, queuing remote delta');
-            this.bootQueue.push({ type: 'delta', data: binary });
-            return;
-        }
-
-        let result: any;
-        if (binary instanceof Uint8Array) {
-            result = this.decodeBinary('', binary);
-        } else {
-            result = binary;
-        }
-        this.handleGenericDelta(result);
-    }
-
-    /**
-     * Entry point for specialized binary sync packets (Snapshots/State Vectors).
-     */
-    public handleBinarySync(data: Uint8Array | SyncPacket): void {
-        if (this.isDestroyed || !data) return;
-
-        if (!this.core) {
-            this.logger.debug('Core not ready, queuing binary sync');
-            this.bootQueue.push({ type: 'sync', data });
-            return;
-        }
-
-        this.processBinarySyncInternal(data);
-    }
-
-    private processBinarySyncInternal(data: Uint8Array | SyncPacket): void {
-        let sync: SyncPacket;
-        if (data instanceof Uint8Array) {
-            try {
-                const buf = new flatbuffers.ByteBuffer(data);
-                const wire = WirePacket.getRootAsWirePacket(buf);
-                const syncData = wire.sync();
-                if (!syncData) {
-                    this.logger.warn('Received sync event but no SyncPacket found in WirePacket');
-                    return;
-                }
-                sync = syncData;
-            } catch (e) {
-                this.logger.error('Failed to unpack binary sync packet:', e);
-                return;
-            }
-        } else {
-            sync = data;
-        }
-
-        const snapshot = sync.snapshotArray();
-        if (snapshot) {
-            this.logger.info(`Received binary snapshot (${snapshot.byteLength} bytes)`);
-            this.applyRemoteDelta(snapshot);
-        }
-
-        const svCount = sync.stateVectorLength();
-        if (svCount > 0) {
-            const stateVector = new Map<string, bigint>();
-            for (let i = 0; i < svCount; i++) {
-                const entry = sync.stateVector(i);
-                if (entry && entry.peerId()) {
-                    stateVector.set(entry.peerId()!, entry.seq());
-                }
-            }
-            this.logger.debug(`Received state vector with ${svCount} entries`);
-            // TODO: In the future, use state vector to produce a minimal catch-up delta
-        }
-
-        const ackSeq = sync.ackSeq();
-        if (ackSeq > 0n) {
-            this.logger.debug(`Received ACK for sequence ${ackSeq}`);
-            // TODO: Logic for clearing local queue up to ackSeq
-        }
-    }
 
     public handleInitSnapshot(data: Record<string, unknown>): void {
         if (!data) return;
@@ -567,41 +487,8 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
     }
 
-    private handleGenericDelta(result: any): void {
-        if (!result) return;
 
-        // Handle keyed op from Transport
-        if (result.key !== undefined && result.value instanceof Uint8Array) {
-            const decoded = decodeValue(result.value);
-            this.handleOpUpdate({
-                key: result.key,
-                value: decoded
-            });
-            return;
-        }
 
-        // Handle raw binary delta - log warning instead of recursing
-        if (result instanceof Uint8Array || result instanceof ArrayBuffer) {
-            this.logger.warn('handleGenericDelta received raw binary - this should not happen');
-            return;
-        }
-
-        // If it's a list of operations (typical for batch merges)
-        if (Array.isArray(result)) {
-            result.forEach(item => this.handleGenericDelta(item));
-            return;
-        }
-
-        // Handle single op result
-        if (result.type === 'op' || (result.key && result.value !== undefined)) {
-            this.handleOpUpdate({
-                key: result.key,
-                value: result.value
-            });
-        } else if (result.type === 'init') {
-            this.handleInitSnapshot(result.data || result.history);
-        }
-    }
 
     public get<T = unknown>(key: string): T | undefined {
         if (this.optimisticState.has(key)) return this.optimisticState.get(key) as T;

@@ -275,34 +275,15 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
         }
     }
 
+    /**
+     * Handle raw message from P2P peers or relay.
+     * 
+     * Following the "Dumb Pipe" principle: Transport moves bytes, SyncEngine parses them.
+     * All WirePacket parsing is handled by MessageRouter in SyncEngine.
+     */
     private handleRawMessage(bytes: Uint8Array): void {
-        try {
-            const buf = new flatbuffers.ByteBuffer(bytes);
-            const wire = WirePacket.getRootAsWirePacket(buf);
-            const msgType = wire.msgType();
-
-            if (msgType === MsgType.Op) {
-                const op = wire.op();
-                if (op) {
-                    const val = op.valueArray();
-                    if (val) this.emit('message', val);
-                }
-            } else if (msgType === MsgType.Sync) {
-                const sync = wire.sync();
-                if (sync) {
-                    this.emit('sync', bytes);
-                } else {
-                    // Ephemeral message in payload - emit binary directly (no JSON fallback)
-                    const payload = wire.payloadArray();
-                    if (payload) {
-                        this.emit('ephemeral', payload);
-                    }
-                }
-            }
-        } catch (err) {
-            // Fallback: emit entire buffer if it's not a WirePacket
-            this.emit('message', bytes);
-        }
+        // Simply emit the raw bytes - SyncEngine will parse via MessageRouter
+        this.emit('message', bytes);
     }
 
     private handlePresence(userId: string, status: string, meshId?: string): void {

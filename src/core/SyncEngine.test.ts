@@ -174,11 +174,12 @@ describe('SyncEngine', () => {
 
     // === Additional coverage tests ===
 
-    describe('applyRemoteDelta', () => {
-        it('processes binary delta via WASM core', () => {
-            const binary = new Uint8Array([1, 2, 3, 4]);
-            engine.applyRemoteDelta(binary);
-            // Should not throw, processed by mock core
+    describe('applyRawMessage unit', () => {
+        it('queues message if core not ready', () => {
+            const freshEngine = new SyncEngine('fresh', 'crdt', 100, false);
+            freshEngine.applyRawMessage(new Uint8Array([1, 2, 3]));
+            const bootQueue = (freshEngine as any).bootQueue;
+            expect(bootQueue.length).toBe(1);
         });
     });
 
@@ -290,62 +291,6 @@ describe('SyncEngine', () => {
         });
     });
 
-    describe('applyRawMessage', () => {
-        it('ignores empty binary', () => {
-            engine.applyRawMessage(new Uint8Array(0));
-            // Should not throw
-        });
-
-        it('ignores null binary', () => {
-            engine.applyRawMessage(null as any);
-            // Should not throw
-        });
-
-        it('queues message if core not ready', async () => {
-            const freshEngine = new SyncEngine('fresh', 'crdt', 100, false);
-            // Don't boot - core is null
-            freshEngine.applyRawMessage(new Uint8Array([1, 2, 3]));
-            // Message should be queued, not processed
-            const bootQueue = (freshEngine as any).bootQueue;
-            expect(bootQueue.length).toBe(1);
-            expect(bootQueue[0].type).toBe('delta');
-        });
-    });
-
-    describe('handleGenericDelta branches', () => {
-        it('handles null result', () => {
-            (engine as any).handleGenericDelta(null);
-            // Should not throw
-        });
-
-        it('handles array of ops', () => {
-            const spy = vi.fn();
-            engine.on('op', spy);
-            (engine as any).handleGenericDelta([
-                { key: 'arr1', value: 'v1' },
-                { key: 'arr2', value: 'v2' }
-            ]);
-            expect(spy).toHaveBeenCalledTimes(2);
-        });
-
-        it('handles op with type field', () => {
-            (engine as any).handleGenericDelta({ type: 'op', key: 'typeop', value: 'tv' });
-            expect(engine.getConfirmed('typeop')).toBe('tv');
-        });
-
-        it('handles init type', () => {
-            const spy = vi.fn();
-            engine.on('snapshot', spy);
-            (engine as any).handleGenericDelta({ type: 'init', data: { initKey: 'initVal' } });
-            expect(spy).toHaveBeenCalled();
-        });
-
-        it('handles raw binary warning path', () => {
-            // Should not throw, logs warning
-            (engine as any).handleGenericDelta(new Uint8Array([1, 2, 3]));
-        });
-    });
-
     describe('getAllValues with core state', () => {
         it('merges core state into result', () => {
             // The mock core has state we set via engine.set()
@@ -372,21 +317,83 @@ describe('SyncEngine', () => {
             expect(engine.getQueueSize()).toBe(sizeBefore);
         });
     });
-
-    describe('handleBinarySync', () => {
-        it('ignores null data', () => {
-            engine.handleBinarySync(null as any);
-            // Should not throw
-        });
-
-        it('queues if core not ready', () => {
-            const freshEngine = new SyncEngine('binSync', 'crdt', 100, false);
-            freshEngine.handleBinarySync(new Uint8Array([1, 2, 3]));
-            const bootQueue = (freshEngine as any).bootQueue;
-            expect(bootQueue.length).toBe(1);
-            expect(bootQueue[0].type).toBe('sync');
-        });
-    });
 });
 
 
+// === Separate describe block for loadPersistedState format handling ===
+describe('SyncEngine loadPersistedState formats', () => {
+    it('handles Uint8Array format in persisted queue', async () => {
+        // Mock loadQueue to return Uint8Array items
+        const { loadQueue } = await import('../persistence');
+        (loadQueue as any).mockResolvedValue([
+            new Uint8Array([1, 2, 3]),
+            new Uint8Array([4, 5, 6]),
+        ]);
+
+        const engine = new SyncEngine('persist-binary', 'crdt', 100, false);
+        await engine.boot();
+
+        // Queue should have 2 items from persisted state
+        expect(engine.getQueueLength()).toBe(2);
+    });
+
+    it('handles wrapped data format in persisted queue', async () => {
+        // Mock loadQueue to return wrapped objects with data property
+        const { loadQueue } = await import('../persistence');
+        (loadQueue as any).mockResolvedValue([
+            { data: new Uint8Array([7, 8, 9]) },
+            { data: new Uint8Array([10, 11, 12]) },
+        ]);
+
+        const engine = new SyncEngine('persist-wrapped', 'crdt', 100, false);
+        await engine.boot();
+
+        expect(engine.getQueueLength()).toBe(2);
+    });
+
+    it('handles legacy object format in persisted queue', async () => {
+        // Mock loadQueue to return plain objects (legacy format)
+        const { loadQueue } = await import('../persistence');
+        (loadQueue as any).mockResolvedValue([
+            { key: 'legacy1', value: 'val1' },
+            { key: 'legacy2', value: 'val2' },
+        ]);
+
+        const engine = new SyncEngine('persist-legacy', 'crdt', 100, false);
+        await engine.boot();
+
+        // Should JSON-encode legacy objects as fallback
+        expect(engine.getQueueLength()).toBe(2);
+    });
+
+    it('handles mixed formats in persisted queue', async () => {
+        const { loadQueue } = await import('../persistence');
+        (loadQueue as any).mockResolvedValue([
+            new Uint8Array([1, 2]),           // Binary
+            { data: new Uint8Array([3, 4]) }, // Wrapped
+            { key: 'k', value: 'v' },        // Legacy
+        ]);
+
+        const engine = new SyncEngine('persist-mixed', 'crdt', 100, false);
+        await engine.boot();
+
+        expect(engine.getQueueLength()).toBe(3);
+    });
+});
+
+// === Tests for getAllValues binary decode from core ===
+describe('SyncEngine getAllValues with binary core state', () => {
+    it('decodes binary values from core state', async () => {
+        // This test verifies getAllValues properly decodes binary from core
+        // The existing mock already covers this path through the set() method
+        const engine = new SyncEngine('binary-core', 'crdt', 100, false);
+        await engine.boot();
+
+        // Set a value which goes through the mock core
+        engine.set('core-key', { fromCore: true });
+
+        // getAllValues should include the decoded value
+        const all = engine.getAllValues();
+        expect(all['core-key']).toEqual({ fromCore: true });
+    });
+});

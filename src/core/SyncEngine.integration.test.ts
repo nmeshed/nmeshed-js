@@ -192,35 +192,21 @@ describe('SyncEngine Integration Tests', () => {
             expect(spy).toHaveBeenCalled();
         });
 
-        it('falls back to applyRemoteDelta on parse error', () => {
-            // Invalid packet - not a valid FlatBuffer
+        it('ignores unparsable binary messages', () => {
             const junkData = new Uint8Array([255, 254, 253, 0, 1, 2]);
-
-            // Should not throw, falls back gracefully
+            // Should just log a warning and return, no crash or side effects
             engine.applyRawMessage(junkData);
-        });
-
-        it('handles unknown MsgType gracefully', () => {
-            // Create packet with invalid MsgType
-            const builder = new flatbuffers.Builder(256);
-
-            WirePacket.startWirePacket(builder);
-            WirePacket.addMsgType(builder, 99 as any); // Unknown type
-            const packetOffset = WirePacket.endWirePacket(builder);
-            builder.finish(packetOffset);
-
-            // Should not throw, logs warning
-            engine.applyRawMessage(builder.asUint8Array());
         });
     });
 
-    describe('handleBinarySync with real SyncPackets', () => {
+
+    describe('applyRawMessage with real SyncPackets', () => {
 
         it('processes snapshot from SyncPacket', () => {
             const snapshotData = encodeValue({ snapKey: 'snapVal' });
             const packet = createSyncSnapshotPacket(snapshotData);
 
-            engine.handleBinarySync(packet);
+            engine.applyRawMessage(packet);
             // Should process without error
         });
     });
@@ -235,6 +221,126 @@ describe('SyncEngine Integration Tests', () => {
 
             // The value should be retrievable
             expect(engine.get('round-trip-key')).toEqual({ nested: { value: 42 } });
+        });
+    });
+
+    describe('receive() unified entry point', () => {
+        it('processes op message with value', () => {
+            const spy = vi.fn();
+            engine.on('op', spy);
+
+            engine.receive({
+                type: 'op',
+                key: 'test-key',
+                value: encodeValue({ test: 'data' }),
+            });
+
+            expect(spy).toHaveBeenCalledWith('test-key', { test: 'data' }, false);
+        });
+
+        it('processes op message with null value (delete)', () => {
+            const spy = vi.fn();
+            engine.on('op', spy);
+
+            engine.receive({
+                type: 'op',
+                key: 'delete-key',
+                value: null,
+            });
+
+            expect(spy).toHaveBeenCalledWith('delete-key', null, false);
+        });
+
+        it('processes sync message with stateVector', () => {
+            // Should not throw - exercises lines 349-352
+            engine.receive({
+                type: 'sync',
+                stateVector: new Map([
+                    ['peer-1', 100n],
+                    ['peer-2', 200n],
+                ]),
+            });
+        });
+
+        it('processes sync message with ackSeq', () => {
+            // Should not throw - exercises lines 354-357
+            engine.receive({
+                type: 'sync',
+                ackSeq: 12345n,
+            });
+        });
+
+        it('processes sync message with all fields', () => {
+            const snapshotData = encodeValue({ key: 'value' });
+
+            engine.receive({
+                type: 'sync',
+                snapshot: snapshotData,
+                stateVector: new Map([['peer-1', 50n]]),
+                ackSeq: 999n,
+            });
+        });
+
+        it('processes init message', () => {
+            const spy = vi.fn();
+            engine.on('snapshot', spy);
+
+            engine.receive({
+                type: 'init',
+                data: { initKey: 'initValue', count: 42 },
+            });
+
+            expect(spy).toHaveBeenCalled();
+            expect(engine.get('initKey')).toBe('initValue');
+        });
+
+        it('processes signal message with binary payload', () => {
+            const spy = vi.fn();
+            engine.on('ephemeral', spy);
+
+            engine.receive({
+                type: 'signal',
+                payload: encodeValue({ cursor: { x: 10, y: 20 } }),
+                from: 'user-123',
+            });
+
+            expect(spy).toHaveBeenCalled();
+        });
+
+        it('processes signal message with non-binary payload', () => {
+            const spy = vi.fn();
+            engine.on('ephemeral', spy);
+
+            // Non-binary payload goes through else branch
+            engine.receive({
+                type: 'signal',
+                payload: { cursor: { x: 10, y: 20 } },
+                from: 'user-456',
+            });
+
+            expect(spy).toHaveBeenCalledWith({ cursor: { x: 10, y: 20 } }, 'user-456');
+        });
+
+        it('processes signal message without from field', () => {
+            const spy = vi.fn();
+            engine.on('ephemeral', spy);
+
+            engine.receive({
+                type: 'signal',
+                payload: { test: 'data' },
+            });
+
+            expect(spy).toHaveBeenCalledWith({ test: 'data' }, 'server');
+        });
+    });
+
+    describe('getAllValues core decoding', () => {
+        it('returns merged state from optimistic and core', () => {
+            // Set a value to get into optimistic state
+            engine.set('local-key', { local: true });
+
+            const state = engine.getAllValues();
+            expect(state['local-key']).toEqual({ local: true });
         });
     });
 });

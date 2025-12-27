@@ -205,7 +205,7 @@ export class NMeshedClient {
         });
 
         this.transport.on('sync', (data: Uint8Array) => {
-            this.engine.handleBinarySync(data);
+            this.engine.applyRawMessage(data);
         });
 
         this.transport.on('error', (err: Error) => {
