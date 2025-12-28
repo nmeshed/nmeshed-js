@@ -4,23 +4,44 @@ import type { ConnectionStatus, PresenceUser } from '../types';
 import { useNmeshed } from './useNmeshed';
 // import { usePresence } from './usePresence'; // Not used in this implementation
 
+/**
+ * Simplified options for useSyncSession hook.
+ * 
+ * Zen Principle: If a config option can be derived, derive it.
+ * - serverUrl: Auto-derived from workspaceId + environment
+ * - userId: Auto-generated if not provided
+ */
 export interface SyncSessionOptions {
     /**
-     * Workspace ID to connect to
+     * Workspace ID to connect to (required)
      */
     workspaceId: string;
+
     /**
-     * API Key for the workspace
+     * API Key or token for authentication (one required)
      */
-    apiKey: string;
+    apiKey?: string;
+    token?: string;
+
     /**
-     * Unique identifier for the local user/peer
+     * User identifier (auto-generated if omitted)
      */
-    userId: string;
+    userId?: string;
+
     /**
-     * Optional configuration for the NMeshedClient
+     * Enable debug logging
      */
-    config?: Partial<any>; // Using any to avoid importing NMeshedConfig if not exported smoothly, but ideally explicit
+    debug?: boolean;
+
+    /**
+     * Transport type: 'server' (default) or 'p2p' (experimental)
+     */
+    transport?: 'server' | 'p2p';
+
+    /**
+     * Explicit relay URL (auto-derived if omitted)
+     */
+    relayUrl?: string;
 }
 
 export interface SyncSessionResult {
@@ -50,16 +71,40 @@ export interface SyncSessionResult {
     error: Error | null;
 }
 
-// React hook for synchronized session management
+/**
+ * React hook for synchronized session management.
+ * 
+ * Zen API: Minimal config, maximum clarity.
+ * 
+ * @example Minimal Usage (production)
+ * ```tsx
+ * const { client, isReady } = useSyncSession({
+ *     workspaceId: 'my-workspace',
+ *     apiKey: 'nm_live_xxx'
+ * });
+ * ```
+ * 
+ * @example Development (localhost auto-detected)
+ * ```tsx
+ * const { client, isReady } = useSyncSession({
+ *     workspaceId: 'my-workspace',
+ *     apiKey: 'nm_local_bypass',
+ *     debug: true
+ * });
+ * ```
+ */
 export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
     // Local error state since useNmeshed uses callback pattern
     const [localError, setLocalError] = useState<Error | null>(null);
 
+    // Flatten options into NMeshedConfig - no nested spread!
     const result = useNmeshed({
         workspaceId: options.workspaceId,
-        apiKey: options.apiKey,
+        token: options.token || options.apiKey,
         userId: options.userId,
-        ...options.config,
+        debug: options.debug,
+        transport: options.transport || 'server',
+        relayUrl: options.relayUrl,
         onError: (err) => setLocalError(err)
     });
 
@@ -106,12 +151,12 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
         // Initial fetch
         updatePeers();
 
-        // Simple ping loop for latency estimation
         const pingInterval = setInterval(async () => {
             if (status === 'READY') {
                 try {
                     // Ping self to check loopback/gateway health
-                    await client.ping(options.userId);
+                    // Use client.userId since options.userId may be undefined (auto-generated)
+                    await client.ping(client.userId);
                     // If ping succeeds, we assume healthy. 
                     // TODO: Get actual RTT if client.ping returns it.
                     // The mock client.ping returns a number (latency).
@@ -129,7 +174,7 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
             unsubLeave();
             clearInterval(pingInterval);
         };
-    }, [client, status, options.userId]);
+    }, [client, status]);
 
     return {
         client,

@@ -10,6 +10,7 @@ export interface NMeshedConfig {
     syncMode?: 'crdt' | 'crdt_performance' | 'crdt_strict' | 'lww';
     userId?: string;
     serverUrl?: string;
+    relayUrl?: string; // Preferred over serverUrl
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
     reconnectBaseDelay?: number;

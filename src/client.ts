@@ -28,6 +28,31 @@ export interface NMeshedConfig {
 }
 
 /**
+ * Derives the relay URL based on environment and configuration.
+ * Priority: explicit config > environment variable > localhost detection > production default
+ * 
+ * This eliminates the need for manual URL construction in demos.
+ */
+function deriveRelayUrl(workspaceId: string, config: NMeshedConfig): string {
+    // 1. Explicit configuration takes priority
+    if (config.relayUrl) return config.relayUrl;
+    if (config.serverUrl) return config.serverUrl;
+
+    // 2. Environment variable (Node.js)
+    if (typeof process !== 'undefined' && process.env?.NMESHED_RELAY_URL) {
+        return process.env.NMESHED_RELAY_URL;
+    }
+
+    // 3. Localhost detection (Browser dev mode)
+    if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
+        return `ws://localhost:8080/v1/sync/${encodeURIComponent(workspaceId)}`;
+    }
+
+    // 4. Production default
+    return 'wss://relay.nmeshed.io';
+}
+
+/**
  * NMeshedClient: The Zen Gateway to Real-Time Sync.
  * 
  * Embodies "Absolute Clarity" by providing a single, unified entry point 
@@ -77,7 +102,8 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.engine = new SyncEngine(config.workspaceId, this.userId, 'crdt', config.maxQueueSize || 1000, config.debug);
         this.bootPromise = this.engine.boot();
 
-        const relayUrl = config.relayUrl || config.serverUrl || 'wss://relay.nmeshed.io';
+        // Zen: Auto-derive relay URL from environment
+        const relayUrl = deriveRelayUrl(config.workspaceId, config);
 
         if (typeof config.transport === 'object') {
             this.transport = config.transport;
