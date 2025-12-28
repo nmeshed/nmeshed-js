@@ -25,6 +25,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { CursorManager, CursorPosition, CursorManagerConfig } from '../presence/CursorManager';
 import { NMeshedClient } from '../client';
+import { useOptionalNmeshedContext } from './context';
 
 /**
  * Return type for useCursor hook.
@@ -66,30 +67,38 @@ const DUMMY_MANAGER: CursorManager = {
  * Automatically creates a CursorManager, subscribes to updates,
  * and cleans up on unmount.
  *
+ * ## Zen API
+ * - `useCursor()`: Uses client from context.
+ * - `useCursor(options)`: Uses client from context with config.
+ * - `useCursor(client, options)`: Explicit client (legacy/advanced).
+ *
  * ## Memory Safety
  * The hook memoizes based on config primitive values, not object identity.
  * This prevents CursorManager recreation when consumers pass inline config objects.
- *
- * @param client - NMeshedClient instance
- * @param config - Optional CursorManager configuration
- *
- * @example
- * ```tsx
- * const { cursors, sendCursor } = useCursor(client);
- *
- * // Render peer cursors
- * {Array.from(cursors.values()).map((c) => (
- *     <div key={c.userId} style={{ left: c.x, top: c.y }} />
- * ))}
- *
- * // Broadcast your cursor
- * <div onMouseMove={(e) => sendCursor(e.clientX, e.clientY)} />
- * ```
  */
 export function useCursor(
-    client: NMeshedClient | null,
-    config?: CursorManagerConfig
+    clientOrConfig?: NMeshedClient | CursorManagerConfig | null,
+    maybeConfig?: CursorManagerConfig
 ): UseCursorResult {
+    const context = useOptionalNmeshedContext();
+
+    let client: NMeshedClient | null = null;
+    let config: CursorManagerConfig | undefined = undefined;
+
+    // Resolve arguments
+    if (clientOrConfig instanceof NMeshedClient) {
+        client = clientOrConfig;
+        config = maybeConfig;
+    } else if (clientOrConfig && typeof (clientOrConfig as any).connect === 'function') {
+        // Duck typing for NMeshedClient
+        client = clientOrConfig as NMeshedClient;
+        config = maybeConfig;
+    } else {
+        // First argument is config or undefined
+        config = clientOrConfig as CursorManagerConfig | undefined;
+        // Fallback to context
+        client = context?.client ?? null;
+    }
     const [cursors, setCursors] = useState<Map<string, CursorPosition>>(new Map());
 
     // Version counter to force re-renders only when cursors actually change

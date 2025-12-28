@@ -34,7 +34,6 @@ export { useBroadcast } from './useBroadcast';
 export { useCursor } from './useCursor';
 export { useStore } from './useStore';
 export { usePeers } from './usePeers';
-export { useConnectionState } from './useConnectionState';
 export { useSyncSession } from './useSyncSession';
 
 // Components

@@ -29,6 +29,8 @@ export function createMockClient(initialData: Record<string, any> = {}): NMeshed
         on: vi.fn(() => () => { }),
         connect: vi.fn(async () => { }),
         disconnect: vi.fn(() => { }),
+        get isLive() { return true },
+        config: { workspaceId: 'mock-workspace' },
     } as unknown as NMeshedClient;
 
     return mock;

@@ -53,6 +53,7 @@ vi.mock('../presence/CursorManager', () => ({
 const createMockClient = () => ({
     on: vi.fn(() => () => { }),
     sendMessage: vi.fn(),
+    connect: vi.fn(), // Required for duck typing check
 });
 
 describe('useCursor', () => {

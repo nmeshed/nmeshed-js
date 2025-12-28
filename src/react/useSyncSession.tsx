@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NMeshedClient } from '../client';
 import { CallbackAuthProvider } from '../auth/AuthProvider';
-import { useConnectionState } from './useConnectionState';
+import { useNmeshedStatus } from './context';
 import { usePeers } from './usePeers';
 import type { ConnectionStatus, PresenceUser } from '../types';
 import { useNmeshed } from './useNmeshed';
@@ -120,7 +120,9 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
     const client = result.client;
 
     // Zen: Compostion
-    const { status, isReady, latency, error: connError } = useConnectionState();
+    const { status, error: connError } = useNmeshedStatus();
+    const isReady = status === 'CONNECTED' || status === 'READY';
+    const latency = 0; // TODO: Expose latency via context or hook if needed
     const peerIds = usePeers();
 
     // Map string IDs to PresenceUser for backward compatibility
