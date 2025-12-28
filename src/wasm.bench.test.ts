@@ -15,7 +15,7 @@ describe('WASM Core Benchmarks', () => {
 
             const __filename = fileURLToPath(import.meta.url);
             const __dirname = path.dirname(__filename);
-            const wasmPath = path.resolve(__dirname, './wasm/nmeshed_core_bg.wasm');
+            const wasmPath = path.resolve(__dirname, './wasm/nmeshed_core/nmeshed_core_bg.wasm');
 
             wasmBuffer = await fs.readFile(wasmPath);
             await init(wasmBuffer);
@@ -69,7 +69,7 @@ describe('WASM Core Benchmarks', () => {
 
                 const start = performance.now();
                 for (let i = 0; i < 100; i++) { // Fewer iterations for full snapshot
-                    core.get_state();
+                    core.get_all_values();
                 }
                 const end = performance.now();
                 const time = end - start;
@@ -92,7 +92,7 @@ describe('WASM Core Benchmarks', () => {
 
                 const start = performance.now();
                 for (let i = 0; i < ITERATIONS; i++) {
-                    core.merge_remote_delta(packet);
+                    core.apply_vessel(packet);
                 }
                 const end = performance.now();
                 const time = end - start;

@@ -195,4 +195,40 @@ describe('SchemaBuilder', () => {
             expect(decoded.tasks).toEqual({});
         });
     });
+
+    describe('encodeValue / decodeValue', () => {
+        it('should encode and decode standalone values', () => {
+            // Arrays
+            const arrayType = { type: 'array', itemType: 'uint16' } as const;
+            const arrayVal = [10, 20, 30];
+            const arrayBuf = SchemaSerializer.encodeValue(arrayType, arrayVal);
+            expect(SchemaSerializer.decodeValue(arrayType, arrayBuf)).toEqual(arrayVal);
+
+            // Primitives
+            const strVal = "hello world";
+            const strBuf = SchemaSerializer.encodeValue('string', strVal);
+            expect(SchemaSerializer.decodeValue('string', strBuf)).toBe(strVal);
+
+            // Objects
+            const objType = { type: 'object', schema: { x: 'float32', y: 'float32' } } as const;
+            const objVal = { x: 1.5, y: 2.5 };
+            const objBuf = SchemaSerializer.encodeValue(objType, objVal);
+            expect(SchemaSerializer.decodeValue(objType, objBuf)).toEqual(objVal);
+
+            // Map
+            const mapType = { type: 'map', schema: { val: 'uint8' } } as const;
+            const mapVal = { a: { val: 1 }, b: { val: 2 } };
+            const mapBuf = SchemaSerializer.encodeValue(mapType, mapVal);
+            expect(SchemaSerializer.decodeValue(mapType, mapBuf)).toEqual(mapVal);
+        });
+
+        it('should handle encodeValue edge cases', () => {
+            const arrayType = { type: 'array', itemType: 'string' } as const;
+            // Empty
+            expect(SchemaSerializer.decodeValue(arrayType, new Uint8Array(0))).toEqual([]);
+            // Null/undefined (should encode to default/empty)
+            const buf = SchemaSerializer.encodeValue(arrayType, null as any);
+            expect(SchemaSerializer.decodeValue(arrayType, buf)).toEqual([]);
+        });
+    });
 });

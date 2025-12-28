@@ -1056,4 +1056,63 @@ describe('NMeshedClient', () => {
             await expect(client.connect()).rejects.toThrow('destroyed');
         });
     });
+
+    describe('API Coverage', () => {
+        it('onPeerJoin and onPeerDisconnect delegates correctly', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const join = vi.fn();
+            const leave = vi.fn();
+            const disconnect = vi.fn();
+
+            client.onPeerJoin(join);
+            client.onPeerLeave(leave);
+            client.onPeerDisconnect(disconnect);
+
+            client.emit('peerJoin', 'p1');
+            client.emit('peerDisconnect', 'p1');
+
+            expect(join).toHaveBeenCalledWith('p1');
+            expect(leave).toHaveBeenCalledWith('p1');
+            expect(disconnect).toHaveBeenCalledWith('p1');
+        });
+
+        it('onKeyChange handles handler errors', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const badHandler = vi.fn(() => { throw new Error('Bad'); });
+            client.onKeyChange('key', badHandler);
+
+            const connectPromise = client.connect();
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            MockWebSocket.instances[0].simulateOpen();
+            await connectPromise;
+
+            MockWebSocket.instances[0].simulateBinaryMessage(packOp('key', 'val'));
+
+            expect(badHandler).toHaveBeenCalled();
+            // Should not crash
+        });
+
+        it('ping delegates to transport', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            client.transport.ping = vi.fn().mockResolvedValue(10);
+            expect(await client.ping('p1')).toBe(10);
+        });
+
+        it('isLive reflects READY status', () => {
+            const client = new NMeshedClient(defaultConfig);
+            expect(client.isLive).toBe(false);
+
+            // Mock transport status
+            vi.spyOn(client.transport, 'getStatus').mockReturnValue('CONNECTED');
+            // setStatus just emits, getStatus reads transport.
+            // But wait, client.getStatus maps CONNECTED to READY?
+            // Line 382: s === 'CONNECTED' ? 'READY' : s;
+            expect(client.isLive).toBe(true);
+        });
+
+        it('exposes internal logger', () => {
+            const client = new NMeshedClient(defaultConfig);
+            expect((client as any).logger).toBeDefined();
+        });
+    });
 });

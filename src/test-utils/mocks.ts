@@ -419,6 +419,14 @@ export class MockNMeshedClient extends EventEmitter<{
         return this.status;
     }
 
+    public get isLive(): boolean {
+        return this.status === 'CONNECTED' || this.status === 'READY';
+    }
+
+    public getId(): string {
+        return this.config?.userId || 'mock-user';
+    }
+
     public getPeers() {
         return Array.from(this.peers.keys());
     }
@@ -432,18 +440,36 @@ export class MockNMeshedClient extends EventEmitter<{
     }
 
     public onStatusChange(cb: (status: any) => void) {
-        return this.on('status', cb);
+        this.on('status', cb);
+        return () => this.off('status', cb);
     }
-    public onQueueChange(_cb: (size: number) => void) {
-        // dummy
-        return () => { };
+    public onQueueChange(cb: (size: number) => void) {
+        this.on('queueChange' as any, cb);
+        return () => this.off('queueChange' as any, cb);
     }
-    public onMessage(_cb: (msg: any) => void) {
-        // dummy
-        return () => { };
+    public onMessage(cb: (msg: any) => void) {
+        this.on('message' as any, cb);
+        return () => this.off('message' as any, cb);
     }
-    public set(_key: string, _value: any) {
-        // dummy
+    public onPresence(cb: (p: any) => void) {
+        this.on('presence' as any, cb);
+        return () => this.off('presence' as any, cb);
+    }
+    public onEphemeral(cb: (p: any, from?: string) => void) {
+        this.on('ephemeral' as any, cb);
+        return () => this.off('ephemeral' as any, cb);
+    }
+    public broadcast(payload: any) {
+        this.emit('ephemeral' as any, payload, this.getId());
+    }
+
+    private mockState = new Map<string, any>();
+    public get<T>(key: string): T | undefined {
+        return this.mockState.get(key);
+    }
+    public set(key: string, value: any) {
+        this.mockState.set(key, value);
+        this.emit('message' as any, { type: 'op', payload: { key, value }, timestamp: Date.now() });
     }
 }
 

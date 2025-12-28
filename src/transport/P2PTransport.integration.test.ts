@@ -12,6 +12,8 @@ import { MsgType } from '../schema/nmeshed/msg-type';
 import { Op } from '../schema/nmeshed/op';
 import { SyncPacket } from '../schema/nmeshed/sync-packet';
 import { encodeValue } from '../codec';
+import { MockRTCPeerConnection } from '../test-utils/mocks';
+import { ConnectionManager } from './p2p/ConnectionManager';
 
 // Capture listeners set on mocks
 let signalingListeners: any = {};
@@ -32,22 +34,7 @@ vi.mock('./p2p/SignalingClient', () => {
     };
 });
 
-vi.mock('./p2p/ConnectionManager', () => {
-    return {
-        ConnectionManager: class {
-            setListeners = vi.fn((listeners: any) => { connectionListeners = listeners; });
-            closeAll = vi.fn();
-            broadcast = vi.fn();
-            initiateConnection = vi.fn();
-            handleOffer = vi.fn();
-            handleAnswer = vi.fn();
-            handleCandidate = vi.fn();
-            hasPeer = vi.fn();
-            isDirect = vi.fn();
-            getPeerIds = vi.fn(() => []);
-        }
-    };
-});
+// ConnectionManager is now UNMOCKED - using real implementation with stubbed globals
 
 // Helper: Create WirePacket with MsgType.Op
 function createOpPacket(key: string, value: unknown): Uint8Array {
@@ -118,6 +105,19 @@ describe('P2PTransport Integration Tests', () => {
 
     beforeEach(() => {
         vi.useFakeTimers();
+        // Setup WebRTC globals for ConnectionManager
+        vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection);
+        (vi.stubGlobal as any)('RTCSessionDescription', class { constructor(init: any) { Object.assign(this, init); } });
+        (vi.stubGlobal as any)('RTCIceCandidate', class { constructor(init: any) { Object.assign(this, init); } });
+
+        // Capture listeners from the real ConnectionManager by patching the prototype
+        // because they are set in the P2PTransport constructor.
+        const originalSetListeners = ConnectionManager.prototype.setListeners;
+        ConnectionManager.prototype.setListeners = function (listeners: any) {
+            connectionListeners = listeners;
+            return originalSetListeners.call(this, listeners);
+        };
+
         signalingListeners = {};
         connectionListeners = {};
         vi.clearAllMocks();
@@ -212,12 +212,17 @@ describe('P2PTransport Integration Tests', () => {
         it('wraps data in WirePacket.Op and broadcasts', () => {
             transport.connect();
 
+            // Verify broadcast was called (real ConnectionManager.broadcast called)
+            // But we didn't mock broadcast! We need to verify side effects or mock broadcast specifically.
+            // Actually, let's spy on the connections.broadcast method.
+            const connections = (transport as any).connections;
+            const broadcastSpy = vi.spyOn(connections, 'broadcast');
+
             const data = encodeValue({ key: 'val' });
             transport.send(data);
 
-            // Verify broadcast was called
-            const broadcastCall = (transport as any).connections.broadcast.mock.calls[0];
-            const broadcastedData = broadcastCall[0];
+            expect(broadcastSpy).toHaveBeenCalled();
+            const broadcastedData = broadcastSpy.mock.calls[0][0] as Uint8Array;
 
             // Parse it back to verify it's a valid WirePacket
             const buf = new flatbuffers.ByteBuffer(broadcastedData);
@@ -227,7 +232,6 @@ describe('P2PTransport Integration Tests', () => {
             expect(wire.op()).not.toBeNull();
         });
     });
-
 
     describe('ephemeral ping/pong flow', () => {
 

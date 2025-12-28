@@ -52,7 +52,7 @@ async function benchmark() {
     console.log("\n--- Benchmark Client Overhead (JS) ---");
 
     const client = new NMeshedClient({
-        workspaceId: 'bench',
+        workspaceId: '12345678-1234-1234-1234-123456789abc', // Must be valid UUID
         token: 'token',
         transport: 'server' // Doesn't matter, we inject mock
     });
@@ -65,7 +65,7 @@ async function benchmark() {
     // @ts-ignore - Avoid initial connect boot overhead for pure throughput test
     client['engine']['core'] = {
         apply_local_op: () => new Uint8Array(10), // Mock WASM
-        merge_remote_delta: () => ({ type: 'op' })
+        apply_vessel: () => ({ type: 'op' })
     };
 
     // Warmup
@@ -98,18 +98,18 @@ async function benchmark() {
         console.log(`Client.broadcast: ${ops.toFixed(2)} ops/sec (${(elapsed * 1000000 / ITERATIONS).toFixed(4)} µs/op)`);
     }
 
-    // 3. Benchmark SyncedMap (The "Real" heavy path)
+    // 3. Benchmark SyncedCollection (The "Real" heavy path)
     {
-        const map = client.getSyncedMap("bench");
-        // SyncedMap.set does: Serialize Value -> broadcastUpdate (Base64) -> broadcast -> sendEphemeral (JSON)
+        const col = client.getCollection("bench");
+        // SyncedCollection.set does: Encode Value -> client.set -> Engine.apply_local_op
         const start = performance.performance.now();
         for (let i = 0; i < ITERATIONS; i++) {
-            map.set("key", { val: i });
+            col.set("key", { val: i });
         }
         const end = performance.performance.now();
         const elapsed = (end - start) / 1000;
         const ops = ITERATIONS / elapsed;
-        console.log(`SyncedMap.set: ${ops.toFixed(2)} ops/sec (${(elapsed * 1000000 / ITERATIONS).toFixed(4)} µs/op)`);
+        console.log(`SyncedCollection.set: ${ops.toFixed(2)} ops/sec (${(elapsed * 1000000 / ITERATIONS).toFixed(4)} µs/op)`);
     }
 }
 

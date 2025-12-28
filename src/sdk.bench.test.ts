@@ -28,7 +28,7 @@ vi.mock('./persistence', () => ({
 }));
 
 // Skip: Benchmarks are slow and meant for manual performance testing.
-describe.skip('SDK High-Level Benchmarks', () => {
+describe('SDK High-Level Benchmarks', () => {
     let wasmBuffer: Uint8Array;
     const workspaceId = '12345678-1234-1234-1234-123456789abc';
     const ITERATIONS = 1_000;
