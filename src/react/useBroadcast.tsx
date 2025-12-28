@@ -23,7 +23,16 @@ export function useBroadcast(handler?: BroadcastHandler) {
 
         const unsubscribe = client.onEphemeral((payload) => {
             if (handlerRef.current) {
-                handlerRef.current(payload);
+                let data = payload;
+                if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
+                    try {
+                        const str = new TextDecoder().decode(payload);
+                        data = JSON.parse(str);
+                    } catch (e) {
+                        // ignore
+                    }
+                }
+                handlerRef.current(data);
             }
         });
 
@@ -33,7 +42,13 @@ export function useBroadcast(handler?: BroadcastHandler) {
     }, [client]);
 
     const broadcast = useCallback((payload: unknown) => {
-        client.broadcast(payload);
+        let data: Uint8Array;
+        if (payload instanceof Uint8Array) {
+            data = payload;
+        } else {
+            data = new TextEncoder().encode(JSON.stringify(payload));
+        }
+        client.sendMessage(data);
     }, [client]);
 
     return broadcast;

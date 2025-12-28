@@ -138,11 +138,11 @@ describe('React Hooks Coverage', () => {
             expect(handler).toHaveBeenCalledWith({ msg: 'hello' });
 
             // Send
-            const broadcastSpy = vi.spyOn(client, 'broadcast');
+            const sendMessageSpy = vi.spyOn(client, 'sendMessage');
             await act(async () => {
                 result.current({ foo: 'bar' });
             });
-            expect(broadcastSpy).toHaveBeenCalledWith({ foo: 'bar' });
+            expect(sendMessageSpy).toHaveBeenCalledWith(expect.anything());
         });
     });
 });

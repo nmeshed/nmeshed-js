@@ -2,13 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext } from './context';
 import type { PresenceUser } from '../types';
 
-export type UsePresenceOptions = {
-    /**
-     * @deprecated Polling is no longer needed; presence is real-time.
-     */
-    interval?: number;
-};
-
 /**
  * Generates a stable HSL color based on a string ID.
  * Targets high-vibrancy "designer" colors.
@@ -49,7 +42,6 @@ function hasPingMethod(client: unknown): client is { ping: (userId: string) => P
  * Hook to get the current presence list for the workspace.
  * Uses real-time WebSocket events and periodic pings for latency tracking.
  *
- * @param options - Configuration options
  * @returns Array of active users with enriched data (colors, latency)
  *
  * @example
@@ -69,8 +61,7 @@ function hasPingMethod(client: unknown): client is { ping: (userId: string) => P
  * }
  * ```
  */
-export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
-    void options; // Silence unused warning (deprecated)
+export function usePresence(): PresenceUser[] {
     const client = useNmeshedContext();
     const [users, setUsers] = useState<PresenceUser[]>([]);
 
@@ -141,7 +132,9 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
             const onlineUsers = users.filter(u => u.status === 'online' && u.userId !== selfId);
             if (onlineUsers.length === 0) return;
 
-            for (const user of onlineUsers) {
+            // Parallel Ping (Zen Optimization: Action through Inaction)
+            // Don't wait for one user to respond before asking the next.
+            await Promise.all(onlineUsers.map(async (user) => {
                 try {
                     const rtt = await client.ping(user.userId);
                     if (rtt > 0) {
@@ -150,9 +143,9 @@ export function usePresence(options: UsePresenceOptions = {}): PresenceUser[] {
                         ));
                     }
                 } catch {
-                    // Ignore ping failures (user may have disconnected)
+                    // Ignore failures
                 }
-            }
+            }));
         }, 5000);
 
         return () => clearInterval(pingInterval);

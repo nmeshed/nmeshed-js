@@ -4,7 +4,7 @@ This directory contains the source code for the `nmeshed` npm package.
 
 ## Structure
 *   `client.ts`: The main `NMeshedClient` class.
-*   `mesh/`: P2P networking logic (WebRTC DataChannels).
+
 *   `react/`: React Context and Hooks (`useDocument`, `usePresence`).
 *   `wasm/`: The Rust Core bindings (via `wasm-pack`).
 *   `types.ts`: Shared TypeScript interfaces.

@@ -28,6 +28,7 @@ export interface Schema<T extends SchemaDefinition> {
     definition: T;
     encode: (data: InferObject<T>) => Uint8Array;
     decode: (buffer: Uint8Array) => InferObject<T>;
+    defaultValue: (key: keyof T) => InferField<T[keyof T]>;
 }
 
 // ============================================================================
@@ -94,7 +95,8 @@ export function defineSchema<T extends SchemaDefinition>(definition: T): Schema<
     return {
         definition,
         encode: (data: InferObject<T>) => SchemaSerializer.encode(definition, data),
-        decode: (buffer: Uint8Array) => SchemaSerializer.decode(definition, buffer) as InferObject<T>
+        decode: (buffer: Uint8Array) => SchemaSerializer.decode(definition, buffer) as InferObject<T>,
+        defaultValue: (key: keyof T) => SchemaSerializer.getDefaultValue(definition[key as string]) as any
     };
 }
 
@@ -233,7 +235,7 @@ export class SchemaSerializer {
             // Return empty object with defaults for empty buffer
             const result: any = {};
             for (const key of Object.keys(schema).sort()) {
-                result[key] = this.getDefaultForType(schema[key]);
+                result[key] = this.getDefaultValue(schema[key]);
             }
             return result;
         }
@@ -246,7 +248,7 @@ export class SchemaSerializer {
                 result[key] = this.decodeField(schema[key], state);
             } catch (e) {
                 // If decoding fails, set to default and continue
-                result[key] = this.getDefaultForType(schema[key]);
+                result[key] = this.getDefaultValue(schema[key]);
             }
         }
         return result;
@@ -258,7 +260,7 @@ export class SchemaSerializer {
 
     static decodeValue(type: SchemaField, buffer: Uint8Array): any {
         if (!buffer || buffer.byteLength === 0) {
-            return this.getDefaultForType(type);
+            return this.getDefaultValue(type);
         }
         const state = { offset: 0, buffer, view: new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength) };
         return this.decodeField(type, state);
@@ -267,7 +269,7 @@ export class SchemaSerializer {
     /**
      * Returns sensible defaults for each type to avoid runtime errors.
      */
-    private static getDefaultForType(type: SchemaField): any {
+    public static getDefaultValue(type: SchemaField): any {
         if (typeof type === 'string') {
             switch (type) {
                 case 'string': return '';

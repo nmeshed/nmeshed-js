@@ -43,6 +43,10 @@ export class AuthorityManager extends EventEmitter<AuthorityEvents> {
         this.recalculate();
     }
 
+    public getPeers(): string[] {
+        return this.ring.getNodes();
+    }
+
     /**
      * Checks if the local peer is the authority for a given key.
      */

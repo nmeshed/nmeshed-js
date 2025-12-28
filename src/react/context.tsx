@@ -94,25 +94,50 @@ export function NMeshedProvider({
     onError,
     onStatusChange,
 }: NMeshedProviderProps) {
-    // Create client on first render (guaranteed singleton)
-    // If externalClient is provided, use it. Otherwise create from config.
-    const [clientInstance] = useState(() => {
+    // Reactively manage client instance based on config
+    const [clientInstance, setClientInstance] = useState<NMeshedClient>(() => {
         if (externalClient) return externalClient;
         if (!config) throw new Error("NMeshedProvider: Either 'client' or 'config' must be provided.");
         return new NMeshedClient(config);
     });
 
+    // Detect config changes and recreate client (Hot-Swap)
+    useEffect(() => {
+        if (externalClient) {
+            setClientInstance(externalClient);
+            return;
+        }
+
+        if (config) {
+            // Identity check: Only recreate if workspaceId or token changes
+            const current = clientInstance.config;
+            if (config.workspaceId !== current.workspaceId ||
+                (config.token && config.token !== current.token) ||
+                (config.apiKey && config.apiKey !== current.apiKey)) {
+
+                // Disconnect old client before switching
+                clientInstance.disconnect();
+
+                const newClient = new NMeshedClient(config);
+                setClientInstance(newClient);
+            }
+        }
+    }, [config?.workspaceId, config?.token, config?.apiKey, externalClient]); // Deep dependency check
+
     const client = clientInstance;
-    const [status, setStatus] = useState<ConnectionStatus>('IDLE');
+    const [status, setStatus] = useState<ConnectionStatus>(client.getStatus());
     const [error, setError] = useState<Error | null>(null);
 
     // Subscribe to status changes
     useEffect(() => {
         if (!client) return;
 
+        // Sync initial status
+        setStatus(client.getStatus());
+
         const unsubscribe = client.onStatusChange((newStatus) => {
             setStatus(newStatus);
-            onStatusChange?.(newStatus);
+            onStatusChange?.(newStatus); // notify parent
 
             // Clear error on successful connection
             if (newStatus === 'CONNECTED') {
@@ -121,11 +146,15 @@ export function NMeshedProvider({
         });
 
         return unsubscribe;
-    }, [client, onStatusChange]);
+    }, [client]); // Re-subscribe when client instance changes
 
     // Handle auto-connect with proper error surfacing
     useEffect(() => {
         if (!client || !autoConnect) return;
+
+        // Prevent auto-connect if already connected/connecting
+        const s = client.getStatus();
+        if (s === 'CONNECTED' || s === 'CONNECTING' || s === 'RECONNECTING') return;
 
         const performConnect = async () => {
             try {
@@ -144,9 +173,11 @@ export function NMeshedProvider({
         performConnect();
 
         return () => {
+            // Optional: Disconnect on unmount? 
+            // Usually desired for a Provider, but check use-cases.
             client.disconnect();
         };
-    }, [autoConnect, client, onError]);
+    }, [autoConnect, client]); // Config changes -> New Client -> Auto Connect
 
     const contextValue: NMeshedContextValue = {
         client,
@@ -229,4 +260,12 @@ export function useNmeshedStatus(): { status: ConnectionStatus; error: Error | n
         status: context.status,
         error: context.error,
     };
+}
+
+/**
+ * Hook to access the nMeshed context optionally.
+ * Returns null if not within a provider.
+ */
+export function useOptionalNmeshedContext(): NMeshedContextValue | null {
+    return useContext(NMeshedContext);
 }

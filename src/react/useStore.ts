@@ -24,7 +24,8 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
     const [state, setState] = useState<InferSchema<Schema<T>>>(() => {
         const result = {} as any;
         for (const key of Object.keys(schema.definition)) {
-            result[key] = client.get(key);
+            const val = client.get(key);
+            result[key] = val !== undefined ? val : schema.defaultValue(key as any);
         }
         return result;
     });
@@ -44,7 +45,7 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
             const next = {} as any;
             for (const key of Object.keys(schema.definition)) {
                 const val = client.get(key);
-                next[key] = val;
+                next[key] = val !== undefined ? val : schema.defaultValue(key as any);
             }
 
             setState(current => {

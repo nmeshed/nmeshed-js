@@ -50,7 +50,7 @@ function openDB(): Promise<IDBDatabase> {
 export async function saveQueue(storageKey: string, queue: PersistentQueueItem[]): Promise<void> {
     try {
         const db = await openDB();
-        return new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
 
@@ -81,7 +81,7 @@ export async function saveQueue(storageKey: string, queue: PersistentQueueItem[]
 export async function loadQueue(storageKey: string): Promise<PersistentQueueItem[]> {
     try {
         const db = await openDB();
-        return new Promise((resolve, reject) => {
+        return await new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readonly');
             const store = tx.objectStore(STORE_NAME);
             const request = store.get(storageKey);

@@ -34,6 +34,7 @@ export interface Transport {
     // Discovery
     getPeers(): string[];
     ping(peerId: string): Promise<number>;
+    getLatency(): number;
 
     // Event Subscription
     on<K extends keyof TransportEvents>(

@@ -30,8 +30,8 @@ export enum OpCode {
     OP = 0x01,
     /** Ephemeral Sync (Cursors, Broadcasts) */
     SYNC = 0x02,
-    /** P2P/WebRTC Signaling */
-    SIGNAL = 0x03,
+    /** Full Document Snapshot (Bootstrap) */
+    INIT = 0x04,
 }
 
 /**

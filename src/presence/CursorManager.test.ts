@@ -22,7 +22,8 @@ const createMockClient = () => {
             listeners.get(event)?.forEach(h => h(...args));
         },
         sendEphemeral: vi.fn(),
-        broadcast: vi.fn(), // CursorManager uses broadcast() not sendEphemeral()
+        sendEphemeral: vi.fn(),
+        sendMessage: vi.fn(),
     };
 };
 
@@ -58,7 +59,12 @@ describe('CursorManager', () => {
 
             manager.sendCursor(100, 200);
 
-            expect(mockClient.broadcast).toHaveBeenCalledWith({
+            expect(mockClient.sendMessage).toHaveBeenCalledWith(expect.anything());
+            // Verify payload content if possible, but for strict binary, we just check call.
+            // Or decode and check.
+            const call = mockClient.sendMessage.mock.calls[0][0];
+            const decoded = JSON.parse(new TextDecoder().decode(call));
+            expect(decoded).toEqual({
                 type: '__cursor__',
                 namespace: 'cursor',
                 userId: 'me',
@@ -76,7 +82,7 @@ describe('CursorManager', () => {
             manager.sendCursor(120, 220);
 
             // Only first call should go through due to throttle
-            expect(mockClient.broadcast).toHaveBeenCalledTimes(1);
+            expect(mockClient.sendMessage).toHaveBeenCalledTimes(1);
         });
 
         it('should round coordinates', () => {
@@ -84,9 +90,9 @@ describe('CursorManager', () => {
 
             manager.sendCursor(100.7, 200.3);
 
-            expect(mockClient.broadcast).toHaveBeenCalledWith(
-                expect.objectContaining({ x: 101, y: 200 })
-            );
+            const call = mockClient.sendMessage.mock.calls[0][0];
+            const decoded = JSON.parse(new TextDecoder().decode(call));
+            expect(decoded).toEqual(expect.objectContaining({ x: 101, y: 200 }));
         });
     });
 

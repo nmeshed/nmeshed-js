@@ -49,7 +49,7 @@ interface AvatarProps {
  * NMeshedHUD - A delightful diagnostic overlay for developers.
  *
  * Provides real-time visibility into the mesh health, peer latency,
- * and topology (Relay vs P2P). Also includes "Chaos Mode" controls
+ * and topology. Also includes "Chaos Mode" controls
  * for testing network resilience.
  *
  * Toggle visibility using `Ctrl+Shift+D` by default.

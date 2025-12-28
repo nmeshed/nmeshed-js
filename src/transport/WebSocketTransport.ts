@@ -5,6 +5,7 @@ export interface WebSocketTransportConfig {
     workspaceId: string;
     peerId: string;
     token: string;
+    tokenProvider?: () => Promise<string | null>;
     debug?: boolean;
     heartbeatInterval?: number;
     heartbeatMaxMissed?: number;
@@ -16,7 +17,7 @@ export interface WebSocketTransportConfig {
 export class WebSocketTransport extends EventEmitter<TransportEvents> implements Transport {
     private ws: WebSocket | null = null;
     private status: TransportStatus = 'IDLE';
-    private config: Required<WebSocketTransportConfig>;
+    private config: WebSocketTransportConfig;
     private reconnectAttempts = 0;
     private heartbeatTimer: any = null;
     private missedHeartbeats = 0;
@@ -24,7 +25,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
     private latencySim = 0;
     private lossSim = 0;
 
-    private DEFAULT_CONFIG: Required<WebSocketTransportConfig> = {
+    private DEFAULT_CONFIG: WebSocketTransportConfig = {
         workspaceId: '',
         peerId: '',
         token: '',
@@ -33,7 +34,8 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         heartbeatMaxMissed: 3,
         connectionTimeout: 30000,
         autoReconnect: true,
-        maxReconnectAttempts: 5
+        maxReconnectAttempts: 5,
+        tokenProvider: undefined
     };
 
     constructor(private readonly url: string, config: Partial<WebSocketTransportConfig>) {
@@ -57,12 +59,22 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             return Promise.resolve();
         }
 
+        // Fetch dynamic token if provider exists (BEFORE starting connection)
+        if (this.config.tokenProvider) {
+            try {
+                const token = await this.config.tokenProvider();
+                if (token) this.config.token = token;
+            } catch (e) {
+                console.warn('[WebSocketTransport] Token provider failed', e);
+            }
+        }
+
         this.setStatus('CONNECTING');
         this.isIntentionallyClosed = false;
 
         return new Promise((resolve, reject) => {
             let timeout: any = null;
-            if (this.config.connectionTimeout > 0) {
+            if (this.config.connectionTimeout! > 0) {
                 timeout = setTimeout(() => {
                     if (this.status === 'CONNECTING') {
                         this.disconnect();
@@ -74,7 +86,13 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             }
 
             try {
-                this.ws = new WebSocket(this.url);
+                let url = this.url;
+                if (this.config.token) {
+                    const separator = url.includes('?') ? '&' : '?';
+                    url += `${separator}token=${encodeURIComponent(this.config.token)}`;
+                }
+
+                this.ws = new WebSocket(url);
                 this.ws.binaryType = 'arraybuffer';
 
                 this.ws.onopen = () => {
@@ -158,7 +176,8 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
                 this.missedHeartbeats = 0;
                 return;
             }
-            console.warn('[WebSocketTransport] Unexpected text message received:', data);
+            // Legacy/Debug: If we receive a string, emit it as bytes
+            this.emit('message', new TextEncoder().encode(data));
             return;
         }
 
@@ -203,7 +222,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             return;
         }
 
-        if (this.config.autoReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
+        if (this.config.autoReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts!) {
             this.status = 'IDLE';
             this.setStatus('RECONNECTING');
             this.reconnectAttempts++;
@@ -214,7 +233,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
                 }
             }, delay);
         } else {
-            this.setStatus(this.reconnectAttempts >= this.config.maxReconnectAttempts ? 'ERROR' : 'DISCONNECTED');
+            this.setStatus(this.reconnectAttempts >= this.config.maxReconnectAttempts! ? 'ERROR' : 'DISCONNECTED');
         }
     }
 
@@ -228,14 +247,14 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         this.stopHeartbeat();
         this.missedHeartbeats = 0;
         this.heartbeatTimer = setInterval(() => {
-            if (this.missedHeartbeats >= this.config.heartbeatMaxMissed) {
+            if (this.missedHeartbeats >= this.config.heartbeatMaxMissed!) {
                 this.ws?.close();
                 return;
             }
             // Send binary ping (\x01)
             this.transmit('\x01');
             this.missedHeartbeats++;
-        }, this.config.heartbeatInterval);
+        }, this.config.heartbeatInterval!);
     }
 
     private stopHeartbeat(): void {
@@ -247,6 +266,10 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
     public getPeers(): string[] { return []; }
     public async ping(_peerId: string): Promise<number> { return 0; }
+    public getLatency(): number {
+        // Return simulated latency for testing or 0
+        return this.latencySim > 0 ? this.latencySim : 0;
+    }
 
     public simulateLatency(ms: number): void { this.latencySim = ms; }
     public simulatePacketLoss(rate: number): void { this.lossSim = rate; }

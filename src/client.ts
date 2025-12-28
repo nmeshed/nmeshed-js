@@ -1,9 +1,10 @@
 import { EventEmitter } from './utils/EventEmitter';
+import { AuthProvider, StaticAuthProvider } from './auth/AuthProvider';
 import { SyncEngine } from './core/SyncEngine';
 import { SyncedCollection } from './sync/SyncedCollection';
 import { Transport, TransportStatus } from './transport/Transport';
 import { WebSocketTransport } from './transport/WebSocketTransport';
-import { P2PTransport } from './transport/P2PTransport';
+
 import { Schema } from './schema/SchemaBuilder';
 import { NMeshedMessage } from './types';
 import { ConfigurationError, ConnectionError } from './errors';
@@ -11,12 +12,12 @@ import { ConfigurationError, ConnectionError } from './errors';
 export interface NMeshedConfig {
     workspaceId: string;
     userId?: string;
+    auth?: AuthProvider;
     token?: string;
     apiKey?: string;
-    transport?: 'server' | 'p2p' | 'hybrid' | Transport;
+    transport?: 'server';
     relayUrl?: string; // Standard
     serverUrl?: string; // Legacy alias
-    iceServers?: RTCIceServer[];
     debug?: boolean;
     heartbeatInterval?: number;
     heartbeatMaxMissed?: number;
@@ -24,7 +25,6 @@ export interface NMeshedConfig {
     connectionTimeout?: number;
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
-    aggressiveRelay?: boolean;
 }
 
 /**
@@ -57,7 +57,7 @@ function deriveRelayUrl(workspaceId: string, config: NMeshedConfig): string {
  * 
  * Embodies "Absolute Clarity" by providing a single, unified entry point 
  * for all synchronization tasks. It abstracts away the complexity of 
- * transport negotiation (Server/P2P), binary encoding (Flatbuffers), 
+ * transport negotiation (Server), binary encoding (Flatbuffers), 
  * and optimistic state management.
  */
 export interface NMeshedEvents {
@@ -80,21 +80,48 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public readonly config: NMeshedConfig;
     private isDestroyed = false;
 
+    /**
+     * Creates a client instance pre-configured for local development.
+     * 
+     * - Auto-connects to localhost:8080 (or derived relay URL)
+     * - Uses a dummy 'dev-token' for authentication
+     * - Enables debug mode by default
+     */
+    static dev(workspaceId: string, config: Omit<NMeshedConfig, 'workspaceId'> = {}): NMeshedClient {
+        return new NMeshedClient({
+            workspaceId,
+            token: 'dev-token',
+            debug: true,
+            ...config
+        });
+    }
+
     constructor(config: NMeshedConfig) {
         super();
 
         if (!config.workspaceId) throw new ConfigurationError('workspaceId is required');
-        if (!config.token && !config.apiKey) throw new ConfigurationError('Either token or apiKey must be provided');
+
+        // Zen: Relaxed auth for Dev Mode / Localhost
+        // If we detect localhost or debug mode, we allow missing credentials by filling a dummy one
+        const isLocalhost = typeof window !== 'undefined' && window.location?.hostname === 'localhost';
+        if (!config.token && !config.apiKey && !config.auth) {
+            if (config.debug || isLocalhost) {
+                if (config.debug) console.log('[NMeshedClient] Dev Mode: using dummy "dev-token"');
+                config.token = 'dev-token';
+            } else {
+                throw new ConfigurationError('Either auth, token, or apiKey must be provided');
+            }
+        }
+
         if (config.maxQueueSize !== undefined && config.maxQueueSize < 0) throw new ConfigurationError('maxQueueSize must be >= 0');
         if (config.maxReconnectAttempts !== undefined && config.maxReconnectAttempts < 0) throw new ConfigurationError('maxReconnectAttempts must be >= 0');
 
-        const validTransports = ['server', 'p2p', 'hybrid'];
-        if (config.transport && typeof config.transport === 'string' && !validTransports.includes(config.transport)) {
-            throw new ConfigurationError(`Invalid transport: ${config.transport}`);
+        if (config.transport && config.transport !== 'server') {
+            throw new ConfigurationError(`Invalid transport: ${config.transport}. Only 'server' is supported.`);
         }
 
         this.config = { ...config };
-        if (!this.config.transport) this.config.transport = 'server';
+        this.config.transport = 'server'; // Force server
 
         this.workspaceId = config.workspaceId;
         this.userId = config.userId || `u-${Math.random().toString(36).substring(2, 9)}`;
@@ -102,34 +129,30 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.engine = new SyncEngine(config.workspaceId, this.userId, 'crdt', config.maxQueueSize || 1000, config.debug);
         this.bootPromise = this.engine.boot();
 
+        // Zen Identity: Wrap string tokens in StaticAuthProvider
+        let auth = config.auth;
+        if (!auth && (config.token || config.apiKey)) {
+            auth = new StaticAuthProvider(config.token || config.apiKey || '');
+        }
+
+        // Token Provider for Transports
+        const tokenProvider = auth ? async () => (await auth!.getToken()) || '' : undefined;
+
         // Zen: Auto-derive relay URL from environment
         const relayUrl = deriveRelayUrl(config.workspaceId, config);
 
-        if (typeof config.transport === 'object') {
-            this.transport = config.transport;
-        } else if (config.transport === 'p2p') {
-            this.transport = new P2PTransport({
-                workspaceId: config.workspaceId,
-                userId: this.userId,
-                serverUrl: relayUrl,
-                iceServers: config.iceServers,
-                token: config.token || config.apiKey || '',
-                debug: config.debug,
-                aggressiveRelay: config.aggressiveRelay
-            });
-        } else {
-            this.transport = new WebSocketTransport(relayUrl, {
-                workspaceId: config.workspaceId,
-                peerId: this.userId,
-                token: config.token || config.apiKey || '',
-                debug: config.debug,
-                heartbeatInterval: config.heartbeatInterval,
-                heartbeatMaxMissed: config.heartbeatMaxMissed,
-                connectionTimeout: config.connectionTimeout,
-                autoReconnect: config.autoReconnect,
-                maxReconnectAttempts: config.maxReconnectAttempts
-            });
-        }
+        this.transport = new WebSocketTransport(relayUrl, {
+            workspaceId: config.workspaceId,
+            peerId: this.userId,
+            tokenProvider, // Pass the provider
+            token: config.token || config.apiKey || '', // Fallback initial token
+            debug: config.debug,
+            heartbeatInterval: config.heartbeatInterval,
+            heartbeatMaxMissed: config.heartbeatMaxMissed,
+            connectionTimeout: config.connectionTimeout,
+            autoReconnect: config.autoReconnect,
+            maxReconnectAttempts: config.maxReconnectAttempts
+        });
 
         this.setupBindings();
     }
@@ -138,7 +161,19 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.transport.on('message', (bytes) => this.engine.applyRawMessage(bytes));
         // Backward compatibility for legacy transports
         this.transport.on('sync' as any, (bytes: Uint8Array) => this.engine.applyRawMessage(bytes));
-        this.engine.on('init', (payload: any) => {
+        this.engine.on('init', (rawPayload: any) => {
+            let payload = rawPayload;
+            if (rawPayload instanceof Uint8Array) {
+                try {
+                    const json = new TextDecoder().decode(rawPayload);
+                    payload = JSON.parse(json);
+                } catch (e) {
+                    // Not JSON? Might be pure binary init in future.
+                    // For now, if it fails, we can't extract meshId/peers.
+                    return;
+                }
+            }
+
             // Update Mesh ID if provided
             if (payload.meshId) {
                 this.engine.authority.meshId = payload.meshId;
@@ -194,7 +229,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         });
         this.transport.on('ephemeral', (p, f) => {
             if (p && p.type === '__ping__') {
-                this.broadcast({ type: '__pong__', to: p.from, requestId: p.requestId });
+                this.sendMessage({ type: '__pong__', to: p.from, requestId: p.requestId } as any);
                 return;
             }
             // Strict check: if signal data is binary, it comes from MessageRouter
@@ -223,19 +258,45 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
 
-    public async connect(): Promise<void> {
-        if (this.isDestroyed) throw new ConnectionError('Client is destroyed');
-        // Ensure engine is booted (re-boot if it was destroyed/disconnected)
-        await this.engine.boot();
-        const heads = this.engine.getHeads();
-        return this.transport.connect(heads).catch(err => {
-            throw new ConnectionError(err.message || 'Connection failed');
-        });
+    private connectPromise: Promise<void> | null = null;
+
+    public connect(): Promise<void> {
+        if (this.isDestroyed) return Promise.reject(new ConnectionError('Client is destroyed'));
+
+        if (!this.connectPromise) {
+            this.connectPromise = (async () => {
+                try {
+                    await this.engine.boot();
+                    const heads = this.engine.getHeads();
+                    await this.transport.connect(heads);
+                } catch (err: any) {
+                    this.connectPromise = null;
+                    throw new ConnectionError(err.message || 'Connection failed');
+                }
+            })();
+        }
+
+        return this.connectPromise;
     }
 
     public disconnect(): void {
+        this.connectPromise = null;
+        // The following lines (this.status, this.notifyStatusListeners, this.reconnectTimeout)
+        // are not present in the original document's class definition.
+        // To maintain faithfulness and avoid introducing undeclared properties,
+        // they are commented out or omitted.
+        // this.status = 'DISCONNECTING';
+        // this.notifyStatusListeners('DISCONNECTING');
+
+        // if (this.reconnectTimeout) {
+        //     clearTimeout(this.reconnectTimeout);
+        //     this.reconnectTimeout = null;
+        // }
+
         this.transport.disconnect();
-        this.engine.stop(); // Use stop() to allow reconnection
+        this.engine.stop();
+        // this.status = 'IDLE';
+        // this.notifyStatusListeners('IDLE');
     }
 
     public destroy(): void {
@@ -301,15 +362,35 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         return null;
     }
 
-    public broadcast(payload: any): void {
+    /**
+     * Sends an ephemeral message to all connected peers, or a specific peer if `to` is provided.
+     * This is useful for transient events like cursors, typing indicators, or game state updates
+     * that do not need to be persisted.
+     * 
+     * Zen DX: Automatically encodes JSON objects to binary if needed.
+     */
+    public sendMessage(payload: Uint8Array | Record<string, any> | string | number | boolean, to?: string): void {
         if (this.getStatus() !== 'READY' && this.getStatus() !== 'CONNECTED') {
-            console.warn('broadcast called while disconnected');
+            console.warn('sendMessage called while disconnected');
         }
-        this.transport.sendEphemeral(payload);
-    }
 
-    public sendToPeer(peerId: string, payload: any): void {
-        this.transport.sendEphemeral(payload, peerId);
+        let data: Uint8Array;
+        if (payload instanceof Uint8Array) {
+            data = payload;
+        } else if (payload instanceof ArrayBuffer) {
+            data = new Uint8Array(payload);
+        } else {
+            // "Simple" usage support: JSON -> Binary
+            try {
+                const str = JSON.stringify(payload);
+                data = new TextEncoder().encode(str);
+            } catch (e) {
+                console.warn('[NMeshedClient] Failed to stringify message payload, sending empty.', e);
+                data = new Uint8Array(0);
+            }
+        }
+
+        this.transport.sendEphemeral(data, to);
     }
 
     public getCollection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
@@ -425,5 +506,19 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
     public async ping(peerId: string): Promise<number> {
         return this.transport.ping(peerId);
+    }
+
+    /**
+     * Returns the list of currently connected peers from the SyncEngine.
+     */
+    public getPeers(): string[] {
+        return this.engine.authority.getPeers();
+    }
+
+    /**
+     * Returns the current estimated latency in milliseconds.
+     */
+    public getLatency(): number {
+        return this.transport.getLatency();
     }
 }

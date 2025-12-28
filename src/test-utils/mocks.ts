@@ -439,6 +439,10 @@ export class MockNMeshedClient extends EventEmitter<{
         return 10;
     }
 
+    public getLatency(): number {
+        return 0;
+    }
+
     public onStatusChange(cb: (status: any) => void) {
         this.on('status', cb);
         return () => this.off('status', cb);
@@ -459,7 +463,8 @@ export class MockNMeshedClient extends EventEmitter<{
         this.on('ephemeral' as any, cb);
         return () => this.off('ephemeral' as any, cb);
     }
-    public broadcast(payload: any) {
+    public sendMessage(payload: Uint8Array, to?: string) {
+        // Mock echoing back for hooks test
         this.emit('ephemeral' as any, payload, this.getId());
     }
 

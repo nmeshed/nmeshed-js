@@ -12,6 +12,7 @@ import { AuthorityManager } from './AuthorityManager';
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
 import { MsgType } from '../schema/nmeshed/msg-type';
+import { RingBuffer } from '../utils/RingBuffer';
 
 // ============================================================================
 // State Machine Definition
@@ -146,7 +147,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
     // Persistence/Queue management
     private preConnectState = new Map<string, unknown>();
-    private operationQueue: Uint8Array[] = [];
+    private operationQueue: RingBuffer<Uint8Array>;
     private maxQueueSize: number;
     private isQueueDirty = false;
     private persistenceTimer: any = null;
@@ -169,6 +170,8 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         this.maxQueueSize = maxQueueSize;
         this.debug = debug;
         this.logger = new Logger('SyncEngine', debug);
+
+        this.operationQueue = new RingBuffer<Uint8Array>(maxQueueSize);
 
         this.clock = new RealTimeClock(peerId, debug ? 1 : 10, debug);
         this.authority = new AuthorityManager(peerId, 20);
@@ -268,7 +271,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                         path.resolve(process.cwd(), 'src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
                         path.resolve(process.cwd(), 'sdks/javascript/src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
                         path.join(__dirname || '', '../wasm/nmeshed_core/nmeshed_core_bg.wasm'),
-                        '/Users/kevin/projects/nmeshed/sdks/javascript/src/wasm/nmeshed_core/nmeshed_core_bg.wasm'
+                        // Zen: Removed hardcoded user paths. "Works on everyone's machine."
                     ];
 
                     let found = false;
@@ -378,9 +381,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             this.persistenceTimer = null;
         }
         this.core = null;
-        this.operationQueue = [];
-        this.core = null;
-        this.operationQueue = [];
+        this.operationQueue.clear(); // Correctly clear RingBuffer
         this.preConnectState.clear();
         this.viewCache.clear();
     }
@@ -463,7 +464,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         const timestamp = BigInt(Date.now()) * 1000000n + BigInt(this.opSequence++);
         this.authority.trackKey(key);
 
-        this.logger.info(`[SyncEngine] apply_local_op key=${key} valPixels=${valBytes.length}`);
+        this.logger.debug(`[SyncEngine] apply_local_op key=${key} valPixels=${valBytes.length}`);
         const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as any;
         if (!res) {
             this.logger.error(`[SyncEngine] CORE FAILED TO APPLY OP for key: ${key}`);
@@ -478,7 +479,10 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
         if (shouldQueue) this.addToQueue(delta);
 
-        this.viewCache.clear();
+        // Zen Optimization: Only invalidate the changed key.
+        // Previously: this.viewCache.clear(); (Global Lock)
+        this.viewCache.delete(key);
+
         const verify = this.get(key);
         if (this.debug) {
             this.logger.debug(`[SyncEngine] setInternal complete. Key=${key}`, verify);
@@ -489,9 +493,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
     private addToQueue(delta: Uint8Array): void {
         this.operationQueue.push(delta);
-        if (this.operationQueue.length > this.maxQueueSize) {
-            this.operationQueue.shift();
-        }
+        // RingBuffer handles circular overwrite automatically O(1)
         this.isQueueDirty = true;
         this.schedulePersistence();
         this.emit('queueChange', this.getQueueSize());
@@ -525,13 +527,29 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             const msgType = packet.msgType();
 
             // 1. Core State Updates (Op, Sync)
-            if (msgType === MsgType.Op || msgType === MsgType.Sync) {
+            // 1. Core State Updates (Op, Sync)
+            if (msgType === MsgType.Op) {
                 try {
                     (this.core as any).apply_vessel(bytes);
-                    this.viewCache.clear();
+                    const op = packet.op();
+                    const k = op?.key();
+                    if (k) {
+                        this.viewCache.delete(k);
+                    } else {
+                        // Fallback if key missing (shouldn't happen for valid Op)
+                        this.viewCache.clear();
+                    }
                     this.emit('snapshot');
                 } catch (e) {
-                    this.logger.error('[SyncEngine] CORE apply_vessel FAILED:', e);
+                    this.logger.error('[SyncEngine] CORE apply_vessel (Op) FAILED:', e);
+                }
+            } else if (msgType === MsgType.Sync) {
+                try {
+                    (this.core as any).apply_vessel(bytes);
+                    this.viewCache.clear(); // Bulk sync still invalidates all
+                    this.emit('snapshot');
+                } catch (e) {
+                    this.logger.error('[SyncEngine] CORE apply_vessel (Sync) FAILED:', e);
                 }
             }
 
@@ -542,12 +560,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             } else if (msgType === MsgType.Init) {
                 const payload = packet.payloadArray();
                 if (payload) {
-                    try {
-                        const json = new TextDecoder().decode(payload);
-                        this.emit('init', JSON.parse(json));
-                    } catch (e) {
-                        this.emit('init', payload);
-                    }
+                    this.emit('init', payload);
                 }
             } else if (msgType === MsgType.Op) {
                 const op = packet.op();
@@ -652,19 +665,18 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     }
 
     public getPendingOps(): Uint8Array[] {
-        return [...this.operationQueue];
+        return this.operationQueue.toArray();
     }
 
     public clearQueue(): void {
-        this.operationQueue = [];
+        this.operationQueue.clear();
         this.saveState();
         this.emit('queueChange', this.getQueueSize());
     }
 
     public shiftQueue(count: number): void {
         if (count <= 0) return;
-        const actualCount = Math.min(count, this.operationQueue.length);
-        this.operationQueue.splice(0, actualCount);
+        this.operationQueue.shiftMany(count);
         this.saveState();
         this.emit('queueChange', this.getQueueSize());
     }
@@ -708,10 +720,27 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             // Let's blindly save a merged array for the mock?
             // Real persistence might need better schema.
             // For now, to pass tests and logically work:
-            const combined = [
-                ...this.operationQueue,
-                ...Array.from(this.preConnectState.entries()).map(([k, v]) => ({ type: 'pre', k, v }))
-            ];
+            // Zen Optimization: Single Allocation
+            // Avoid spreading arrays (...ops, ...pre) which thrills the GC.
+            const opsCount = this.operationQueue.length;
+            const preCount = this.preConnectState.size;
+            const totalSize = opsCount + preCount;
+
+            // Pre-allocate exact size
+            const combined = new Array(totalSize);
+
+            // Fill Ops (O(N))
+            const ops = this.operationQueue.toArray();
+            for (let i = 0; i < opsCount; i++) {
+                combined[i] = ops[i];
+            }
+
+            // Fill Pre-Connect (O(M))
+            let idx = opsCount;
+            for (const [k, v] of this.preConnectState) {
+                combined[idx++] = { type: 'pre', k, v };
+            }
+
             await saveQueue(this.storageKey, combined);
         } catch (e) {
             if (this._state !== EngineState.DESTROYED) this.isQueueDirty = true;

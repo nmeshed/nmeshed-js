@@ -129,7 +129,8 @@ export class CursorManager {
             timestamp: now,
         };
 
-        this.client.broadcast(message);
+        const payload = new TextEncoder().encode(JSON.stringify(message));
+        this.client.sendMessage(payload);
     }
 
     /**
@@ -184,7 +185,17 @@ export class CursorManager {
     private setupListeners(): void {
         // Listen for ephemeral messages (payload includes userId)
         const unsubEphemeral = this.client.on('ephemeral', (payload: any) => {
-            this.handleEphemeral(payload);
+            try {
+                // Decode binary payload if necessary
+                let data = payload;
+                if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) {
+                    const str = new TextDecoder().decode(payload);
+                    data = JSON.parse(str);
+                }
+                this.handleEphemeral(data);
+            } catch (e) {
+                // Ignore decoding errors
+            }
         });
         this.unsubscribes.push(unsubEphemeral);
 

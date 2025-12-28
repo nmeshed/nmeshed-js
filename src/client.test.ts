@@ -104,9 +104,18 @@ describe('NMeshedClient', () => {
                 .toThrow(ConfigurationError);
         });
 
-        it('throws ConfigurationError if token is missing', () => {
-            expect(() => new NMeshedClient({ workspaceId: 'workspace', userId: 'u', token: '' }))
-                .toThrow(ConfigurationError);
+        it('throws ConfigurationError if token is missing and not in debug/localhost mode', () => {
+            // Mock non-localhost environment to verify production safety
+            const originalLocation = window.location;
+            delete (window as any).location;
+            window.location = { ...originalLocation, hostname: 'example.com' };
+
+            try {
+                expect(() => new NMeshedClient({ workspaceId: 'workspace', userId: 'u', token: '', debug: false }))
+                    .toThrow(ConfigurationError);
+            } finally {
+                window.location = originalLocation;
+            }
         });
 
         it('throws ConfigurationError for invalid config', () => {
@@ -477,10 +486,10 @@ describe('NMeshedClient', () => {
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
             await connectPromise;
-            client.broadcast('lost-message');
+            client.sendMessage(new TextEncoder().encode('lost-message'));
             expect(ws.send).not.toHaveBeenCalled();
             client.simulateNetwork(null);
-            client.broadcast('safe-message');
+            client.sendMessage(new TextEncoder().encode('safe-message'));
             expect(ws.send).toHaveBeenCalled();
         });
 
@@ -492,7 +501,7 @@ describe('NMeshedClient', () => {
             const ws = MockWebSocket.instances[0];
             ws.simulateOpen();
             await connectPromise;
-            client.broadcast('delayed');
+            client.sendMessage(new TextEncoder().encode('delayed'));
             expect(ws.send).not.toHaveBeenCalled();
             vi.advanceTimersByTime(501);
         });
@@ -564,7 +573,7 @@ describe('NMeshedClient', () => {
             const handler = vi.fn();
 
             client.on('ephemeral', handler);
-            client.broadcast('msg');
+            client.sendMessage(new TextEncoder().encode('msg'));
             // triggers onEphemeral which handler is subscribed to
 
             client.on('presence', handler);
@@ -807,7 +816,7 @@ describe('NMeshedClient', () => {
                 ws.simulateOpen();
                 await connectPromise;
 
-                client.broadcast({ type: 'test', data: 123 });
+                client.sendMessage(new TextEncoder().encode(JSON.stringify({ type: 'test', data: 123 })));
                 expect(ws.send).toHaveBeenCalled();
             });
 
@@ -819,7 +828,7 @@ describe('NMeshedClient', () => {
                 ws.simulateOpen();
                 await connectPromise;
 
-                client.sendToPeer('specific-user', { msg: 'hello' });
+                client.sendMessage(new TextEncoder().encode(JSON.stringify({ msg: 'hello' })), 'specific-user');
                 expect(ws.send).toHaveBeenCalled();
             });
         });
@@ -941,15 +950,9 @@ describe('NMeshedClient', () => {
                 expect((client as any).config.transport).toBe('server');
             });
 
-            it('accepts p2p transport config', () => {
-                const client = new NMeshedClient({ ...defaultConfig, transport: 'p2p' });
-                expect((client as any).config.transport).toBe('p2p');
-            });
 
-            it('accepts hybrid transport config', () => {
-                const client = new NMeshedClient({ ...defaultConfig, transport: 'hybrid' });
-                expect((client as any).config.transport).toBe('hybrid');
-            });
+
+
 
             it('rejects invalid transport values', () => {
                 expect(() => new NMeshedClient({ ...defaultConfig, transport: 'invalid' as any }))
@@ -967,7 +970,7 @@ describe('NMeshedClient', () => {
                 await connectPromise;
 
                 const binaryData = new Uint8Array([1, 2, 3, 4]);
-                client.broadcast(binaryData);
+                client.sendMessage(binaryData);
                 expect(ws.send).toHaveBeenCalled();
             });
 
@@ -980,15 +983,15 @@ describe('NMeshedClient', () => {
                 await connectPromise;
 
                 const buffer = new ArrayBuffer(4);
-                client.broadcast(buffer);
+                client.sendMessage(new Uint8Array(buffer));
                 expect(ws.send).toHaveBeenCalled();
             });
 
             it('warns when broadcast is called while disconnected', () => {
                 const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
                 const client = new NMeshedClient(defaultConfig);
-                client.broadcast({ type: 'test' });
-                expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/broadcast.*called while/i));
+                client.sendMessage(new TextEncoder().encode(JSON.stringify({ type: 'test' })));
+                expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/sendMessage.*called while/i));
                 warnSpy.mockRestore();
             });
         });
@@ -1161,6 +1164,149 @@ describe('NMeshedClient', () => {
         it('getMetrics fallback', () => {
             const client = new NMeshedClient(defaultConfig);
             expect(client.getMetrics()).toBeNull();
+
+        });
+    });
+
+    describe('COVERAGE BOOST', () => {
+
+        it('getAllValues should be an alias for getState', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const spy = vi.spyOn(client, 'getState').mockReturnValue({ foo: 'bar' });
+            expect(client.getAllValues()).toEqual({ foo: 'bar' });
+            expect(spy).toHaveBeenCalled();
+        });
+
+        it('getMetrics should delegate to transport', () => {
+            const client = new NMeshedClient(defaultConfig);
+            // mock transport on the instance if needed, or rely on MockWebSocket behavior
+            const t = client.transport as any;
+            // We can mock the method on the transport instance
+            t.getMetrics = vi.fn().mockReturnValue({ latency: 42 });
+            expect(client.getMetrics()).toEqual({ latency: 42 });
+        });
+
+        it('getLatency should delegate to transport', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const t = client.transport as any;
+            t.getLatency = vi.fn().mockReturnValue(42);
+            expect(client.getLatency()).toBe(42);
+        });
+
+        it('getPeers should delegate to engine.authority', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const auth = client.engine.authority;
+            const spy = vi.spyOn(auth, 'getPeers').mockReturnValue(['p1']);
+            expect(client.getPeers()).toEqual(['p1']);
+        });
+
+        it('simulateNetwork should delegate to transport', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const t = client.transport as any;
+            t.simulateLatency = vi.fn();
+            t.simulatePacketLoss = vi.fn();
+
+            client.simulateNetwork({ latency: 100, packetLoss: 5, jitter: 10 });
+            expect(t.simulateLatency).toHaveBeenCalledWith(100);
+            expect(t.simulatePacketLoss).toHaveBeenCalledWith(0.05);
+
+            client.simulateNetwork(null);
+            expect(t.simulateLatency).toHaveBeenCalledWith(0);
+            expect(t.simulatePacketLoss).toHaveBeenCalledWith(0);
+        });
+
+        it('ping should delegate to transport', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const t = client.transport as any;
+            t.ping = vi.fn().mockResolvedValue(10);
+            const res = await client.ping('p1');
+            expect(t.ping).toHaveBeenCalledWith('p1');
+            expect(res).toBe(10);
+        });
+
+        it('onQueueChange should handle errors gracefully', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+            const engine = client.engine as any;
+            engine.on = vi.fn((event: string, cb: any) => {
+                if (event === 'queueChange') cb(123);
+                return () => { };
+            });
+
+            client.onQueueChange(() => {
+                throw new Error('Boom');
+            });
+
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Error in listener'), expect.any(Error));
+            consoleSpy.mockRestore();
+        });
+
+        it('onKeyChange should handle errors gracefully', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+            const engine = client.engine as any;
+            engine.on = vi.fn((event: string, cb: any) => {
+                if (event === 'op') cb('foo', 'bar', false);
+                return () => { };
+            });
+
+            client.onKeyChange('foo', () => {
+                throw new Error('Boom');
+            });
+
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Error in key change listener'), expect.any(Error));
+            consoleSpy.mockRestore();
+        });
+
+        it('awaitReady should reject on error', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const t = client.transport as any;
+            t.getStatus = vi.fn().mockReturnValue('CONNECTING');
+
+            const p = client.awaitReady();
+            client.emit('error', new Error('Connection failed'));
+            await expect(p).rejects.toThrow('Connection failed');
+        });
+
+        it('ephemeral handler should respond to __ping__', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const t = client.transport as any;
+            // We need to capture the handler registered to 'ephemeral'
+            let ephemeralHandler: any;
+            t.on = vi.fn((event: string, cb: any) => {
+                if (event === 'ephemeral') ephemeralHandler = cb;
+                return () => { };
+            });
+
+            // Client setupBindings is called in constructor.
+            // We need to re-instantiate or assume t.on was called.
+            // But existing client might have already called it.
+            // MockWebSocketTransport sets up handlers on init.
+            // Real WebSocketTransport is used here. 
+            // We can manually trigger client's protected methods if accessible or just re-emit event if we could.
+
+            // Easier: Just spy on transport.sendEphemeral and emit 'ephemeral' on client via public/protected mechanism?
+            // Client listens to transport 'ephemeral'.
+            // Transport is an EventEmitter.
+            // We can emit 'ephemeral' on the transport directly if we can access it.
+            // Check if transport extends EventEmitter. Yes.
+
+            t.sendEphemeral = vi.fn();
+
+            // The client constructor set up the listener. 
+            // We can manually emit 'ephemeral' on the transport.
+            t.emit('ephemeral', { type: '__ping__', from: 'p2', requestId: 'r1' }, 'p2');
+
+            // Verify that sendMessage encoded the JSON into binary
+            expect(t.sendEphemeral).toHaveBeenCalled();
+            const callArgs = (t.sendEphemeral as any).mock.calls[0];
+            const payload = callArgs[0];
+            expect(payload).toBeDefined();
+            // Loosen check for test environment compatibility
+
+            const decoded = JSON.parse(new TextDecoder().decode(payload));
+            expect(decoded).toEqual(expect.objectContaining({ type: '__pong__', to: 'p2', requestId: 'r1' }));
         });
     });
 });
+

@@ -118,11 +118,13 @@ describe('useStore', () => {
             expect(state.title).toBe('Test Value');
         });
 
-        it('should return undefined for missing fields', () => {
+        it('should return default values for missing fields', () => {
             mockGet.mockReturnValue(undefined);
             const { result } = renderHook(() => useStore(TestSchema));
             const [state] = result.current;
-            expect(state.title).toBeUndefined();
+            expect(state.title).toBe(''); // Default for string
+            expect(state.count).toBe(0); // Default for int32
+            expect(state.active).toBe(false); // Default for boolean
         });
     });
 
@@ -173,5 +175,25 @@ describe('useStore with Map schema', () => {
         });
 
         expect(mockSet).toHaveBeenCalledWith('tasks', tasks, expect.any(Object));
+
+    });
+});
+
+describe('Schema Defaults', () => {
+    it('should hydrate with schema defaults when data is missing', () => {
+        const DefaultSchema = defineSchema({
+            list: { type: 'array', itemType: 'string' },
+            map: { type: 'map', schema: { val: 'string' } },
+            num: 'float32',
+            str: 'string'
+        });
+
+        const { result } = renderHook(() => useStore(DefaultSchema));
+        const [store] = result.current;
+
+        expect(store.list).toEqual([]);
+        expect(store.map).toEqual({});
+        expect(store.num).toBe(0);
+        expect(store.str).toBe('');
     });
 });

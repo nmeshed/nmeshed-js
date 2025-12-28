@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { NMeshedClient } from '../client';
+import { CallbackAuthProvider } from '../auth/AuthProvider';
+import { useConnectionState } from './useConnectionState';
+import { usePeers } from './usePeers';
 import type { ConnectionStatus, PresenceUser } from '../types';
 import { useNmeshed } from './useNmeshed';
 // import { usePresence } from './usePresence'; // Not used in this implementation
@@ -24,6 +27,11 @@ export interface SyncSessionOptions {
     token?: string;
 
     /**
+     * Dynamic token provider (e.g., for clerk.session.getToken())
+     */
+    getToken?: () => Promise<string | null>;
+
+    /**
      * User identifier (auto-generated if omitted)
      */
     userId?: string;
@@ -34,9 +42,9 @@ export interface SyncSessionOptions {
     debug?: boolean;
 
     /**
-     * Transport type: 'server' (default) or 'p2p' (experimental)
+     * Transport type: 'server' (default)
      */
-    transport?: 'server' | 'p2p';
+    transport?: 'server';
 
     /**
      * Explicit relay URL (auto-derived if omitted)
@@ -97,10 +105,11 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
     // Local error state since useNmeshed uses callback pattern
     const [localError, setLocalError] = useState<Error | null>(null);
 
-    // Flatten options into NMeshedConfig - no nested spread!
+    // Flatten options into NMeshedConfig
     const result = useNmeshed({
         workspaceId: options.workspaceId,
         token: options.token || options.apiKey,
+        auth: options.getToken ? new CallbackAuthProvider(options.getToken) : undefined,
         userId: options.userId,
         debug: options.debug,
         transport: options.transport || 'server',
@@ -108,80 +117,26 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
         onError: (err) => setLocalError(err)
     });
 
-    // Safety check - useNmeshed guarantees client but let's be safe
     const client = result.client;
-    const status = result.status;
 
-    const [peers, setPeers] = useState<PresenceUser[]>([]);
-    const [latency, setLatency] = useState<number>(0);
+    // Zen: Compostion
+    const { status, isReady, latency, error: connError } = useConnectionState();
+    const peerIds = usePeers();
 
-    // Presence tracking logic
-    useEffect(() => {
-        if (!client) return;
-
-        const updatePeers = async () => {
-            try {
-                const list = await client.getPresence();
-                setPeers(list);
-            } catch (e) {
-                // Ignore presence fetch errors or log them
-            }
-        };
-
-        const onPresence = () => updatePeers();
-        const onPeerJoin = () => updatePeers();
-        const onPeerLeave = () => updatePeers();
-
-        // Subscribe to events
-        // Note: We use 'on' generic method if available or specific methods
-        // NMeshedClient has onPresence, onPeerJoin, etc. specific methods usually returning unsubscribe fn
-        // or .on() returning unsubscribe.
-        // Let's assume .on() is the standard way for these in the Zen client.
-
-        let unsubPresence = () => { };
-        let unsubJoin = () => { };
-        let unsubLeave = () => { };
-
-        if (typeof client.on === 'function') {
-            unsubPresence = client.on('presence', onPresence);
-            unsubJoin = client.on('peerJoin', onPeerJoin);
-            unsubLeave = client.on('peerDisconnect', onPeerLeave);
-        }
-
-        // Initial fetch
-        updatePeers();
-
-        const pingInterval = setInterval(async () => {
-            if (status === 'READY') {
-                try {
-                    // Ping self to check loopback/gateway health
-                    // Use client.userId since options.userId may be undefined (auto-generated)
-                    await client.ping(client.userId);
-                    // If ping succeeds, we assume healthy. 
-                    // TODO: Get actual RTT if client.ping returns it.
-                    // The mock client.ping returns a number (latency).
-                    // Real client.ping returns Promise<number>.
-                    setLatency(10); // Placeholder or result
-                } catch (e) {
-                    // Ignore ping errors
-                }
-            }
-        }, 5000);
-
-        return () => {
-            unsubPresence();
-            unsubJoin();
-            unsubLeave();
-            clearInterval(pingInterval);
-        };
-    }, [client, status]);
+    // Map string IDs to PresenceUser for backward compatibility
+    // In a future version, we might fetch rich presence, but for now we assume online.
+    const peers: PresenceUser[] = peerIds.map(id => ({
+        userId: id,
+        status: 'online',
+        latency: 0
+    }));
 
     return {
         client,
         status,
-        isReady: status === 'READY',
+        isReady,
         peers,
         latency,
-        error: localError
+        error: localError || connError
     };
 }

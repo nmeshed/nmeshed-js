@@ -1,3 +1,13 @@
+/**
+ * E2E: Real Server Integration Tests
+ * 
+ * These tests spawn a real server binary and test against it.
+ * Run manually with: npm test -- --run e2e.manual
+ * 
+ * Prerequisites:
+ * - Build server: make build (in project root)
+ * - WASM binary at ./wasm/nmeshed_core/nmeshed_core_bg.wasm
+ */
 
 import 'fake-indexeddb/auto'; // Polyfill IndexedDB for Node
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
@@ -18,8 +28,8 @@ const WS_BASE_URL = `ws://localhost:${SERVER_PORT}/v1/sync`; // Base URL, worksp
 const DB_PATH = './test_badger_db';
 const SQLITE_PATH = './test_sqlite.db';
 
-// Skip: This test suite requires spawning a real server binary.
-// Run manually for full E2E validation.
+// Skip: This test suite requires spawning a real server binary and manual setup.
+// Run manually by removing .skip or using .only
 describe.skip('E2E: Real Server Integration', () => {
     let serverProcess: ChildProcess;
 
@@ -118,7 +128,9 @@ describe.skip('E2E: Real Server Integration', () => {
         clientA2.disconnect();
     });
 
-    it('should handle stress (Fuzz Test)', async () => {
+    // Skip: 7-user fuzz test is extremely slow (2+ mins) and creates 7 WASM runtimes.
+    // We rely on smaller unit tests and manual E2E for now.
+    it.skip('Stress: 7 Users Random Churn (Fuzz Test)', async () => {
         const workspaceId = crypto.randomUUID();
         const wsUrl = `${WS_BASE_URL}/${workspaceId}`;
         const numClients = 5; // Reduced from 7 to keep loop tight

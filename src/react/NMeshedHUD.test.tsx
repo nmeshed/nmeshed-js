@@ -9,8 +9,8 @@ import { MockNMeshedClient } from '../test-utils/mocks';
 vi.mock('../client', async () => {
     const { MockNMeshedClient } = await vi.importActual<any>('../test-utils/mocks');
     return {
-        NMeshedClient: vi.fn().mockImplementation(function () {
-            return new MockNMeshedClient();
+        NMeshedClient: vi.fn().mockImplementation(function (config) {
+            return new MockNMeshedClient(config);
         })
     };
 });

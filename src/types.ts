@@ -1,10 +1,12 @@
 import { z } from 'zod';
+import { AuthProvider } from './auth/AuthProvider';
 
 /**
  * Configuration options for the nMeshed client.
  */
 export interface NMeshedConfig {
     workspaceId: string;
+    auth?: AuthProvider;
     token?: string;
     apiKey?: string;
     syncMode?: 'crdt' | 'crdt_performance' | 'crdt_strict' | 'lww';
@@ -20,7 +22,7 @@ export interface NMeshedConfig {
     heartbeatMaxMissed?: number;
     maxQueueSize?: number;
     debug?: boolean;
-    transport?: 'server' | 'p2p' | 'hybrid';
+    transport?: 'server';
     replicationFactor?: number;
 }
 
@@ -45,11 +47,8 @@ export const ConfigSchema = z.object({
     heartbeatMaxMissed: z.number().int().min(1).optional().default(3),
     maxQueueSize: z.number().int().min(0).optional().default(1000),
     debug: z.boolean().optional().default(false),
-    transport: z.enum(['server', 'p2p', 'hybrid']).optional().default('server'),
+    transport: z.enum(['server']).optional().default('server'),
     replicationFactor: z.number().int().min(1).optional().default(20)
-}).refine(data => !!(data.token || data.apiKey), {
-    message: "Either token or apiKey must be provided",
-    path: ["token"]
 });
 
 export const DEFAULT_CONFIG: Partial<ResolvedConfig> = {
