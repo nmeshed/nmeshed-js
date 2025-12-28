@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class StateVectorEntry {
+
+
+export class StateVectorEntry implements flatbuffers.IUnpackableObject<StateVectorEntryT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):StateVectorEntry {
@@ -56,5 +58,35 @@ static createStateVectorEntry(builder:flatbuffers.Builder, peerIdOffset:flatbuff
   StateVectorEntry.addPeerId(builder, peerIdOffset);
   StateVectorEntry.addSeq(builder, seq);
   return StateVectorEntry.endStateVectorEntry(builder);
+}
+
+unpack(): StateVectorEntryT {
+  return new StateVectorEntryT(
+    this.peerId(),
+    this.seq()
+  );
+}
+
+
+unpackTo(_o: StateVectorEntryT): void {
+  _o.peerId = this.peerId();
+  _o.seq = this.seq();
+}
+}
+
+export class StateVectorEntryT implements flatbuffers.IGeneratedObject {
+constructor(
+  public peerId: string|Uint8Array|null = null,
+  public seq: bigint = BigInt('0')
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const peerId = (this.peerId !== null ? builder.createString(this.peerId!) : 0);
+
+  return StateVectorEntry.createStateVectorEntry(builder,
+    peerId,
+    this.seq
+  );
 }
 }

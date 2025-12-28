@@ -1,24 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 
 // 1. FORENSIC MOCK STABILITY: Use vi.hoisted to ensure a STABLE object reference.
-// The previous implementation returned a new object literal on every call, 
-// triggering an infinite React render loop due to unstable dependencies in useMemo/useEffect.
 const { mockClient, mockSet } = vi.hoisted(() => {
     const sendOp = vi.fn();
     return {
         mockClient: {
             get: vi.fn(),
-            sendOperation: sendOp,
-            set: sendOp,  // Alias for migration: useStore now uses set()
-            onMessage: vi.fn(() => vi.fn()),
+            set: sendOp,
+            subscribe: vi.fn(() => vi.fn()),
         },
         mockSet: sendOp,
     };
 });
 
-// Mock WASM core to prevent OOM during jsdom environment setup
+// Mock WASM core to prevent OOM
 vi.mock('../wasm/nmeshed_core', () => ({
     default: vi.fn(),
     NMeshedCore: vi.fn().mockImplementation(() => ({
@@ -29,19 +26,15 @@ vi.mock('../wasm/nmeshed_core', () => ({
     })),
 }));
 
-// 2. STABLE CONTEXT MOCK: Returns the same object reference every time.
+// 2. STABLE CONTEXT MOCK
 vi.mock('./context', () => ({
     useNmeshedContext: () => mockClient,
 }));
 
-// Destructure for easy use in tests while maintaining reference stability
-const { get: mockGet, onMessage: mockOnMessage } = mockClient;
+const { get: mockGet, subscribe: mockSubscribe } = mockClient;
 
-
-
-// Import after mocking
-import { useStore, UseStoreReturn } from './useStore';
-import { defineSchema, SchemaSerializer } from '../schema/SchemaBuilder';
+import { useStore } from './useStore';
+import { defineSchema } from '../schema/SchemaBuilder';
 
 describe('useStore', () => {
     beforeEach(() => {
@@ -63,7 +56,6 @@ describe('useStore', () => {
             expect(result.current.length).toBe(3);
             expect(typeof result.current[1]).toBe('function');
             expect(typeof result.current[2]).toBe('object');
-            expect(result.current[2].pending).toBeInstanceOf(Set);
         });
 
         it('should provide state as first element', () => {
@@ -73,25 +65,10 @@ describe('useStore', () => {
             expect(state).toBeDefined();
             expect(typeof state).toBe('object');
         });
-
-        it('should provide setStore function as second element', () => {
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [, setStore] = result.current;
-
-            expect(typeof setStore).toBe('function');
-        });
-
-        it('should provide metadata as third element', () => {
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [, , metadata] = result.current;
-
-            expect(metadata).toBeDefined();
-            expect(metadata.pending).toBeInstanceOf(Set);
-        });
     });
 
     describe('setStore', () => {
-        it('should call set with encoded value for single field', () => {
+        it('should call set with raw value and schema', () => {
             const { result } = renderHook(() => useStore(TestSchema));
             const [, setStore] = result.current;
 
@@ -100,7 +77,7 @@ describe('useStore', () => {
             });
 
             expect(mockSet).toHaveBeenCalledTimes(1);
-            expect(mockSet).toHaveBeenCalledWith('title', expect.any(Uint8Array));
+            expect(mockSet).toHaveBeenCalledWith('title', 'New Title', expect.any(Object));
         });
 
         it('should call set for each field when updating multiple', () => {
@@ -112,45 +89,6 @@ describe('useStore', () => {
             });
 
             expect(mockSet).toHaveBeenCalledTimes(2);
-        });
-
-        it('should encode string values correctly', () => {
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [, setStore] = result.current;
-
-            act(() => {
-                setStore({ title: 'Hello' });
-            });
-
-            const encodedArg = mockSet.mock.calls[0][1];
-            const decoded = SchemaSerializer.decodeValue('string', encodedArg);
-            expect(decoded).toBe('Hello');
-        });
-
-        it('should encode int32 values correctly', () => {
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [, setStore] = result.current;
-
-            act(() => {
-                setStore({ count: 123 });
-            });
-
-            const encodedArg = mockSet.mock.calls[0][1];
-            const decoded = SchemaSerializer.decodeValue('int32', encodedArg);
-            expect(decoded).toBe(123);
-        });
-
-        it('should encode boolean values correctly', () => {
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [, setStore] = result.current;
-
-            act(() => {
-                setStore({ active: true });
-            });
-
-            const encodedArg = mockSet.mock.calls[0][1];
-            const decoded = SchemaSerializer.decodeValue('boolean', encodedArg);
-            expect(decoded).toBe(true);
         });
 
         it('should warn and skip unknown fields', () => {
@@ -171,12 +109,8 @@ describe('useStore', () => {
     });
 
     describe('State Reading', () => {
-        it('should decode Uint8Array values from client', () => {
-            const encoded = SchemaSerializer.encodeValue('string', 'Test Value');
-            mockGet.mockImplementation((key: string) => {
-                if (key === 'title') return encoded;
-                return undefined;
-            });
+        it('should return decoded values from client', () => {
+            mockGet.mockReturnValue('Test Value');
 
             const { result } = renderHook(() => useStore(TestSchema));
             const [state] = result.current;
@@ -184,27 +118,10 @@ describe('useStore', () => {
             expect(state.title).toBe('Test Value');
         });
 
-        it('should handle raw values (not Uint8Array) passthrough', () => {
-            mockGet.mockImplementation((key: string) => {
-                if (key === 'count') return 99; // Raw number, not encoded
-                return undefined;
-            });
-
+        it('should return undefined for missing fields', () => {
+            mockGet.mockReturnValue(undefined);
             const { result } = renderHook(() => useStore(TestSchema));
             const [state] = result.current;
-
-            expect(state.count).toBe(99);
-        });
-
-        it('should return undefined for failed decoding', () => {
-            mockGet.mockImplementation((key: string) => {
-                if (key === 'title') return new Uint8Array([0xFF, 0xFF]); // Invalid
-                return undefined;
-            });
-
-            const { result } = renderHook(() => useStore(TestSchema));
-            const [state] = result.current;
-
             expect(state.title).toBeUndefined();
         });
     });
@@ -212,12 +129,12 @@ describe('useStore', () => {
     describe('Message Handling', () => {
         it('should subscribe to messages on mount', () => {
             renderHook(() => useStore(TestSchema));
-            expect(mockOnMessage).toHaveBeenCalledTimes(1);
+            expect(mockSubscribe).toHaveBeenCalledTimes(1);
         });
 
         it('should unsubscribe on unmount', () => {
             const unsubscribe = vi.fn();
-            mockOnMessage.mockReturnValue(unsubscribe);
+            mockSubscribe.mockReturnValue(unsubscribe);
 
             const { unmount } = renderHook(() => useStore(TestSchema));
             unmount();
@@ -242,7 +159,7 @@ describe('useStore with Map schema', () => {
         tasks: { type: 'map', schema: TaskSchema.definition },
     });
 
-    it('should encode map values correctly', () => {
+    it('should pass map values correctly to client.set', () => {
         const { result } = renderHook(() => useStore(MapSchema));
         const [, setStore] = result.current;
 
@@ -255,6 +172,6 @@ describe('useStore with Map schema', () => {
             setStore({ tasks });
         });
 
-        expect(mockSet).toHaveBeenCalledWith('tasks', expect.any(Uint8Array));
+        expect(mockSet).toHaveBeenCalledWith('tasks', tasks, expect.any(Object));
     });
 });

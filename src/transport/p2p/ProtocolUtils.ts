@@ -29,8 +29,14 @@ export class ProtocolUtils {
         switch (signal.type) {
             case 'join': {
                 const wId = builder.createString(signal.workspaceId);
+                let headsOffset = 0;
+                if (signal.heads && signal.heads.length > 0) {
+                    const headOffsets = signal.heads.map(h => builder.createString(h));
+                    headsOffset = Join.createHeadsVector(builder, headOffsets);
+                }
                 Join.startJoin(builder);
                 Join.addWorkspaceId(builder, wId);
+                if (headsOffset) Join.addHeads(builder, headsOffset);
                 dataOffset = Join.endJoin(builder);
                 dataType = SignalData.Join;
                 break;

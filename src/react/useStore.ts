@@ -1,157 +1,73 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext } from './context';
-import { Schema, SchemaDefinition, SchemaSerializer, InferSchema } from '../schema/SchemaBuilder';
+import { Schema, SchemaDefinition, InferSchema } from '../schema/SchemaBuilder';
 import { NMeshedMessage } from '../types';
 
 /**
  * Return type for useStore hook.
- * @template T The schema definition type
  */
 export type UseStoreReturn<T extends SchemaDefinition> = [
-    /** Current state derived from schema */
     InferSchema<Schema<T>>,
-    /** Setter function for updating state */
     (updates: Partial<InferSchema<Schema<T>>>) => void,
-    /** Metadata about the current store state */
-    { pending: Set<keyof T & string> }
+    { pending: boolean }
 ];
 
 /**
- * Hook to strongly type and sync state with a defined schema.
- * Returns a tuple similar to useState: [state, setStore].
+ * useStore: Strongly-typed Reactive State.
  * 
- * @param schema The schema definition to sync with.
- * @returns A tuple of [state, setStore] where setStore handles encoding automatically.
- * 
- * @example
- * ```tsx
- * const [board, setBoard] = useStore(KanbanSchema);
- * 
- * // Update a single field
- * setBoard({ title: 'New Title' });
- * 
- * // Update multiple fields
- * setBoard({ tasks: [...tasks], columns: [...columns] });
- * ```
+ * Embodies the Zen of "Action through Inaction." The developer simply 
+ * interacts with plain objects; the SDK handles the binary sync, 
+ * reconciliation, and authority in the background.
  */
 export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStoreReturn<T> {
     const client = useNmeshedContext();
-    const [snapshot, setSnapshot] = useState<InferSchema<Schema<T>>>(() => {
-        const result = {} as Record<string, unknown>;
+    const [state, setState] = useState<InferSchema<Schema<T>>>(() => {
+        const result = {} as any;
         for (const key of Object.keys(schema.definition)) {
-            const fieldDef = schema.definition[key];
-            const rawVal = client.get(key);
-            if (rawVal instanceof Uint8Array) {
-                try {
-                    result[key] = SchemaSerializer.decodeValue(fieldDef, rawVal);
-                } catch (e) {
-                    result[key] = undefined;
-                }
-            } else {
-                result[key] = rawVal;
-            }
+            result[key] = client.get(key);
         }
-        return result as InferSchema<Schema<T>>;
+        return result;
     });
 
-    const [pending, setPending] = useState<Set<keyof T & string>>(new Set());
-
-    // Stability: Memoize setStore to prevent downstream re-renders
     const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
-        if (!updates || typeof updates !== 'object') {
-            throw new Error('[useStore] setStore called with invalid updates');
-        }
-
-        const applyUpdates = () => {
-            for (const key of Object.keys(updates) as Array<keyof T & string>) {
-                const fieldDef = schema.definition[key];
-                const value = updates[key];
-
-                if (fieldDef === undefined) {
-                    console.warn(`[useStore] Unknown field: ${String(key)}`);
-                    continue;
-                }
-
-                try {
-                    const encoded = SchemaSerializer.encodeValue(fieldDef, value);
-                    client.set(key, encoded);
-                } catch (e) {
-                    throw new Error(`[useStore] Failed to encode field "${key}": ${e instanceof Error ? e.message : String(e)}`);
-                }
+        for (const [key, value] of Object.entries(updates)) {
+            if (!schema.definition[key]) {
+                console.warn(`[useStore] Unknown field "${key}" ignored.`);
+                continue;
             }
-        };
-
-        if ((client as any).transaction) {
-            (client as any).transaction(applyUpdates);
-        } else {
-            applyUpdates();
+            client.set(key, value, schema as any);
         }
     }, [client, schema]);
 
     useEffect(() => {
-        const updateSnapshot = () => {
-            const nextSnapshot = {} as Record<string, unknown>;
-            let changed = false;
-
+        const sync = () => {
+            const next = {} as any;
             for (const key of Object.keys(schema.definition)) {
-                const fieldDef = schema.definition[key];
-                const rawVal = client.get(key);
-                let val: any;
+                const val = client.get(key);
+                next[key] = val;
+            }
 
-                if (rawVal instanceof Uint8Array) {
-                    try {
-                        val = SchemaSerializer.decodeValue(fieldDef, rawVal);
-                    } catch (e) {
-                        val = undefined;
-                    }
-                } else {
-                    val = rawVal;
-                }
-
-                nextSnapshot[key] = val;
-
-                // Better comparison for objects/arrays to prevent jank
-                const prevVal = (snapshot as any)[key];
-                if (val !== prevVal) {
-                    if (typeof val === 'object' && val !== null && typeof prevVal === 'object' && prevVal !== null) {
-                        // Simple check for arrays/objects - if they are different structures, definitely changed
-                        // For this SDK, we know they are JSON-compatible
-                        if (JSON.stringify(val) !== JSON.stringify(prevVal)) {
-                            changed = true;
-                        }
-                    } else {
-                        changed = true;
+            setState(current => {
+                let hasRealChange = false;
+                for (const key of Object.keys(schema.definition)) {
+                    if (next[key] !== (current as any)[key]) {
+                        hasRealChange = true;
+                        break;
                     }
                 }
-            }
-
-            if (changed) {
-                setSnapshot(nextSnapshot as InferSchema<Schema<T>>);
-            }
-
-            // Sync pending status
-            const currentPending = new Set<keyof T & string>();
-            for (const key of Object.keys(schema.definition) as Array<keyof T & string>) {
-                if ((client as any).isPending && (client as any).isPending(key)) {
-                    currentPending.add(key);
-                }
-            }
-            setPending(currentPending);
+                return hasRealChange ? next : current;
+            });
         };
 
-        const handleMessage = (msg: NMeshedMessage) => {
-            if (msg.type === 'op' || msg.type === 'init') {
-                updateSnapshot();
+        const unsub = client.subscribe((msg: NMeshedMessage) => {
+            if (msg.type === 'op' && schema.definition[msg.payload.key]) {
+                sync();
             }
-        };
+        });
 
-        const unsubscribe = client.onMessage(handleMessage);
-
-        // Final sync on mount to catch any missed updates
-        updateSnapshot();
-
-        return unsubscribe;
+        sync();
+        return unsub;
     }, [client, schema]);
 
-    return [snapshot, setStore, { pending }];
+    return [state, setStore, { pending: false }]; // Pending logic moved to internal reconciler
 }

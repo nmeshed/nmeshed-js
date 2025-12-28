@@ -50,12 +50,12 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
         this.setupInternalListeners();
     }
 
-    public async connect(): Promise<void> {
+    public async connect(heads?: string[]): Promise<void> {
         if (this.status === 'CONNECTED' || this.status === 'CONNECTING') return;
 
         this.setStatus('CONNECTING');
         try {
-            this.signaling.connect();
+            this.signaling.connect(heads);
             // The status will transition to CONNECTED via onConnect listener
         } catch (err) {
             this.emit('error', err instanceof Error ? err : new Error(String(err)));
@@ -204,8 +204,8 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
                 this.emit('error', err);
             },
             onInit: (sync: SyncPacket) => {
-                // Emit raw bytes of the SyncPacket so NMeshedClient/SyncEngine can decode it
-                this.emit('sync', sync.bb!.bytes());
+                // Emit as 'message' to follow unified binary pipeline
+                this.emit('message', sync.bb!.bytes());
             },
             onEphemeral: (payload: any, from?: string) => {
                 if (payload && payload.type === '__ping__') {

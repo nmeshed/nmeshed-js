@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class Join {
+
+
+export class Join implements flatbuffers.IUnpackableObject<JoinT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Join {
@@ -29,12 +31,40 @@ workspaceId(optionalEncoding?:any):string|Uint8Array|null {
   return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
 }
 
+heads(index: number):string
+heads(index: number,optionalEncoding:flatbuffers.Encoding):string|Uint8Array
+heads(index: number,optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 6);
+  return offset ? this.bb!.__string(this.bb!.__vector(this.bb_pos + offset) + index * 4, optionalEncoding) : null;
+}
+
+headsLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 6);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
 static startJoin(builder:flatbuffers.Builder) {
-  builder.startObject(1);
+  builder.startObject(2);
 }
 
 static addWorkspaceId(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset) {
   builder.addFieldOffset(0, workspaceIdOffset, 0);
+}
+
+static addHeads(builder:flatbuffers.Builder, headsOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(1, headsOffset, 0);
+}
+
+static createHeadsVector(builder:flatbuffers.Builder, data:flatbuffers.Offset[]):flatbuffers.Offset {
+  builder.startVector(4, data.length, 4);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addOffset(data[i]!);
+  }
+  return builder.endVector();
+}
+
+static startHeadsVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(4, numElems, 4);
 }
 
 static endJoin(builder:flatbuffers.Builder):flatbuffers.Offset {
@@ -42,9 +72,41 @@ static endJoin(builder:flatbuffers.Builder):flatbuffers.Offset {
   return offset;
 }
 
-static createJoin(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset):flatbuffers.Offset {
+static createJoin(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset, headsOffset:flatbuffers.Offset):flatbuffers.Offset {
   Join.startJoin(builder);
   Join.addWorkspaceId(builder, workspaceIdOffset);
+  Join.addHeads(builder, headsOffset);
   return Join.endJoin(builder);
+}
+
+unpack(): JoinT {
+  return new JoinT(
+    this.workspaceId(),
+    this.bb!.createScalarList<string>(this.heads.bind(this), this.headsLength())
+  );
+}
+
+
+unpackTo(_o: JoinT): void {
+  _o.workspaceId = this.workspaceId();
+  _o.heads = this.bb!.createScalarList<string>(this.heads.bind(this), this.headsLength());
+}
+}
+
+export class JoinT implements flatbuffers.IGeneratedObject {
+constructor(
+  public workspaceId: string|Uint8Array|null = null,
+  public heads: (string)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
+  const heads = Join.createHeadsVector(builder, builder.createObjectOffsetList(this.heads));
+
+  return Join.createJoin(builder,
+    workspaceId,
+    heads
+  );
 }
 }

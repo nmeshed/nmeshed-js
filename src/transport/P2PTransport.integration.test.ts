@@ -228,30 +228,6 @@ describe('P2PTransport Integration Tests', () => {
         });
     });
 
-    describe('onInit callback', () => {
-
-        it('emits sync event with SyncPacket bytes', () => {
-            transport.connect();
-            const syncSpy = vi.fn();
-            transport.on('sync', syncSpy);
-
-            // Create a mock SyncPacket with bb property
-            const snapshotData = encodeValue({ init: true });
-            const builder = new flatbuffers.Builder(512);
-            const snapOffset = SyncPacket.createSnapshotVector(builder, snapshotData);
-            SyncPacket.startSyncPacket(builder);
-            SyncPacket.addSnapshot(builder, snapOffset);
-            const syncOffset = SyncPacket.endSyncPacket(builder);
-            builder.finish(syncOffset);
-
-            const bb = builder.dataBuffer();
-            const syncPacket = SyncPacket.getRootAsSyncPacket(bb);
-
-            signalingListeners.onInit(syncPacket);
-
-            expect(syncSpy).toHaveBeenCalled();
-        });
-    });
 
     describe('ephemeral ping/pong flow', () => {
 

@@ -32,11 +32,12 @@ function openDB(): Promise<IDBDatabase> {
     });
 }
 
+
 /**
- * Saves the queue array for a specific workspace.
+ * Saves the queue array for a specific storage key.
  * Uses a readwrite transaction.
  */
-export async function saveQueue(workspaceId: string, queue: PersistentQueueItem[]): Promise<void> {
+export async function saveQueue(storageKey: string, queue: PersistentQueueItem[]): Promise<void> {
     try {
         const db = await openDB();
         return new Promise((resolve, reject) => {
@@ -44,9 +45,9 @@ export async function saveQueue(workspaceId: string, queue: PersistentQueueItem[
             const store = tx.objectStore(STORE_NAME);
 
             if (queue.length === 0) {
-                store.delete(workspaceId);
+                store.delete(storageKey);
             } else {
-                store.put(queue, workspaceId);
+                store.put(queue, storageKey);
             }
 
             tx.oncomplete = () => {
@@ -64,15 +65,15 @@ export async function saveQueue(workspaceId: string, queue: PersistentQueueItem[
 }
 
 /**
- * Loads the queue for a specific workspace.
+ * Loads the queue for a specific storage key.
  */
-export async function loadQueue(workspaceId: string): Promise<PersistentQueueItem[]> {
+export async function loadQueue(storageKey: string): Promise<PersistentQueueItem[]> {
     try {
         const db = await openDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readonly');
             const store = tx.objectStore(STORE_NAME);
-            const request = store.get(workspaceId);
+            const request = store.get(storageKey);
 
             request.onsuccess = () => {
                 db.close();

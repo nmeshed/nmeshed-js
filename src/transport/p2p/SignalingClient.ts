@@ -43,6 +43,7 @@ export class SignalingClient {
     private reconnectAttempts = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private intentionallyClosed = false;
+    private heads: string[] = [];
     private static readonly MAX_RECONNECT_ATTEMPTS = 10;
     private static readonly BASE_RECONNECT_DELAY_MS = 1000;
     private static readonly MAX_RECONNECT_DELAY_MS = 30000;
@@ -63,8 +64,9 @@ export class SignalingClient {
         this.config.token = token;
     }
 
-    public async connect() {
+    public async connect(heads?: string[]) {
         this.intentionallyClosed = false;
+        if (heads) this.heads = heads;
 
         if (this.config.tokenProvider) {
             try {
@@ -125,15 +127,9 @@ export class SignalingClient {
         }
     }
 
-    public sendEphemeral(payload: any, to?: string) {
+    public sendEphemeral(payload: Uint8Array, _to?: string) {
         if (!this.connected) return;
-        // Wrap ephemeral in a Sync packet (generic payload for now, inside WirePacket)
-        // If it's already a Uint8Array, send as is. Otherwise JSON-stringify then send.
-        const data = payload instanceof Uint8Array
-            ? payload
-            : new TextEncoder().encode(JSON.stringify({ type: 'ephemeral', to, payload }));
-
-        this.sendSync(data);
+        this.sendSync(payload);
     }
 
     private clearReconnectTimer() {
@@ -176,7 +172,7 @@ export class SignalingClient {
         this.reconnectAttempts = 0;
 
         // Auto-join the workspace
-        const joinPayload: SignalMessage = { type: 'join', workspaceId: this.config.workspaceId };
+        const joinPayload: SignalMessage = { type: 'join', workspaceId: this.config.workspaceId, heads: this.heads };
 
         // Send Binary Join
         this.sendSignal('server', joinPayload);
@@ -185,15 +181,11 @@ export class SignalingClient {
     }
 
     private handleMessage(e: MessageEvent) {
-        try {
-            if (typeof e.data === 'string') {
-                this.handleJsonMessage(e.data);
-            } else {
-                this.handleBinaryMessage(e.data as ArrayBuffer);
-            }
-        } catch (fatal) {
-            logger.error('Critical Message Error', fatal);
+        if (typeof e.data === 'string') {
+            console.warn('[SignalingClient] Unexpected text message received:', e.data);
+            return;
         }
+        this.handleBinaryMessage(e.data as ArrayBuffer);
     }
 
     private handleBinaryMessage(buffer: ArrayBuffer) {
@@ -212,19 +204,8 @@ export class SignalingClient {
                     return;
                 }
 
-                // Fallback to legacy generic payload
                 const payload = wire.payloadArray();
                 if (payload) {
-                    // Attempt to parse as JSON if it's an ephemeral/presence message
-                    if (payload[0] === 123) { // '{'
-                        try {
-                            const json = JSON.parse(new TextDecoder().decode(payload));
-                            if (json.type === 'ephemeral' || json.type === 'presence') {
-                                this.handleJsonMessage(JSON.stringify(json));
-                                return;
-                            }
-                        } catch { /* ignore */ }
-                    }
                     this.listeners.onServerMessage?.(payload);
                 }
             } else if (msgType === MsgType.Signal) {
@@ -272,35 +253,6 @@ export class SignalingClient {
         }
     }
 
-    private handleJsonMessage(data: string) {
-        try {
-            const msg = JSON.parse(data);
-            switch (msg.type) {
-                case 'presence':
-                    if (msg.payload) {
-                        const { userId, status, meshId } = msg.payload || msg;
-                        if (userId) this.listeners.onPresence?.(userId, status, meshId);
-                    } else if (msg.userId) {
-                        this.listeners.onPresence?.(msg.userId, msg.status, msg.meshId);
-                    }
-                    break;
-                case 'signal':
-                    // Legacy JSON signals
-                    if (msg.from && msg.signal) {
-                        this.listeners.onSignal?.({ from: msg.from, signal: msg.signal });
-                    }
-                    break;
-                case 'init':
-                    this.listeners.onInit?.(msg);
-                    break;
-                case 'ephemeral':
-                    this.listeners.onEphemeral?.(msg.payload, msg.from);
-                    break;
-            }
-        } catch (e) {
-            logger.error('JSON Parse Error', e);
-        }
-    }
 
     private handleClose(e: CloseEvent) {
         logger.debug(`Disconnected: ${e.code} ${e.reason}`);

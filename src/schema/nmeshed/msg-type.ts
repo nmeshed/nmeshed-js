@@ -6,5 +6,6 @@ export enum MsgType {
   Unknown = 0,
   Op = 1,
   Sync = 2,
-  Signal = 3
+  Signal = 3,
+  Init = 4
 }

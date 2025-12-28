@@ -5,12 +5,12 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { MsgType } from '../nmeshed/msg-type.js';
-import { Op } from '../nmeshed/op.js';
-import { Signal } from '../nmeshed/signal.js';
-import { SyncPacket } from '../nmeshed/sync-packet.js';
+import { Op, OpT } from '../nmeshed/op.js';
+import { Signal, SignalT } from '../nmeshed/signal.js';
+import { SyncPacket, SyncPacketT } from '../nmeshed/sync-packet.js';
 
 
-export class WirePacket {
+export class WirePacket implements flatbuffers.IUnpackableObject<WirePacketT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):WirePacket {
@@ -112,4 +112,50 @@ static finishSizePrefixedWirePacketBuffer(builder:flatbuffers.Builder, offset:fl
   builder.finish(offset, undefined, true);
 }
 
+
+unpack(): WirePacketT {
+  return new WirePacketT(
+    this.msgType(),
+    (this.op() !== null ? this.op()!.unpack() : null),
+    this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength()),
+    (this.signal() !== null ? this.signal()!.unpack() : null),
+    (this.sync() !== null ? this.sync()!.unpack() : null)
+  );
+}
+
+
+unpackTo(_o: WirePacketT): void {
+  _o.msgType = this.msgType();
+  _o.op = (this.op() !== null ? this.op()!.unpack() : null);
+  _o.payload = this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength());
+  _o.signal = (this.signal() !== null ? this.signal()!.unpack() : null);
+  _o.sync = (this.sync() !== null ? this.sync()!.unpack() : null);
+}
+}
+
+export class WirePacketT implements flatbuffers.IGeneratedObject {
+constructor(
+  public msgType: MsgType = MsgType.Unknown,
+  public op: OpT|null = null,
+  public payload: (number)[] = [],
+  public signal: SignalT|null = null,
+  public sync: SyncPacketT|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const op = (this.op !== null ? this.op!.pack(builder) : 0);
+  const payload = WirePacket.createPayloadVector(builder, this.payload);
+  const signal = (this.signal !== null ? this.signal!.pack(builder) : 0);
+  const sync = (this.sync !== null ? this.sync!.pack(builder) : 0);
+
+  WirePacket.startWirePacket(builder);
+  WirePacket.addMsgType(builder, this.msgType);
+  WirePacket.addOp(builder, op);
+  WirePacket.addPayload(builder, payload);
+  WirePacket.addSignal(builder, signal);
+  WirePacket.addSync(builder, sync);
+
+  return WirePacket.endWirePacket(builder);
+}
 }

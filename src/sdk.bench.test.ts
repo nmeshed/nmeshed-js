@@ -4,6 +4,9 @@ import { SyncEngine } from './core/SyncEngine';
 import { NMeshedClient } from './client';
 import { Transport, TransportStatus, TransportEvents } from './transport/Transport';
 import { EventEmitter } from './utils/EventEmitter';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 class MockTransport extends EventEmitter<TransportEvents> implements Transport {
     getStatus() { return 'CONNECTED' as TransportStatus; }
@@ -24,21 +27,19 @@ vi.mock('./persistence', () => ({
     saveQueue: vi.fn().mockResolvedValue(undefined),
 }));
 
-describe('SDK High-Level Benchmarks', () => {
-    let wasmBuffer: Buffer;
+// Skip: Benchmarks are slow and meant for manual performance testing.
+describe.skip('SDK High-Level Benchmarks', () => {
+    let wasmBuffer: Uint8Array;
     const workspaceId = '12345678-1234-1234-1234-123456789abc';
     const ITERATIONS = 1_000;
 
     beforeAll(async () => {
-        const fs = await import('fs/promises');
-        const path = await import('path');
-        const { fileURLToPath } = await import('url');
-
         const __filename = fileURLToPath(import.meta.url);
         const __dirname = path.dirname(__filename);
-        const wasmPath = path.resolve(__dirname, './wasm/nmeshed_core_bg.wasm');
+        const wasmPath = path.resolve(__dirname, './wasm/nmeshed_core/nmeshed_core_bg.wasm');
 
-        wasmBuffer = await fs.readFile(wasmPath);
+        const buffer = await fs.readFile(wasmPath);
+        wasmBuffer = new Uint8Array(buffer);
         await init(wasmBuffer);
     });
 
@@ -75,14 +76,13 @@ describe('SDK High-Level Benchmarks', () => {
         it('Benchmark: NMeshedClient.set (Full Stack)', async () => {
             const client = new NMeshedClient({
                 workspaceId,
-                userId: '12345678-1234-1234-1234-123456789abc',
-                token: 'mock',
-                transport: 'server' // We'll mock the transport actually
+                userId: '00000000-0000-0000-0000-000000000000',
+                token: 'mock'
             });
 
             // Inject mock transport
             (client as any).transport = new MockTransport();
-            (client as any).setupTransportListeners();
+            (client as any).setupBindings();
             (client as any).setStatus('CONNECTED');
 
             await (client as any).bootPromise;
@@ -96,26 +96,26 @@ describe('SDK High-Level Benchmarks', () => {
             console.log(`[NMeshedClient] set: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
         });
 
-        it('Benchmark: SyncedMap.set (Abstraction Overhead)', async () => {
+        it('Benchmark: SyncedCollection.set (Abstraction Overhead)', async () => {
             const client = new NMeshedClient({
                 workspaceId,
                 userId: '00000000-0000-0000-0000-000000000000',
                 token: 'mock'
             });
             (client as any).transport = new MockTransport();
-            (client as any).setupTransportListeners();
+            (client as any).setupBindings();
             (client as any).setStatus('CONNECTED');
             await (client as any).bootPromise;
 
-            const map = client.getSyncedMap('bench-map');
+            const col = client.getCollection('bench-col');
 
             const start = performance.now();
             for (let i = 0; i < ITERATIONS; i++) {
-                map.set(`item-${i}`, { data: i });
+                col.set(`item-${i}`, { data: i });
             }
             const end = performance.now();
             const time = end - start;
-            console.log(`[SyncedMap] set: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
+            console.log(`[SyncedCollection] set: ${(time / ITERATIONS * 1000).toFixed(2)} µs/op`);
         });
     });
 });

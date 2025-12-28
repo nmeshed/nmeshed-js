@@ -11,4 +11,6 @@ export { Op, OpT } from './nmeshed/op.js';
 export { Relay, RelayT } from './nmeshed/relay.js';
 export { Signal, SignalT } from './nmeshed/signal.js';
 export { SignalData } from './nmeshed/signal-data.js';
+export { StateVectorEntry, StateVectorEntryT } from './nmeshed/state-vector-entry.js';
+export { SyncPacket, SyncPacketT } from './nmeshed/sync-packet.js';
 export { WirePacket, WirePacketT } from './nmeshed/wire-packet.js';

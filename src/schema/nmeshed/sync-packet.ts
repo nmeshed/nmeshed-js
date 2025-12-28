@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { StateVectorEntry } from '../nmeshed/state-vector-entry.js';
+import { StateVectorEntry, StateVectorEntryT } from '../nmeshed/state-vector-entry.js';
 
 
-export class SyncPacket {
+export class SyncPacket implements flatbuffers.IUnpackableObject<SyncPacketT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):SyncPacket {
@@ -106,5 +106,40 @@ static createSyncPacket(builder:flatbuffers.Builder, stateVectorOffset:flatbuffe
   SyncPacket.addSnapshot(builder, snapshotOffset);
   SyncPacket.addAckSeq(builder, ackSeq);
   return SyncPacket.endSyncPacket(builder);
+}
+
+unpack(): SyncPacketT {
+  return new SyncPacketT(
+    this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength()),
+    this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength()),
+    this.ackSeq()
+  );
+}
+
+
+unpackTo(_o: SyncPacketT): void {
+  _o.stateVector = this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength());
+  _o.snapshot = this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength());
+  _o.ackSeq = this.ackSeq();
+}
+}
+
+export class SyncPacketT implements flatbuffers.IGeneratedObject {
+constructor(
+  public stateVector: (StateVectorEntryT)[] = [],
+  public snapshot: (number)[] = [],
+  public ackSeq: bigint = BigInt('0')
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const stateVector = SyncPacket.createStateVectorVector(builder, builder.createObjectOffsetList(this.stateVector));
+  const snapshot = SyncPacket.createSnapshotVector(builder, this.snapshot);
+
+  return SyncPacket.createSyncPacket(builder,
+    stateVector,
+    snapshot,
+    this.ackSeq
+  );
 }
 }

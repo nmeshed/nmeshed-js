@@ -84,13 +84,15 @@ export class ConsistentHashRing {
     /**
      * FNV-1a 64-bit hash algorithm.
      */
-    private hash(val: string): bigint {
+    private hash(val: any): bigint {
+        if (val === null || val === undefined) return 0n;
+        const str = String(val);
         const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
         const FNV_PRIME = 0x00000100000001B3n;
 
         let hash = FNV_OFFSET_BASIS;
-        for (let i = 0; i < val.length; i++) {
-            hash ^= BigInt(val.charCodeAt(i));
+        for (let i = 0; i < str.length; i++) {
+            hash ^= BigInt(str.charCodeAt(i));
             hash = (hash * FNV_PRIME) & 0xFFFFFFFFFFFFFFFFn;
         }
         return hash;

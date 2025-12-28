@@ -3,7 +3,7 @@
  * Unified interface for moving bytes and ephemeral messages.
  * This decouples the 'How' (WebSocket, WebRTC, Bluetooth) from the 'What' (CRDTs, Cursors).
  */
-export type TransportStatus = 'IDLE' | 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'ERROR';
+export type TransportStatus = 'IDLE' | 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'ERROR' | 'READY';
 
 export interface TransportEvents {
     [key: string]: any[];
@@ -18,7 +18,7 @@ export interface TransportEvents {
 }
 
 export interface Transport {
-    connect(): Promise<void>;
+    connect(heads?: string[]): Promise<void>;
     disconnect(): void;
     getStatus(): TransportStatus;
 

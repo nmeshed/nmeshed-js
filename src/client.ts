@@ -1,584 +1,397 @@
-import { Logger } from './utils/Logger';
+import { EventEmitter } from './utils/EventEmitter';
 import { SyncEngine } from './core/SyncEngine';
+import { SyncedCollection } from './sync/SyncedCollection';
 import { Transport, TransportStatus } from './transport/Transport';
 import { WebSocketTransport } from './transport/WebSocketTransport';
 import { P2PTransport } from './transport/P2PTransport';
-import { SyncedMap, SyncedMapConfig } from './sync/SyncedMap';
-import {
-    NMeshedConfig,
-    ResolvedConfig,
-    ConfigSchema,
-    DEFAULT_CONFIG,
-    ChaosOptions,
-    ConnectionStatus,
-    StatusHandler,
-    MessageHandler,
-    EphemeralHandler,
-    PresenceHandler,
-    PresenceUser,
-    NMeshedMessage,
-    Unsubscribe
-} from './types';
-import { ConnectionError, ConfigurationError } from './errors';
-import type { Schema } from './schema/SchemaBuilder';
-import { ConsistentHashRing } from './utils/ConsistentHashRing';
+import { Schema } from './schema/SchemaBuilder';
+import { NMeshedMessage } from './types';
+import { ConfigurationError, ConnectionError } from './errors';
+
+export interface NMeshedConfig {
+    workspaceId: string;
+    userId?: string;
+    token?: string;
+    apiKey?: string;
+    transport?: 'server' | 'p2p' | 'hybrid' | Transport;
+    relayUrl?: string; // Standard
+    serverUrl?: string; // Legacy alias
+    iceServers?: RTCIceServer[];
+    debug?: boolean;
+    heartbeatInterval?: number;
+    heartbeatMaxMissed?: number;
+    maxQueueSize?: number;
+    connectionTimeout?: number;
+    autoReconnect?: boolean;
+    maxReconnectAttempts?: number;
+}
 
 /**
- * NMeshedClient: The High-Level Entrance to the nMeshed SDK.
+ * NMeshedClient: The Zen Gateway to Real-Time Sync.
+ * 
+ * Embodies "Absolute Clarity" by providing a single, unified entry point 
+ * for all synchronization tasks. It abstracts away the complexity of 
+ * transport negotiation (Server/P2P), binary encoding (Flatbuffers), 
+ * and optimistic state management.
  */
-export class NMeshedClient {
-    public readonly config: ResolvedConfig;
+export interface NMeshedEvents {
+    status: [TransportStatus];
+    message: [NMeshedMessage];
+    ephemeral: [unknown, string?];
+    error: [any];
+    peerJoin: [string];
+    peerDisconnect: [string];
+    presence: [any];
+    [key: string]: any[];
+}
+
+export class NMeshedClient extends EventEmitter<NMeshedEvents> {
+    public readonly workspaceId: string;
+    public readonly userId: string;
     public readonly engine: SyncEngine;
-    private transport: Transport;
-    private logger: Logger;
-
-    private syncedMaps = new Map<string, SyncedMap<unknown>>();
+    public readonly transport: Transport;
+    public readonly bootPromise: Promise<void>;
+    public readonly config: NMeshedConfig;
     private isDestroyed = false;
-    private bootPromise: Promise<void>;
-
-    private _status: ConnectionStatus = 'IDLE';
-    private _isInsideTransaction = false;
-    private _transactionDeltas: Uint8Array[] = [];
-
-    private listeners = {
-        status: new Set<StatusHandler>(),
-        message: new Set<MessageHandler>(),
-        ephemeral: new Set<EphemeralHandler>(),
-        presence: new Set<PresenceHandler>(),
-        peerJoin: new Set<(peerId: string) => void>(),
-        peerDisconnect: new Set<(peerId: string) => void>(),
-        queueChange: new Set<(size: number) => void>(),
-        becomeAuthority: new Set<{ pattern: string; regex: RegExp; handler: (key: string) => void }>(),
-        loseAuthority: new Set<{ pattern: string; regex: RegExp; handler: (key: string) => void }>()
-    };
-
-    private authorityRing: ConsistentHashRing;
-    private currentAuthorities = new Set<string>();
 
     constructor(config: NMeshedConfig) {
-        const result = ConfigSchema.safeParse(config);
-        if (!result.success) {
-            throw new ConfigurationError(`nMeshed: ${result.error.issues.map(e => e.message).join(', ')}`);
+        super();
+
+        if (!config.workspaceId) throw new ConfigurationError('workspaceId is required');
+        if (!config.token && !config.apiKey) throw new ConfigurationError('Either token or apiKey must be provided');
+        if (config.maxQueueSize !== undefined && config.maxQueueSize < 0) throw new ConfigurationError('maxQueueSize must be >= 0');
+        if (config.maxReconnectAttempts !== undefined && config.maxReconnectAttempts < 0) throw new ConfigurationError('maxReconnectAttempts must be >= 0');
+
+        const validTransports = ['server', 'p2p', 'hybrid'];
+        if (config.transport && typeof config.transport === 'string' && !validTransports.includes(config.transport)) {
+            throw new ConfigurationError(`Invalid transport: ${config.transport}`);
         }
 
-        const validConfig = result.data;
-        this.config = {
-            ...DEFAULT_CONFIG,
-            ...validConfig,
-            userId: validConfig.userId || this.generateUserId(),
-            syncMode: validConfig.syncMode || 'crdt',
-            debug: validConfig.debug ?? true
-        } as ResolvedConfig;
+        this.config = { ...config };
+        if (!this.config.transport) this.config.transport = 'server';
 
-        this.logger = new Logger('NMeshedClient', this.config.debug);
-        this.authorityRing = new ConsistentHashRing(this.config.replicationFactor || 20);
-        this.authorityRing.addNode(this.config.userId);
+        this.workspaceId = config.workspaceId;
+        this.userId = config.userId || `u-${Math.random().toString(36).substring(2, 9)}`;
 
-        this.engine = new SyncEngine(
-            this.config.workspaceId,
-            this.config.syncMode,
-            this.config.maxQueueSize,
-            this.config.debug
-        );
+        this.engine = new SyncEngine(config.workspaceId, this.userId, 'crdt', config.maxQueueSize || 1000, config.debug);
+        this.bootPromise = this.engine.boot();
 
-        this.engine.on('op', (key: string, value: unknown, isOptimistic: boolean) => {
-            this.notifyMessageListeners({
-                type: 'op',
-                payload: { key, value, timestamp: Date.now(), isOptimistic }
+        const relayUrl = config.relayUrl || config.serverUrl || 'wss://relay.nmeshed.io';
+
+        if (typeof config.transport === 'object') {
+            this.transport = config.transport;
+        } else if (config.transport === 'p2p') {
+            this.transport = new P2PTransport({
+                workspaceId: config.workspaceId,
+                userId: this.userId,
+                serverUrl: relayUrl,
+                iceServers: config.iceServers,
+                token: config.token || config.apiKey || ''
             });
-        });
-
-        this.engine.on('snapshot', () => {
-            this.logger.debug('Engine snapshot received, transition to READY');
-            this.setStatus('READY');
-            this.notifyMessageListeners({
-                type: 'init',
-                data: this.engine.getAllValues()
+        } else {
+            this.transport = new WebSocketTransport(relayUrl, {
+                workspaceId: config.workspaceId,
+                peerId: this.userId,
+                token: config.token || config.apiKey || '',
+                debug: config.debug,
+                heartbeatInterval: config.heartbeatInterval,
+                heartbeatMaxMissed: config.heartbeatMaxMissed,
+                connectionTimeout: config.connectionTimeout,
+                autoReconnect: config.autoReconnect,
+                maxReconnectAttempts: config.maxReconnectAttempts
             });
-        });
+        }
 
-        this.engine.on('queueChange', (size: number) => {
-            this.listeners.queueChange.forEach(l => {
-                try { l(size); } catch (e) { this.logger.warn('Queue listener error', e); }
-            });
-        });
+        this.setupBindings();
+    }
 
-        // Decentralized Authority tracking for new keys
-        this.onMessage((msg) => {
-            if (msg.type === 'op' && !this.currentAuthorities.has(msg.payload.key)) {
-                if (this.isAuthority(msg.payload.key)) {
-                    this.currentAuthorities.add(msg.payload.key);
-                    this.listeners.becomeAuthority.forEach(l => {
-                        if (l.regex.test(msg.payload.key)) {
-                            try { l.handler(msg.payload.key); } catch (e) { this.logger.warn('becomeAuthority listener error', e); }
+    private setupBindings() {
+        this.transport.on('message', (bytes) => this.engine.applyRawMessage(bytes));
+        // Backward compatibility for legacy transports
+        this.transport.on('sync' as any, (bytes: Uint8Array) => this.engine.applyRawMessage(bytes));
+        this.engine.on('init', (payload: any) => {
+            // Update Mesh ID if provided
+            if (payload.meshId) {
+                this.engine.authority.meshId = payload.meshId;
+            }
+            // Update Peers if provided
+            if (payload.peers && Array.isArray(payload.peers)) {
+                for (const peer of payload.peers) {
+                    if (peer.userId) this.engine.authority.addPeer(peer.userId);
+                }
+            }
+        });
+        this.transport.on('status', (s) => {
+            if (s === 'CONNECTED') {
+                this.flushQueue();
+            }
+            this.emit('status', s === 'CONNECTED' ? 'READY' : s);
+        });
+        this.transport.on('error', (e) => this.emit('error', e));
+        this.transport.on('peerJoin', (id) => {
+            if (!id || id === 'userId' || id === 'status') return;
+            this.engine.authority.addPeer(id);
+            this.emit('peerJoin', id);
+        });
+        this.transport.on('peerDisconnect', (id) => {
+            if (!id || id === 'userId' || id === 'status') return;
+            this.engine.authority.removePeer(id);
+            this.emit('peerDisconnect', id);
+        });
+        this.transport.on('presence', (p) => {
+            if (p && typeof p === 'object') {
+                if (p.userId && p.status) {
+                    const isOnline = p.status === 'online';
+                    if (isOnline) {
+                        this.emit('peerJoin', p.userId);
+                    } else {
+                        this.emit('peerDisconnect', p.userId);
+                    }
+                } else if (!Array.isArray(p)) {
+                    Object.entries(p).forEach(([id, status]: [string, any]) => {
+                        const isOnline = status === 'online' || (status && status.status === 'online');
+                        if (isOnline) {
+                            this.emit('peerJoin', id);
+                        } else {
+                            this.emit('peerDisconnect', id);
                         }
                     });
                 }
             }
+            this.emit('presence', p);
         });
-
-        this.bootPromise = this.engine.boot();
-
-        this.transport = this.config.transport === 'server'
-            ? new WebSocketTransport({
-                url: this.buildUrl(),
-                autoReconnect: this.config.autoReconnect,
-                maxReconnectAttempts: this.config.maxReconnectAttempts,
-                reconnectBaseDelay: this.config.reconnectBaseDelay,
-                maxReconnectDelay: this.config.maxReconnectDelay,
-                connectionTimeout: this.config.connectionTimeout,
-                heartbeatInterval: this.config.heartbeatInterval,
-                heartbeatMaxMissed: this.config.heartbeatMaxMissed
-            })
-            : new P2PTransport(this.config);
-
-        this.setupTransportListeners();
-        this.notifyStatusListeners(this._status);
-    }
-
-    private setupTransportListeners(): void {
-        const statusMap: Record<TransportStatus, ConnectionStatus> = {
-            'CONNECTING': 'CONNECTING',
-            'CONNECTED': 'CONNECTED',
-            'RECONNECTING': 'RECONNECTING',
-            'ERROR': 'ERROR',
-            'DISCONNECTED': 'DISCONNECTED',
-            'IDLE': 'IDLE'
-        };
-
-        this.transport.on('status', (s: TransportStatus) => {
-            const nextStatus = statusMap[s] || 'IDLE';
-            if (nextStatus === 'CONNECTED') {
-                if (this._status !== 'READY' && this._status !== 'SYNCING') {
-                    this.setStatus('CONNECTED');
-                    this.setStatus('SYNCING');
-                }
-            } else {
-                this.setStatus(nextStatus);
+        this.transport.on('ephemeral', (p, f) => {
+            if (p && p.type === '__ping__') {
+                this.broadcast({ type: '__pong__', to: p.from, requestId: p.requestId });
+                return;
             }
+            // Strict check: if signal data is binary, it comes from MessageRouter
+            // If it's ephemeral, it comes from transport.
+            this.emit('ephemeral', p, f);
         });
 
-        this.transport.on('message', (data: Uint8Array) => {
-            this.engine.applyRawMessage(data);
-        });
-
-        this.transport.on('init', (payload: Record<string, unknown>) => {
-            this.engine.handleInitSnapshot(payload.data as Record<string, unknown> || payload);
-        });
-
-        this.transport.on('ephemeral', (payload: unknown, from?: string) => {
-            const isNMeshedMsg = (p: unknown): p is NMeshedMessage =>
-                p !== null && typeof p === 'object' && 'type' in p && ['op', 'ephemeral', 'presence'].includes((p as any).type);
-
-            const effectiveMsg: NMeshedMessage = isNMeshedMsg(payload)
-                ? payload
-                : { type: 'ephemeral', payload, from };
-
-            this.notifyMessageListeners(effectiveMsg);
-
-            this.listeners.ephemeral.forEach(l => {
-                try { l(payload, from); } catch (e) { this.logger.warn('Ephemeral listener error', e); }
-            });
-        });
-
-        this.transport.on('presence', (payload: unknown) => {
-            const isPresencePayload = (p: unknown): p is PresenceUser =>
-                p !== null && typeof p === 'object' && 'userId' in p && 'status' in p;
-
-            if (isPresencePayload(payload)) {
-                this.listeners.presence.forEach(l => {
-                    try { l(payload); } catch (e) { this.logger.warn('Presence listener error', e); }
-                });
-            }
-        });
-
-        this.transport.on('peerJoin', (id: string) => {
-            this.authorityRing.addNode(id);
-            this.recalculateAuthority();
-            this.listeners.peerJoin.forEach(l => l(id));
-        });
-
-        this.transport.on('peerDisconnect', (id: string) => {
-            this.authorityRing.removeNode(id);
-            this.recalculateAuthority();
-            this.listeners.peerDisconnect.forEach(l => l(id));
-        });
-
-        this.transport.on('sync', (data: Uint8Array) => {
-            this.engine.applyRawMessage(data);
-        });
-
-        this.transport.on('error', (err: Error) => {
-            this.logger.warn('Transport encountered an error', err);
-        });
+        this.engine.on('op', (k, v, opt) => this.emit('message', {
+            type: 'op',
+            payload: { key: k, value: v, isOptimistic: opt, timestamp: Date.now() }
+        }));
     }
 
-    public get isLive(): boolean {
-        return this._status === 'CONNECTED' || this._status === 'SYNCING' || this._status === 'READY';
-    }
-
-    public getStatus(): ConnectionStatus {
-        return this._status;
-    }
-
-    public getId(): string {
-        return this.config.userId;
-    }
-
-    public async connect(): Promise<void> {
-        if (this.isDestroyed) throw new ConnectionError('Client destroyed');
-        if (this.isLive || this._status === 'CONNECTING') return;
-
-        this.setStatus('CONNECTING');
-        try {
-            await this.bootPromise;
-            await this.transport.connect();
-            this.flushQueue();
-        } catch (err) {
-            if (this._status !== 'ERROR') this.setStatus('RECONNECTING');
-            throw err;
+    private flushQueue() {
+        if (this.transport.getStatus() !== 'CONNECTED') return;
+        const pending = this.engine.getPendingOps();
+        if (pending.length > 0) {
+            console.log(`[NMeshedClient] Flushing ${pending.length} pending ops (NOT clearing until ACK).`);
+            pending.forEach(op => this.transport.broadcast(op));
+            // NOTE: We no longer shift the queue here. Ops remain in the queue
+            // until they are confirmed by the server (via handleRemoteOp which
+            // removes matching confirmed ops from optimisticState).
+            // The queue is cleared in handleInitSnapshot when pending ops are
+            // found to already be incorporated in the server's authoritative state.
         }
     }
 
-    public async awaitReady(): Promise<void> {
-        if (this._status === 'READY') return;
-        this.connect().catch(() => { });
-        return new Promise((resolve, reject) => {
-            const unsub = this.onStatusChange((status) => {
-                if (status === 'READY') { unsub(); resolve(); }
-                else if (status === 'ERROR' || status === 'DISCONNECTED') {
-                    unsub();
-                    reject(new ConnectionError(`Connection failed: ${status}`));
-                }
-            });
+
+    public async connect(): Promise<void> {
+        if (this.isDestroyed) throw new ConnectionError('Client is destroyed');
+        // Ensure engine is booted (re-boot if it was destroyed/disconnected)
+        await this.engine.boot();
+        const heads = this.engine.getHeads();
+        return this.transport.connect(heads).catch(err => {
+            throw new ConnectionError(err.message || 'Connection failed');
         });
     }
 
     public disconnect(): void {
         this.transport.disconnect();
+        this.engine.stop(); // Use stop() to allow reconnection
     }
 
-    public set<T = unknown>(key: string, value: T, schema?: Schema<any>): void {
-        if (this.isDestroyed) return;
-        if (schema) {
-            const prefix = key.split(/[:_]/)[0];
-            if (prefix && prefix !== key) this.registerSchema(prefix, schema);
-        }
+    public destroy(): void {
+        this.isDestroyed = true;
+        this.transport.disconnect();
+        this.engine.destroy(); // Permanently destroy the engine
+    }
 
-        try {
-            const isLive = this.isLive;
-            const delta = this.engine.set(key, value, schema, !isLive);
-            if (delta.length > 0) {
-                if (this._isInsideTransaction) {
-                    this._transactionDeltas.push(delta);
-                } else if (isLive) {
-                    this.transport.send(delta);
+    public async awaitReady(): Promise<void> {
+        if (this.getStatus() === 'READY') return;
+        return new Promise((resolve, reject) => {
+            const statusHandler = (s: TransportStatus) => {
+                if (s === 'READY') {
+                    this.off('status', statusHandler);
+                    this.off('error', errorHandler);
+                    resolve();
                 }
-            }
-        } catch (e) {
-            this.logger.error(`Failed to set key "${key}":`, e);
-            // throw e; // Suppress throw to allow graceful failure, verified by tests
-        }
+            };
+            const errorHandler = (e: any) => {
+                this.off('status', statusHandler);
+                this.off('error', errorHandler);
+                reject(e);
+            };
+            this.on('status', statusHandler);
+            this.on('error', errorHandler);
+        });
     }
 
-    public transaction(fn: () => void): void {
-        this._isInsideTransaction = true;
-        this._transactionDeltas = [];
-        const isLive = this.isLive;
+    public set(key: string, value: any, schema?: Schema<any>): void {
         try {
-            fn();
-            if (this._transactionDeltas.length > 0 && isLive) {
-                this._transactionDeltas.forEach(d => this.transport.send(d));
-            }
-        } finally {
-            this._isInsideTransaction = false;
-            this._transactionDeltas = [];
+            JSON.stringify(value);
+        } catch (e) {
+            this.logger.error('Failed to set value: potential circular reference', e);
+            return;
         }
+        this.engine.set(key, value, schema);
+        this.flushQueue();
     }
 
-    public get<T = unknown>(key: string): T | undefined {
+    public get<T = unknown>(key: string): T {
+        console.log(`[NMeshedClient] get(${key}) calling engine...`);
+        this.engine.authority.trackKey(key);
         return this.engine.get(key) as T;
     }
 
-    public getConfirmed<T = unknown>(key: string): T | undefined {
-        return this.engine.getConfirmed(key) as T;
-    }
-
-    public isPending(key: string): boolean {
-        return this.engine.isOptimistic(key);
-    }
-
-    public registerSchema(keyPattern: string, schema: Schema<any>): void {
-        this.engine.registerSchema(keyPattern, schema);
-    }
-
-    public onKeyChange<T = unknown>(
-        pattern: string,
-        handler: (key: string, value: T | null, meta: { isOptimistic: boolean; timestamp: number }) => void
-    ): Unsubscribe {
-        const regex = this.patternToRegex(pattern);
-        return this.onMessage((msg) => {
-            if (msg.type === 'op' && regex.test(msg.payload.key)) {
-                handler(msg.payload.key, msg.payload.value as T, {
-                    isOptimistic: !!msg.payload.isOptimistic,
-                    timestamp: msg.payload.timestamp
-                });
-            }
-        });
-    }
-
-    private patternToRegex(pattern: string): RegExp {
-        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const glob = escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
-        return new RegExp(`^${glob}$`);
-    }
-
-    public getState(): Record<string, unknown> {
+    public getState(): Record<string, any> {
         return this.engine.getAllValues();
     }
 
-    public isAuthority(key: string): boolean {
-        return this.authorityRing.getNode(key) === this.config.userId;
+    public getAllValues(): Record<string, any> {
+        return this.getState();
     }
 
-    public onBecomeAuthority(pattern: string, handler: (key: string) => void): Unsubscribe {
-        const listener = { pattern, regex: this.patternToRegex(pattern), handler };
-        this.listeners.becomeAuthority.add(listener);
-
-        const keys = Object.keys(this.engine.getAllValues());
-        keys.forEach(key => {
-            if (listener.regex.test(key) && this.isAuthority(key)) {
-                if (!this.currentAuthorities.has(key)) this.currentAuthorities.add(key);
-                try { handler(key); } catch (e) { this.logger.warn('onBecomeAuthority existing key error', e); }
-            }
-        });
-
-        return () => this.listeners.becomeAuthority.delete(listener);
-    }
-
-    public onLoseAuthority(pattern: string, handler: (key: string) => void): Unsubscribe {
-        const listener = { pattern, regex: this.patternToRegex(pattern), handler };
-        this.listeners.loseAuthority.add(listener);
-        return () => this.listeners.loseAuthority.delete(listener);
-    }
-
-    private recalculateAuthority(): void {
-        const allKeys = Object.keys(this.engine.getAllValues());
-        const previousAuthorities = new Set(this.currentAuthorities);
-        this.currentAuthorities.clear();
-
-        allKeys.forEach(key => {
-            if (this.isAuthority(key)) {
-                this.currentAuthorities.add(key);
-                if (!previousAuthorities.has(key)) {
-                    this.listeners.becomeAuthority.forEach(l => {
-                        if (l.regex.test(key)) {
-                            try { l.handler(key); } catch (e) { this.logger.warn('becomeAuthority listener error', e); }
-                        }
-                    });
-                }
-            } else if (previousAuthorities.has(key)) {
-                this.listeners.loseAuthority.forEach(l => {
-                    if (l.regex.test(key)) {
-                        try { l.handler(key); } catch (e) { this.logger.warn('loseAuthority listener error', e); }
-                    }
-                });
-            }
-        });
-    }
-
-    public broadcast(data: unknown): void {
-        if (this.isDestroyed) return;
-        if (!this.isLive) {
-            this.logger.warn('Broadcast called while disconnected or ensuring connection');
-            return;
-        }
-        if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
-            this.transport.broadcast(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
-        } else {
-            this.transport.sendEphemeral(data);
-        }
-    }
-
-    public sendToPeer(peerId: string, payload: unknown): void {
-        if (this.isDestroyed) return;
-        this.transport.sendEphemeral(payload, peerId);
-    }
-
-    public getPeers(): string[] {
-        return this.transport.getPeers();
-    }
-
-    public async ping(peerId: string): Promise<number> {
-        return this.transport.ping(peerId);
-    }
-
-    public onStatusChange(handler: StatusHandler): Unsubscribe {
-        if (typeof handler !== 'function') throw new Error('Status handler must be a function');
-        this.listeners.status.add(handler);
-        try { handler(this._status); } catch (e) { }
-        return () => this.listeners.status.delete(handler);
-    }
-
-    public onMessage(handler: MessageHandler): Unsubscribe {
-        if (typeof handler !== 'function') throw new Error('Message handler must be a function');
-        this.listeners.message.add(handler);
-        return () => this.listeners.message.delete(handler);
-    }
-
-    public onEphemeral(handler: EphemeralHandler): Unsubscribe {
-        if (typeof handler !== 'function') throw new Error('Ephemeral handler must be a function');
-        this.listeners.ephemeral.add(handler);
-        return () => this.listeners.ephemeral.delete(handler);
-    }
-
-    public onPresence(handler: PresenceHandler): Unsubscribe {
-        if (typeof handler !== 'function') throw new Error('Presence handler must be a function');
-        this.listeners.presence.add(handler);
-        return () => this.listeners.presence.delete(handler);
-    }
-
-    public onPeerJoin(handler: (userId: string) => void): Unsubscribe {
-        this.listeners.peerJoin.add(handler);
-        return () => this.listeners.peerJoin.delete(handler);
-    }
-
-    public onPeerDisconnect(handler: (userId: string) => void): Unsubscribe {
-        this.listeners.peerDisconnect.add(handler);
-        return () => this.listeners.peerDisconnect.delete(handler);
-    }
-
-    public onQueueChange(handler: (size: number) => void): Unsubscribe {
-        this.listeners.queueChange.add(handler);
-        try { handler(this.getQueueSize()); } catch (e) { }
-        return () => this.listeners.queueChange.delete(handler);
+    public getId(): string {
+        return this.userId;
     }
 
     public getQueueSize(): number {
         return this.engine.getQueueSize();
     }
 
-    public on(event: string, handler: (...args: any[]) => void): Unsubscribe {
-        switch (event) {
-            case 'status': return this.onStatusChange(handler as StatusHandler);
-            case 'message': return this.onMessage(handler as MessageHandler);
-            case 'ephemeral': return this.onEphemeral(handler as EphemeralHandler);
-            case 'peerJoin': return this.onPeerJoin(handler as (peerId: string) => void);
-            case 'peerDisconnect': return this.onPeerDisconnect(handler as (peerId: string) => void);
-            case 'queueChange': return this.onQueueChange(handler as (size: number) => void);
-            default: return () => { };
+    public broadcast(payload: any): void {
+        if (this.getStatus() !== 'READY' && this.getStatus() !== 'CONNECTED') {
+            console.warn('broadcast called while disconnected');
         }
+        this.transport.sendEphemeral(payload);
     }
 
-    public getSyncedMap<T = unknown>(name: string, config?: SyncedMapConfig<T>): SyncedMap<T> {
-        if (this.syncedMaps.has(name)) return this.syncedMaps.get(name) as SyncedMap<T>;
-        const map = new SyncedMap<T>(this, name, config);
-        this.syncedMaps.set(name, map as SyncedMap<unknown>);
-        return map;
+    public sendToPeer(peerId: string, payload: any): void {
+        this.transport.sendEphemeral(payload, peerId);
     }
 
-    public async getPresence<T = any>(): Promise<T[]> {
-        const base = this.config.serverUrl?.replace(/\/+$/, '').replace(/^ws/, 'http') || 'https://api.nmeshed.com';
-        const url = `${base}/v1/presence/${encodeURIComponent(this.config.workspaceId)}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+    public getCollection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
+        return new SyncedCollection<T>(this.engine, prefix, schema);
+    }
+
+    public getSyncedMap(prefix: string): any {
+        if (!(this as any)._maps) (this as any)._maps = new Map();
+        if (!(this as any)._maps.has(prefix)) {
+            (this as any)._maps.set(prefix, this.getCollection(prefix));
+        }
+        return (this as any)._maps.get(prefix);
+    }
+
+    public subscribe(handler: (msg: NMeshedMessage) => void) {
+        if (typeof handler !== 'function') throw new Error('Handler must be a function');
+        return this.on('message', handler);
+    }
+
+    /** Compatibility Aliases */
+    public onStatusChange(handler: (status: TransportStatus) => void) {
+        if (typeof handler !== 'function') throw new Error('Status handler must be a function');
         try {
-            const res = await fetch(url, {
-                headers: { 'Authorization': `Bearer ${this.config.token || this.config.apiKey}` },
-                signal: controller.signal
-            });
-            if (!res.ok) throw new Error(`Failed to fetch presence: ${res.statusText}`);
-            return await res.json();
-        } finally {
-            clearTimeout(timeoutId);
-        }
+            handler(this.getStatus());
+        } catch (e) { }
+        return super.on('status', handler);
+    }
+    public onMessage(handler: (msg: NMeshedMessage) => void) {
+        if (typeof handler !== 'function') throw new Error('Message handler must be a function');
+        return super.on('message', handler);
+    }
+    public onPeerJoin(handler: (peerId: string) => void) { return super.on('peerJoin', handler); }
+    public onPeerLeave(handler: (peerId: string) => void) { return super.on('peerDisconnect', handler); }
+    public onPeerDisconnect(handler: (peerId: string) => void) { return super.on('peerDisconnect', handler); }
+
+    public onPresence(handler: (p: any) => void) {
+        if (typeof handler !== 'function') throw new Error('Presence handler must be a function');
+        return super.on('presence', handler);
+    }
+    public onEphemeral(handler: (p: any, from?: string) => void) {
+        if (typeof handler !== 'function') throw new Error('Ephemeral handler must be a function');
+        return super.on('ephemeral', handler);
     }
 
-    public simulateNetwork(options: ChaosOptions | null): void {
+    public onQueueChange(handler: (size: number) => void) {
+        const h = () => {
+            try {
+                handler(this.getQueueSize());
+            } catch (e) {
+                console.error('[EventEmitter] Error in listener for queueChange:', e);
+            }
+        };
+        h();
+        return this.engine.on('queueChange', h);
+    }
+
+    public onKeyChange(pattern: string, handler: (key: string, value: any, options: { isOptimistic: boolean }) => void) {
+        return this.engine.on('op', (key, value, isOptimistic) => {
+            const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+            if (regex.test(key)) {
+                try {
+                    handler(key, value, { isOptimistic });
+                } catch (e) {
+                    console.error('[SyncEngine] Error in key change listener:', e);
+                }
+            }
+        });
+    }
+
+    public override on<K extends keyof NMeshedEvents | string>(event: K, handler: (...args: any[]) => void): () => void {
+        const h = handler as any;
+        if (event === 'peerJoin') return this.onPeerJoin(h);
+        if (event === 'peerDisconnect') return this.onPeerDisconnect(h);
+        return super.on(event as any, h);
+    }
+
+    public async getPresence(): Promise<any[]> {
+        const relayUrl = this.config.relayUrl || this.config.serverUrl || 'wss://relay.nmeshed.io';
+        const httpUrl = relayUrl.replace(/^ws/, 'http') + '/v1/presence';
+        const res = await fetch(httpUrl, {});
+        if (!res.ok) throw new Error(`Failed to fetch presence: ${res.statusText}`);
+        return res.json();
+    }
+
+    public simulateNetwork(options: { latency?: number, packetLoss?: number, jitter?: number } | null) {
         if (!options) {
             this.transport.simulateLatency(0);
             this.transport.simulatePacketLoss(0);
             return;
         }
         if (options.latency !== undefined) this.transport.simulateLatency(options.latency);
-        if (options.packetLoss !== undefined) this.transport.simulatePacketLoss(options.packetLoss);
+        if (options.packetLoss !== undefined) this.transport.simulatePacketLoss(options.packetLoss / 100);
     }
 
-    public clearQueue(): void {
-        this.engine.clearQueue();
+    public setStatus(s: TransportStatus): void {
+        this.emit('status', s);
     }
 
-    public destroy(): void {
-        if (this.isDestroyed) return;
-        this.disconnect();
-        this.engine.destroy();
-        this.syncedMaps.clear();
-        Object.values(this.listeners).forEach(set => set.clear());
-        this.isDestroyed = true;
+    public getStatus(): TransportStatus {
+        const s = this.transport.getStatus();
+        if (s === 'IDLE') return 'IDLE';
+        if (s === 'CONNECTING') return 'CONNECTING';
+        if (s === 'DISCONNECTED') return 'DISCONNECTED';
+        if (s === 'RECONNECTING') return 'RECONNECTING';
+        if (s === 'ERROR') return 'ERROR';
+        return s === 'CONNECTED' ? 'READY' : s;
     }
 
-    private setStatus(newStatus: ConnectionStatus): void {
-        if (this._status !== newStatus) {
-            this.logger.debug(`Status: ${this._status} -> ${newStatus}`);
-            this._status = newStatus;
-            this.notifyStatusListeners(newStatus);
-            if (['CONNECTED', 'SYNCING', 'READY'].includes(newStatus)) this.flushQueue();
-        }
+    public get isLive(): boolean {
+        const s = this.getStatus();
+        return s === 'READY';
     }
 
-    private notifyStatusListeners(status: ConnectionStatus): void {
-        this.listeners.status.forEach(l => { try { l(status); } catch (e) { } });
+    public async ping(peerId: string): Promise<number> {
+        return this.transport.ping(peerId);
     }
 
-    private flushQueue(): void {
-        try {
-            const ops = this.engine.getPendingOps();
-            if (ops.length === 0) return;
-            let success = 0;
-            for (const op of ops) {
-                try {
-                    this.transport.send(op);
-                    success++;
-                } catch (sendErr) {
-                    break;
-                }
-            }
-            if (success > 0) this.engine.shiftQueue(success);
-        } catch (e) {
-            this.logger.warn('Failed to flush queue', e);
-        }
-    }
-
-    private notifyMessageListeners(msg: NMeshedMessage): void {
-        this.listeners.message.forEach(l => { try { l(msg); } catch (e) { } });
-    }
-
-    private generateUserId(): string {
-        if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) return (crypto as any).randomUUID();
-        return `user-${Math.random().toString(36).substring(2, 11)}`;
-    }
-
-    private buildUrl(): string {
-        const baseUrl = this.config.serverUrl || 'wss://api.nmeshed.com';
-        const params = new URLSearchParams({
-            userId: this.config.userId,
-            workspaceId: this.config.workspaceId,
-            ...(this.config.token ? { token: this.config.token } : { api_key: this.config.apiKey || '' })
-        });
-        const url = new URL(baseUrl);
-        url.search = params.toString();
-        return url.toString();
-    }
-
-    public get operationQueue(): Uint8Array[] {
-        return this.engine.getPendingOps();
-    }
-
-    public getPendingCount(): number {
-        return this.engine.getQueueLength();
-    }
-
-    public getUnconfirmedCount(): number {
-        return Object.keys(this.engine.getAllValues()).filter(k => this.engine.isOptimistic(k)).length;
+    private get logger() {
+        return (this.engine as any).logger;
     }
 }

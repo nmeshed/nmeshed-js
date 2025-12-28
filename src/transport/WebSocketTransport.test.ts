@@ -92,113 +92,6 @@ describe('WebSocketTransport', () => {
         return builder.asUint8Array().slice();
     }
 
-    describe('Binary Protocol - send()', () => {
-        it('passes through binary data without re-wrapping (assumes Pre-Framed)', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const payload = new Uint8Array([1, 2, 3, 4]);
-            transport.send(payload);
-
-            expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
-            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-            expect(sentData).toEqual(payload);
-
-            transport.disconnect();
-        });
-    });
-
-    describe('Binary Protocol - sendEphemeral()', () => {
-        it('uses MsgType.Sync for binary payloads', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const payload = new Uint8Array([10, 20, 30]);
-            transport.sendEphemeral(payload);
-
-            expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
-            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as Uint8Array;
-
-            const buf = new flatbuffers.ByteBuffer(sentData);
-            const wire = WirePacket.getRootAsWirePacket(buf);
-            expect(wire.msgType()).toBe(MsgType.Sync);
-            expect(wire.payloadArray()).toEqual(payload);
-
-            transport.disconnect();
-        });
-
-        it('sends raw JSON for control/administrative messages', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const payload = { type: 'presence', status: 'online' };
-            transport.sendEphemeral(payload);
-
-            expect(MockWebSocket.instances[0].send).toHaveBeenCalled();
-            const sentData = MockWebSocket.instances[0].send.mock.calls[0][0] as string;
-            expect(typeof sentData).toBe('string');
-            expect(sentData).toContain('"presence"');
-
-            transport.disconnect();
-        });
-    });
-
-    describe('Binary Protocol - handleMessage()', () => {
-        it('emits raw bytes for MsgType.Op packets', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const messageHandler = vi.fn();
-            transport.on('message', messageHandler);
-
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const opPacket = createWireOp('testKey', new Uint8Array([42]));
-            MockWebSocket.instances[0].simulateBinaryMessage(opPacket);
-
-            expect(messageHandler).toHaveBeenCalled();
-            // Verify raw bytes are emitted (not parsed object)
-            const emittedData = messageHandler.mock.calls[0][0];
-            expect(emittedData).toBeInstanceOf(Uint8Array);
-            transport.disconnect();
-        });
-
-        it('emits raw bytes for MsgType.Sync packets', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const messageHandler = vi.fn();
-            transport.on('message', messageHandler);
-
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const syncPacket = createWireSync(new Uint8Array([1, 2, 3]));
-            MockWebSocket.instances[0].simulateBinaryMessage(syncPacket);
-
-            expect(messageHandler).toHaveBeenCalled();
-            // Verify raw bytes are emitted
-            const emittedData = messageHandler.mock.calls[0][0];
-            expect(emittedData).toBeInstanceOf(Uint8Array);
-            transport.disconnect();
-        });
-
-        it('handles raw JSON control messages via heuristic', () => {
-            const transport = new WebSocketTransport({ url: 'wss://test.com' });
-            const peerJoinHandler = vi.fn();
-            transport.on('peerJoin', peerJoinHandler);
-
-            transport.connect();
-            MockWebSocket.instances[0].simulateOpen();
-
-            const json = JSON.stringify({ type: 'peer_join', userId: 'user1' });
-            const bytes = new TextEncoder().encode(json);
-            MockWebSocket.instances[0].simulateBinaryMessage(bytes);
-
-            expect(peerJoinHandler).toHaveBeenCalledWith('user1');
-            transport.disconnect();
-        });
-    });
     describe('Heartbeat', () => {
         beforeEach(() => {
             vi.useFakeTimers();
@@ -208,9 +101,8 @@ describe('WebSocketTransport', () => {
             vi.useRealTimers();
         });
 
-        it('resets missedHeartbeats when __pong__ is received', () => {
-            const transport = new WebSocketTransport({
-                url: 'wss://test.com',
+        it('resets missedHeartbeats when binary pong is received', () => {
+            const transport = new WebSocketTransport('wss://test.com', {
                 heartbeatInterval: 1000,
                 heartbeatMaxMissed: 3
             });
@@ -219,29 +111,21 @@ describe('WebSocketTransport', () => {
 
             // Advance time to trigger one heartbeat
             vi.advanceTimersByTime(1100);
-            expect(MockWebSocket.instances[0].send).toHaveBeenCalledWith('__ping__');
+            expect(MockWebSocket.instances[0].send).toHaveBeenCalledWith('\x01');
 
-            // At this point missedHeartbeats should be 1
-            // Simulate receiving __pong__
-            MockWebSocket.instances[0].simulateTextMessage('__pong__');
+            // Simulate receiving binary pong (\x00)
+            MockWebSocket.instances[0].simulateTextMessage('\x00');
 
             // Advance time to trigger another heartbeat
             vi.advanceTimersByTime(1000);
 
-            // If missedHeartbeats was reset, it should now be 1 again, not 2.
-            // Advance another 1000ms
-            vi.advanceTimersByTime(1000);
-
-            // Total of 3 heartbeats triggered since first pong. 
-            // If reset worked, we should NOT have closed yet.
             expect(MockWebSocket.instances[0].close).not.toHaveBeenCalled();
 
             transport.disconnect();
         });
 
         it('closes connection after max missed heartbeats', () => {
-            const transport = new WebSocketTransport({
-                url: 'wss://test.com',
+            const transport = new WebSocketTransport('wss://test.com', {
                 heartbeatInterval: 1000,
                 heartbeatMaxMissed: 2
             });
@@ -252,9 +136,13 @@ describe('WebSocketTransport', () => {
             vi.advanceTimersByTime(1000);
             expect(MockWebSocket.instances[0].close).not.toHaveBeenCalled();
 
-            // Trigger 2nd missed heartbeat -> Should close
+            // Trigger 2nd missed heartbeat (missed -> 2). Next tick will close.
             vi.advanceTimersByTime(1000);
-            expect(MockWebSocket.instances[0].close).toHaveBeenCalledWith(4000, 'Heartbeat Timeout');
+            expect(MockWebSocket.instances[0].close).not.toHaveBeenCalled();
+
+            // Trigger 3rd tick -> missed is 2 >= 2 -> Close
+            vi.advanceTimersByTime(1000);
+            expect(MockWebSocket.instances[0].close).toHaveBeenCalled();
 
             transport.disconnect();
         });

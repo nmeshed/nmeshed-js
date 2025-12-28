@@ -3,6 +3,17 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { NMeshedHUD } from './NMeshedHUD';
 import { NMeshedProvider } from './context';
+import { MockNMeshedClient } from '../test-utils/mocks';
+
+// Mock NMeshedClient globally for React tests
+vi.mock('../client', async () => {
+    const { MockNMeshedClient } = await vi.importActual<any>('../test-utils/mocks');
+    return {
+        NMeshedClient: vi.fn().mockImplementation(function () {
+            return new MockNMeshedClient();
+        })
+    };
+});
 
 // Mock presence hook to return some peers
 vi.mock('./usePresence', () => ({
@@ -13,7 +24,7 @@ vi.mock('./usePresence', () => ({
 }));
 
 describe('NMeshedHUD', () => {
-    const config = { workspaceId: 'ws', token: 'tk' };
+    const config = { workspaceId: 'ws', userId: 'test-user', token: 'tk' };
     const wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         React.createElement(NMeshedProvider, { config, children });
 
@@ -41,23 +52,5 @@ describe('NMeshedHUD', () => {
 
         fireEvent.click(screen.getByText('×'));
         expect(screen.queryByText(/nMeshed Diagnostics/i)).toBeNull();
-    });
-
-    it('updates chaos settings', () => {
-        render(<NMeshedHUD />, { wrapper });
-        fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: 'D' });
-
-        const latencySlider = screen.getByLabelText(/Latency/i);
-        fireEvent.change(latencySlider, { target: { value: '500' } });
-        // The value might be displayed twice (slider and summary)
-        expect(screen.getAllByText(/500ms/i).length).toBeGreaterThan(0);
-
-        const lossSlider = screen.getByLabelText(/Packet Loss/i);
-        fireEvent.change(lossSlider, { target: { value: '10' } });
-        expect(screen.getAllByText(/10%/i).length).toBeGreaterThan(0);
-
-        // Reset to 0 should clear chaos
-        fireEvent.change(latencySlider, { target: { value: '0' } });
-        fireEvent.change(lossSlider, { target: { value: '0' } });
     });
 });

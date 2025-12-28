@@ -1,453 +1,230 @@
+import { EventEmitter } from '../utils/EventEmitter';
 import { vi } from 'vitest';
-import { ByteBuffer, Builder } from 'flatbuffers';
+
+export interface MockClientConfig {
+    workspaceId: string;
+    userId: string;
+    token: string;
+}
+
+export class MockWebSocket extends EventEmitter<{
+    open: [];
+    close: [number, string];
+    message: [any];
+    error: [any];
+}> {
+    static instances: MockWebSocket[] = [];
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    public readyState: number = MockWebSocket.CONNECTING;
+    public url: string;
+    public onopen: (() => void) | null = null;
+    public onclose: ((event: any) => void) | null = null;
+    public onmessage: ((event: any) => void) | null = null;
+    public onerror: ((event: any) => void) | null = null;
+    public binaryType: string = 'blob';
+
+    constructor(url: string, public server: any = null) {
+        super();
+        this.url = url;
+        MockWebSocket.instances.push(this);
+    }
+
+    public send(_data: any): void {
+        if (this.server && this.server.broadcast) {
+            this.server.broadcast(_data);
+        }
+    }
+
+    public close(code: number = 1000, reason: string = ''): void {
+        this.simulateClose(code, reason);
+    }
+
+    public simulateOpen() {
+        this.readyState = MockWebSocket.OPEN;
+        this.onopen?.();
+        this.emit('open');
+        if (this.server && this.server.handleConnect) {
+            this.server.handleConnect(this);
+        }
+    }
+
+    public simulateClose(code: number = 1000, reason: string = '') {
+        this.readyState = MockWebSocket.CLOSED;
+        if (this.server && this.server.handleDisconnect) {
+            this.server.handleDisconnect(this);
+        }
+        this.onclose?.({ code, reason, wasClean: true, type: 'close', target: this } as any);
+        this.emit('close', code, reason);
+    }
+
+
+    public simulateMessage(data: any) {
+        if (!this.onmessage) return;
+        this.onmessage({ data } as any);
+        this.emit('message', data);
+    }
+
+    public simulateTextMessage(data: any) {
+        const text = typeof data === 'string' ? data : JSON.stringify(data);
+        this.simulateMessage(text);
+    }
+
+    public simulateRawBinaryMessage(data: Uint8Array | ArrayBuffer | any) {
+        let buffer: ArrayBuffer;
+        if (data instanceof Uint8Array) {
+            buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+        } else if (data instanceof ArrayBuffer) {
+            buffer = data;
+        } else {
+            buffer = data;
+        }
+        this.simulateMessage(buffer);
+    }
+
+    public simulateBinaryMessage(data: Uint8Array) {
+        this.simulateRawBinaryMessage(data);
+    }
+
+    public simulateError(error: any) {
+        this.onerror?.({ error } as any);
+        this.emit('error', error);
+    }
+}
+
+
+import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
 import { MsgType } from '../schema/nmeshed/msg-type';
 import { Op } from '../schema/nmeshed/op';
 import { encodeValue, decodeValue } from '../codec';
 
-/**
- * A centralized Mock WebSocket that simulates binary protocol exchanges.
- * It integrates with MockRelayServer to facilitate simulated P2P/Server communication.
- */
-export class MockWebSocket {
-    static instances: MockWebSocket[] = [];
-    static readonly CONNECTING = 0;
-    static readonly OPEN = 1;
-    static readonly CLOSING = 2;
-    static readonly CLOSED = 3;
+// Helper to create WirePacket for Op
+function createWireOp(key: string, value: Uint8Array, timestamp: bigint = BigInt(0)): Uint8Array {
+    const builder = new flatbuffers.Builder(1024);
+    const keyOffset = builder.createString(key);
+    const valOffset = Op.createValueVector(builder, value);
+    Op.startOp(builder);
+    Op.addKey(builder, keyOffset);
+    Op.addValue(builder, valOffset);
+    Op.addTimestamp(builder, timestamp);
+    const opOffset = Op.endOp(builder);
 
-    readyState = MockWebSocket.CONNECTING;
-    onopen: (() => void) | null = null;
-    onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
-    onclose: ((event: any) => void) | null = null;
-    onerror: ((event: any) => void) | null = null;
+    WirePacket.startWirePacket(builder);
+    WirePacket.addMsgType(builder, MsgType.Op);
+    WirePacket.addOp(builder, opOffset);
+    const packetOffset = WirePacket.endWirePacket(builder);
+    builder.finish(packetOffset);
+    return builder.asUint8Array().slice();
+}
 
-    constructor(public url: string, public server: MockRelayServer) {
-        MockWebSocket.instances.push(this);
-        // Do not auto-connect. Tests call simulateOpen().
-    }
+// Helper to create WirePacket for Init
+function createWireInit(payload: Uint8Array): Uint8Array {
+    const builder = new flatbuffers.Builder(payload.length + 1024);
+    // Use createByteVector for [ubyte] - it's faster and safer
+    const payloadOffset = builder.createByteVector(payload);
 
-    send(data: any) {
-        let parsed: any = { type: 'unknown', data };
-        if (ArrayBuffer.isView(data) || data instanceof ArrayBuffer) {
-            const bytes = ArrayBuffer.isView(data)
-                ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-                : new Uint8Array(data);
+    WirePacket.startWirePacket(builder);
+    WirePacket.addMsgType(builder, MsgType.Init);
+    WirePacket.addPayload(builder, payloadOffset);
+    const packetOffset = WirePacket.endWirePacket(builder);
+    builder.finish(packetOffset);
 
-            try {
-                const buf = new ByteBuffer(bytes);
-                const wire = WirePacket.getRootAsWirePacket(buf);
-                const msgType = wire.msgType();
-                if (typeof MsgType === 'undefined' || typeof MsgType.Op === 'undefined') {
-                    console.error("MOCK WS: MsgType enum is UNDEFINED!");
-                }
-                // console.log('[MockWebSocket] Parsed MsgType:', msgType);
-
-                if (msgType === MsgType.Op) {
-                    const op = wire.op();
-                    if (!op) {
-                        console.error('MOCK WS: wire.op() returned null!');
-                    } else {
-                        const key = op.key();
-                        const timestamp = Number(op.timestamp());
-                        const valBytes = op.valueArray();
-
-                        if (valBytes) {
-                            try {
-                                const value = decodeValue(valBytes);
-                                parsed = {
-                                    type: 'op',
-                                    payload: {
-                                        key: key || '',
-                                        value: value,
-                                        timestamp: timestamp
-                                    }
-                                };
-                            } catch (e) {
-                                // console.error("MOCK WS: Decode Failed on strict Op value", e);
-                            }
-                        }
-                    }
-                } else if (msgType === MsgType.Sync) {
-                    // Just pass through for now
-                    parsed = { type: 'sync', data: bytes };
-                }
-            } catch (e) {
-                console.error("MOCK WS: Binary parse error", e);
-            }
-        } else if (typeof data === 'object' && data !== null) {
-            // Pass-through if already object (MockRelayServer internal optimized path)
-            parsed = data;
-        } else {
-            // String data
-            try {
-                parsed = JSON.parse(data);
-            } catch {
-                parsed = { type: 'unknown_string', data };
-            }
-        }
-
-        if (parsed.type === 'unknown_binary') {
-            console.error("MOCK WS: Received UNKNOWN BINARY from client:", Array.from(new Uint8Array(data)));
-        } else if (parsed.type === 'unknown') {
-            console.error("MOCK WS: Received UNKNOWN message:", parsed);
-        } else if (parsed.type === 'op') {
-            // console.log("MOCK WS: Parsed OP:", parsed.payload);
-        }
-
-        this.server.onMessage(this, parsed);
-    }
-
-    close() {
-        this.readyState = MockWebSocket.CLOSED;
-        this.server.disconnect(this);
-        this.onclose?.({ code: 1000, reason: 'Test Close' });
-    }
-
-    // Helper to receive message FROM the Mock Server -> Client
-    simulateServerMessage(msg: any) {
-        if (!this.onmessage) return;
-
-        // Special handling for 'init' messages which traverse as plain JSON in tests
-        if (msg.type === 'init') {
-            const json = JSON.stringify(msg);
-            this.onmessage({ data: json });
-            return;
-        }
-
-        // For ops, wrap in a proper WirePacket to simulate production server
-        if (msg.type === 'op' && msg.payload) {
-            const builder = new Builder(1024);
-            const valBytes = encodeValue(msg.payload.value);
-            const valOffset = Op.createValueVector(builder, valBytes);
-            const keyOffset = builder.createString(msg.payload.key);
-            const wsOffset = builder.createString('');
-
-            Op.startOp(builder);
-            Op.addKey(builder, keyOffset);
-            Op.addWorkspaceId(builder, wsOffset);
-            Op.addValue(builder, valOffset);
-            Op.addTimestamp(builder, BigInt(msg.payload.timestamp || Date.now()));
-            const opOffset = Op.endOp(builder);
-
-            // STRICT: Op only
-            // const payloadOffset = WirePacket.createPayloadVector(builder, valBytes);
-
-            WirePacket.startWirePacket(builder);
-            WirePacket.addMsgType(builder, MsgType.Op);
-            WirePacket.addOp(builder, opOffset);
-            // WirePacket.addPayload(builder, payloadOffset);
-            const packetOffset = WirePacket.endWirePacket(builder);
-            builder.finish(packetOffset);
-
-            const bytes = builder.asUint8Array();
-            // Emit as array buffer slice to mimic WS behavior (often gives ArrayBuffer)
-            this.onmessage({ data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as any });
-            return;
-        }
-
-        // Fallback for generic/ephemeral messages
-        const json = JSON.stringify(msg);
-        const bytes = new TextEncoder().encode(json);
-        this.onmessage({
-            data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-        });
-    }
-
-    // Compatibility methods for client.test.ts
-    simulateOpen() {
-        this.readyState = MockWebSocket.OPEN;
-        this.server.connect(this); // Register with mock server
-        this.onopen?.();
-    }
-
-    simulateClose(code: number = 1000, reason: string = '') {
-        this.readyState = MockWebSocket.CLOSED;
-        this.server.disconnect(this);
-        this.onclose?.({ code, reason, wasClean: true, type: 'close', target: this });
-    }
-
-    simulateError(error: any = {}) {
-        this.onerror?.({ type: 'error', error, message: 'Simulated Error', target: this });
-    }
-
-    simulateBinaryMessage(data: any) {
-        this.simulateServerMessage(data);
-    }
-
-    simulateTextMessage(data: any) {
-        if (!this.onmessage) return;
-        const text = typeof data === 'string' ? data : JSON.stringify(data);
-        this.onmessage({ data: text });
-    }
-
-    simulateRawBinaryMessage(data: ArrayBuffer) {
-        if (!this.onmessage) return;
-        this.onmessage({ data });
-    }
+    const result = builder.asUint8Array().slice();
+    console.log(`[createWireInit] PayloadSize=${payload.length} ResultPacketSize=${result.length}`);
+    return result;
 }
 
 export class MockRelayServer {
-    clients = new Set<MockWebSocket>();
-    state: Record<string, any> = {};
+    public clients: Set<MockWebSocket> = new Set();
+    public state: Map<string, any> = new Map();
+    public handleConnect(client: MockWebSocket) {
+        this.clients.add(client);
 
-    connect(ws: MockWebSocket) {
-        this.clients.add(ws);
-        // Send initial state
-        // We use JSON for 'init' because client logic (handleInitSnapshot) often uses JSON in legacy paths
-        // or expects simple structure.
-        ws.simulateServerMessage({ type: 'init', data: { ...this.state } });
-    }
+        // 1. Send BINARY Init (using Init helper)
+        const initData = {
+            type: 'init',
+            meshId: 'test-mesh',
+            peers: Array.from(this.clients).map(_ => ({ userId: 'peer' }))
+        };
+        const initPacket = createWireInit(new TextEncoder().encode(JSON.stringify(initData)));
+        client.simulateRawBinaryMessage(initPacket);
 
-    disconnect(ws: MockWebSocket) {
-        this.clients.delete(ws);
-        // Clean up connection
-    }
-
-    onMessage(from: MockWebSocket, data: any) {
-        // console.log('[MockRelayServer] onMessage', data);
-        if (data.op === 'subscribe') return; // Ignore subscription requests
-
-        if (data.type === 'init') {
-            // ignore
-        } else if (data.type === 'op' || (data.op === 'set')) {
-            // Broadcast to all other clients
-            this.broadcast(from, data);
-
-            // Update server state 
-            if (data.type === 'op' && data.payload) {
-                // DEBUG: console.log('[MockRelayServer] Updating State. Key:', data.payload.key);
-                this.state[data.payload.key] = data.payload.value;
-            } else if (data.payload && data.payload.key) {
-                // Legacy structure support
-                this.state[data.payload.key] = data.payload.value;
-            }
+        // 2. Replay existing state as Op packets
+        // This works with both MockWasmCore AND real Automerge WASM core
+        // because both understand the Op WirePacket format.
+        for (const [key, value] of this.state.entries()) {
+            const valBytes = value instanceof Uint8Array ? value : encodeValue(value);
+            const opPacket = createWireOp(key, valBytes, BigInt(Date.now()));
+            client.simulateRawBinaryMessage(opPacket);
         }
     }
-
-    private broadcast(from: MockWebSocket, data: any) {
-        for (const client of this.clients) {
-            if (client !== from) {
-                client.simulateServerMessage(data);
-            }
-        }
+    public handleDisconnect(client: MockWebSocket) {
+        this.clients.delete(client);
     }
-
-    reset() {
+    public reset() {
         this.clients.clear();
-        this.state = {};
+        this.state.clear();
+    }
+    public disconnect = vi.fn();
+
+    public broadcast(data: any) {
+        // Update server state if it's an Op
+        if (data instanceof Uint8Array) {
+            try {
+                const buf = new flatbuffers.ByteBuffer(data);
+                const packet = WirePacket.getRootAsWirePacket(buf);
+                const msgType = packet.msgType();
+                if (msgType === MsgType.Op) {
+                    const op = packet.op();
+                    if (op) {
+                        const key = op.key();
+                        const valBytes = op.valueArray();
+
+                        if (key && valBytes) {
+                            // Ignore system keys to prevent log noise
+                            if (!key.startsWith('__')) {
+                                // CRITICAL: Make a defensive copy - Flatbuffer views can become invalid
+                                this.state.set(key, new Uint8Array(valBytes));
+                                // console.log(`[MockRelayServer] Stored key=${key} (${valBytes.length} bytes). TotalState=${this.state.size}`);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('[MockRelayServer] Broadcast Parse error:', e);
+            }
+        }
+
+        // Relay to all clients
+        for (const client of this.clients) {
+            // In a real server, we wouldn't echo back to sender usually, 
+            // but for simplicity and some tests we might.
+            // However, typical WebSocket server broadcasts to *others*.
+            // But checking integration tests expectations...
+            // "Host should eventually see y=2 (via broadcast)"
+            // If Peer sends y=2, Host must receive it. Peer is sender.
+            // So we must send to everyone else.
+            client.simulateMessage(data);
+        }
+    }
+
+    // Helper for tests to verify server state (handles binary decoding transparently)
+    public getValue(key: string): any {
+        const raw = this.state.get(key);
+        if (raw instanceof Uint8Array) {
+            try {
+                return decodeValue(raw);
+            } catch (e) { return raw; }
+        }
+        return raw;
     }
 }
 
 export const defaultMockServer = new MockRelayServer();
-
-export class MockWasmCore {
-    state: Record<string, any> = {};
-    workspaceId: string = 'test-ws';
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_token: string) {
-        // No-op
-    }
-
-    get_value(key: string) {
-        return this.state[key];
-    }
-
-    get_all_values() {
-        return this.state;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async set(key: string, value: any) {
-        // Mock implementation
-    }
-    apply_local_op(key: string, value: Uint8Array) {
-
-        // Update server state 
-        // We need to decode value to store in state, as state expects JS objects
-        let decoded: any = null;
-        try {
-            decoded = decodeValue(value);
-            this.state[key] = decoded;
-        } catch (e) {
-            console.error("MockWasmCore: decode failed", e);
-        }
-
-        // Construct WirePacket for the op to return to Client
-        // STRICT: Use Op table as defined in schema
-
-        const builder = new Builder(1024);
-        const valOffset = Op.createValueVector(builder, value);
-        const keyOffset = builder.createString(key);
-        const wsOffset = builder.createString(this.workspaceId || '');
-
-        Op.startOp(builder);
-        Op.addWorkspaceId(builder, wsOffset);
-        Op.addKey(builder, keyOffset);
-        Op.addTimestamp(builder, BigInt(Date.now()));
-        Op.addValue(builder, valOffset);
-        const opOffset = Op.endOp(builder);
-
-        WirePacket.startWirePacket(builder);
-        WirePacket.addMsgType(builder, MsgType.Op);
-        WirePacket.addOp(builder, opOffset);
-        const packetOffset = WirePacket.endWirePacket(builder);
-        builder.finish(packetOffset);
-
-        // Debug the generated packet
-        // const packet = builder.asUint8Array();
-        // console.log(`[MockWasmCore] Generated Packet first 20 bytes: ${Array.from(packet.slice(0, 20))}`);
-
-
-        return builder.asUint8Array();
-    }
-
-    merge_remote_delta(arg1: any, arg2?: any) {
-        // Hybrid support: Handle (key, value) from SyncEngine (parsed) OR (bytes) from raw
-        if (typeof arg1 === 'string') {
-            const key = arg1;
-            const value = arg2;
-            this.state[key] = value;
-            return;
-        }
-
-        const bytes = arg1 as Uint8Array;
-        try {
-            // Try parse as WirePacket
-            const buf = new ByteBuffer(bytes);
-            const wire = WirePacket.getRootAsWirePacket(buf);
-            if (wire.msgType() === MsgType.Op) {
-                const op = wire.op();
-                let key = '';
-                let valBytes: Uint8Array | null = null;
-
-                if (op) {
-                    key = op.key() || '';
-                    valBytes = op.valueArray();
-                }
-
-                if (key && valBytes) {
-                    this.state[key] = decodeValue(valBytes);
-                }
-            }
-        } catch (e) {
-            console.error('[MockWasmCore] Failed to parse wire packet', e);
-        }
-        // In real WASM, might return state diff or something. Here void.
-        return new Uint8Array(0);
-    }
-}
-
-export function setupTestMocks() {
-    defaultMockServer.reset();
-    MockWebSocket.instances = [];
-}
-
-export function teardownTestMocks() {
-    defaultMockServer.reset();
-    MockWebSocket.instances = [];
-    vi.restoreAllMocks();
-}
-
-MockWebSocket.instances = [];
-// Removed vi.restoreAllMocks() from here
-
-/**
- * A mock version of the NMeshedClient for use in React hooks and component tests.
- */
-export class MockNMeshedClient {
-    public status = 'DISCONNECTED';
-    private listeners: Record<string, Function> = {};
-    private presence: any[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(config?: any) {
-        // No-op
-    }
-
-    async connect() {
-        this.status = 'READY';
-    }
-
-    disconnect() {
-        this.status = 'DISCONNECTED';
-    }
-
-    on(event: string, handler: Function) {
-        this.listeners[event] = handler;
-        return () => { delete this.listeners[event]; };
-    }
-
-    off(event: string) {
-        delete this.listeners[event];
-    }
-
-    onStatusChange(handler: Function) {
-        return this.on('status', handler);
-    }
-
-    onQueueChange(handler: Function) {
-        return this.on('queue', handler);
-    }
-
-    onMessage(handler: Function) {
-        return this.on('message', handler);
-    }
-
-    async getPresence() {
-        return this.presence;
-    }
-
-    // Test helper to set presence
-    setPresence(users: any[]) {
-        this.presence = users;
-    }
-
-    // Test helper to trigger events
-    emit(event: string, ...args: any[]) {
-        if (this.listeners[event]) {
-            this.listeners[event](...args);
-        }
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async ping(userId: string) {
-        return 10;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async set(key: string, value: any) {
-        // Mock implementation
-    }
-}
-// WebRTC Mocks
-export class MockRTCDataChannel {
-    readyState = 'connecting';
-    binaryType = 'blob';
-    onopen: (() => void) | null = null;
-    onmessage: ((event: any) => void) | null = null;
-    onclose: (() => void) | null = null;
-    onerror: ((event: any) => void) | null = null;
-    label: string;
-
-    constructor(label: string) {
-        this.label = label;
-        setTimeout(() => {
-            this.readyState = 'open';
-            if (this.onopen) this.onopen();
-        }, 10);
-    }
-
-    send(data: any) {
-        // Echo or mock send
-    }
-
-    close() {
-        this.readyState = 'closed';
-        if (this.onclose) this.onclose();
-    }
-}
 
 export class MockRTCPeerConnection {
     iceServers: any;
@@ -457,55 +234,231 @@ export class MockRTCPeerConnection {
     onicecandidate: ((event: any) => void) | null = null;
     ondatachannel: ((event: any) => void) | null = null;
     dataChannels: MockRTCDataChannel[] = [];
-
-    constructor(config: any) {
-        this.iceServers = config.iceServers;
-    }
-
+    constructor(config: any) { this.iceServers = config?.iceServers; }
     createDataChannel(label: string) {
         const dc = new MockRTCDataChannel(label);
         this.dataChannels.push(dc);
         return dc;
     }
+    async createOffer() { return { type: 'offer', sdp: 'mock-sdp-offer' }; }
+    async createAnswer() { return { type: 'answer', sdp: 'mock-sdp-answer' }; }
+    async setLocalDescription(desc: any) { this.localDescription = desc; }
+    async setRemoteDescription(desc: any) { this.remoteDescription = desc; }
+    async addIceCandidate(_candidate: any) { }
+    close() { this.signalingState = 'closed'; }
+}
 
-    async createOffer() {
-        return { type: 'offer', sdp: 'mock-sdp-offer' };
+export class MockRTCDataChannel extends EventEmitter<{ open: []; message: [any]; close: [] }> {
+    label: string;
+    readyState = 'connecting';
+    onopen: (() => void) | null = null;
+    onmessage: ((event: any) => void) | null = null;
+    onclose: (() => void) | null = null;
+    constructor(label: string) { super(); this.label = label; }
+    public send(data: any): void { }
+    simulateOpen() { this.readyState = 'open'; this.onopen?.(); this.emit('open'); }
+    simulateMessage(data: any) { this.onmessage?.({ data } as any); this.emit('message', data); }
+}
+
+export class MockWasmCore {
+    public state: Map<string, Uint8Array> = new Map();
+
+    constructor(public workspaceId: string, public mode: string) { }
+
+    apply_remote_delta(delta: Uint8Array) {
+        // Real core returns a list of things to apply. For mock, we'll just return the original if it looks like a WirePacket.
+        return [delta];
     }
 
-    async createAnswer() {
-        return { type: 'answer', sdp: 'mock-sdp-answer' };
+    apply_local_op(key: string, value: Uint8Array, timestamp: bigint) {
+        // In this Mock, 'value' is already encoded binary from SyncEngine.set
+        this.state.set(key, value);
+        // Return a WirePacket containing the Op
+        return createWireOp(key, value, timestamp);
     }
 
-    async setLocalDescription(desc: any) {
-        this.localDescription = desc;
+    merge_remote_delta(packet_data: Uint8Array) {
+        try {
+            const buf = new flatbuffers.ByteBuffer(packet_data);
+            const packet = WirePacket.getRootAsWirePacket(buf);
+
+            if (packet.msgType() === MsgType.Op) {
+                const op = packet.op();
+                if (op) {
+                    const key = op.key();
+                    const val = op.valueArray();
+                    if (key && val) {
+                        this.state.set(key, val);
+                        return [{ type: 'op', key, value: val }];
+                    }
+                }
+            }
+        } catch (e) {
+            // Fallback for non-flatbuffer data if needed
+        }
+        return [];
     }
 
-    async setRemoteDescription(desc: any) {
-        this.remoteDescription = desc;
-        this.signalingState = 'stable'; // simplified
+    receive_sync_message(_message: Uint8Array) {
+        return Promise.resolve();
     }
 
-    async addIceCandidate(candidate: any) {
-        // no-op
+    load_snapshot(snapshot: Uint8Array): void {
+        console.log(`[MockWasmCore] load_snapshot starting. Snapshot size=${snapshot.length} bytes`);
+        try {
+            const json = new TextDecoder().decode(snapshot);
+            const data = JSON.parse(json);
+            console.log(`[MockWasmCore] Parsed snapshot successfully. KeyCount=${Object.keys(data).length}`);
+            for (const [k, v] of Object.entries(data)) {
+                if (Array.isArray(v)) {
+                    this.state.set(k, new Uint8Array(v));
+                } else {
+                    // CRITICAL: Must use encodeValue to ensure FBC tags are present
+                    this.state.set(k, encodeValue(v));
+                }
+            }
+        } catch (e) {
+            console.error('[MockWasmCore] Load Snapshot failed:', e);
+        }
     }
 
-    close() {
-        this.signalingState = 'closed';
+    get_state() {
+        const result: Record<string, any> = {};
+        for (const [k, v] of this.state.entries()) {
+            result[k] = decodeValue(v);
+        }
+        return result;
+    }
+
+    get_all_values() {
+        const result: Record<string, Uint8Array> = {};
+        for (const [k, v] of this.state.entries()) {
+            result[k] = v;
+        }
+        return result;
+    }
+
+    get(key: string): Uint8Array | undefined {
+        const val = this.state.get(key);
+        if (val) {
+            // console.log(`[MockWasmCore] get(${key}) -> FOUND. Size=${val.length}`);
+        } else {
+            // console.log(`[MockWasmCore] get(${key}) -> NOT FOUND`);
+        }
+        return val;
+    }
+
+    set(key: string, value: Uint8Array): void {
+        this.state.set(key, value);
+    }
+
+    // New state machine compatible methods
+    apply_vessel(bytes: Uint8Array): void {
+        // Parse the WirePacket and apply the operation
+        try {
+            const buf = new flatbuffers.ByteBuffer(bytes);
+            const packet = WirePacket.getRootAsWirePacket(buf);
+
+            if (packet.msgType() === MsgType.Op) {
+                const op = packet.op();
+                if (op) {
+                    const key = op.key();
+                    const val = op.valueArray();
+                    if (key && val) {
+                        this.state.set(key, new Uint8Array(val));
+                    }
+                }
+            }
+        } catch (e) {
+            // Silently fail for invalid packets
+        }
+    }
+
+    get_raw_value(key: string): Uint8Array | undefined {
+        return this.state.get(key);
+    }
+
+    get_heads(): string[] {
+        return [];
     }
 }
 
-export class MockRTCSessionDescription {
-    type: string;
-    sdp: string;
-    constructor(init: { type: string, sdp: string }) {
-        this.type = init.type;
-        this.sdp = init.sdp;
+export function setupTestMocks() {
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection);
+    (vi.stubGlobal as any)('RTCSessionDescription', class { constructor(init: any) { return init; } });
+    (vi.stubGlobal as any)('RTCIceCandidate', class { constructor(init: any) { return init; } });
+}
+
+
+export class MockNMeshedClient extends EventEmitter<{
+    status: [string];
+    presence: [string, string, string];
+    peerJoin: [string];
+    peerDisconnect: [string];
+    error: [Error];
+}> {
+    public status: string = 'IDLE';
+    public peers: Map<string, any> = new Map();
+
+    constructor(public config?: any) {
+        super();
+    }
+
+    public async connect() {
+        this.status = 'CONNECTED';
+        this.emit('status', this.status);
+    }
+
+    public disconnect() {
+        this.status = 'DISCONNECTED';
+        this.emit('status', this.status);
+    }
+
+    public getStatus() {
+        return this.status;
+    }
+
+    public getPeers() {
+        return Array.from(this.peers.keys());
+    }
+
+    public async getPresence(): Promise<any[]> {
+        return Array.from(this.peers.values());
+    }
+
+    public async ping(_peerId: string): Promise<number> {
+        return 10;
+    }
+
+    public onStatusChange(cb: (status: any) => void) {
+        return this.on('status', cb);
+    }
+    public onQueueChange(_cb: (size: number) => void) {
+        // dummy
+        return () => { };
+    }
+    public onMessage(_cb: (msg: any) => void) {
+        // dummy
+        return () => { };
+    }
+    public set(_key: string, _value: any) {
+        // dummy
     }
 }
 
-export class MockRTCIceCandidate {
-    candidate: string;
-    constructor(init: { candidate: string }) {
-        this.candidate = init.candidate;
+export function teardownTestMocks() {
+    MockWebSocket.instances = [];
+    vi.unstubAllGlobals();
+}
+
+// Export a test-ready WebSocket that auto-connects (moved from integration.test.ts)
+export class AutoMockWebSocket extends MockWebSocket {
+    constructor(url: string) {
+        super(url, defaultMockServer);
+        // Auto-connect using microtask to simulate async network
+        Promise.resolve().then(() => {
+            this.simulateOpen();
+        });
     }
 }

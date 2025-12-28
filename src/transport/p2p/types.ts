@@ -28,6 +28,7 @@ export interface BaseSignal {
 export interface JoinSignal extends BaseSignal {
     type: 'join';
     workspaceId: string;
+    heads?: string[];
 }
 
 export interface OfferSignal extends BaseSignal {

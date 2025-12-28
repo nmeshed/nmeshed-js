@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class Relay {
+
+
+export class Relay implements flatbuffers.IUnpackableObject<RelayT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Relay {
@@ -66,5 +68,31 @@ static createRelay(builder:flatbuffers.Builder, dataOffset:flatbuffers.Offset):f
   Relay.startRelay(builder);
   Relay.addData(builder, dataOffset);
   return Relay.endRelay(builder);
+}
+
+unpack(): RelayT {
+  return new RelayT(
+    this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength())
+  );
+}
+
+
+unpackTo(_o: RelayT): void {
+  _o.data = this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength());
+}
+}
+
+export class RelayT implements flatbuffers.IGeneratedObject {
+constructor(
+  public data: (number)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const data = Relay.createDataVector(builder, this.data);
+
+  return Relay.createRelay(builder,
+    data
+  );
 }
 }

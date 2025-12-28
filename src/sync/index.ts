@@ -4,5 +4,4 @@
  * Provides reactive state containers for automatic P2P synchronization.
  */
 
-export { SyncedMap, createSyncedMap } from './SyncedMap';
-export type { SyncedMapConfig } from './SyncedMap';
+export { SyncedCollection } from './SyncedCollection';
