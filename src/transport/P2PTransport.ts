@@ -8,6 +8,7 @@ import { WirePacket } from '../schema/nmeshed/wire-packet';
 import { MsgType } from '../schema/nmeshed/msg-type';
 import { Op } from '../schema/nmeshed/op';
 import { SyncPacket } from '../schema/nmeshed/sync-packet';
+import { logger } from '../utils/Logger';
 
 /**
  * P2P Transport implementation using WebRTC Mesh.
@@ -24,8 +25,13 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
     private packetLoss = 0;
     private pingResolvers: Map<string, (latency: number) => void> = new Map();
     private pingStarts: Map<string, number> = new Map();
+    private metrics = {
+        relayedBytes: 0,
+        broadcastedBytes: 0,
+        totalOps: 0
+    };
 
-    constructor(config: { userId?: string, serverUrl?: string, workspaceId: string, token?: string, tokenProvider?: () => Promise<string>, iceServers?: RTCIceServer[] }) {
+    constructor(config: { userId?: string, serverUrl?: string, workspaceId: string, token?: string, tokenProvider?: () => Promise<string>, iceServers?: RTCIceServer[], debug?: boolean, aggressiveRelay?: boolean }) {
         super();
         this.myId = config.userId || this.generateId();
 
@@ -41,11 +47,12 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
             tokenProvider: config.tokenProvider,
             workspaceId: config.workspaceId,
             myId: this.myId,
+            debug: config.debug
         });
 
         this.connections = new ConnectionManager({
             iceServers: config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
-        });
+        }, config.debug);
 
         this.setupInternalListeners();
     }
@@ -102,6 +109,7 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
     }
 
     public broadcast(data: Uint8Array | ArrayBuffer): void {
+        this.metrics.totalOps++;
         const u8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
 
         if (this.packetLoss > 0 && Math.random() < this.packetLoss) {
@@ -109,15 +117,20 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
         }
 
         const task = () => {
-            // 1. Send via Relay (WebSocket) to everyone not yet on P2P
+            // HYBRID-FIRST: Default to server relay with P2P as cost-saving optimization
+            const useAggressive = (this as any).config?.aggressiveRelay ?? true;
+            // 1. Send via Relay (WebSocket)
             this.peerStatus.forEach((status, peerId) => {
-                if (status !== 'p2p') {
+                if (status !== 'p2p' || useAggressive) {
                     this.signaling.sendSignal(peerId, { type: 'relay', data: u8 });
+                    this.metrics.relayedBytes += u8.byteLength;
                 }
             });
 
             // 2. Send via P2P (DataChannel)
             this.connections.broadcast(u8);
+            const p2pPeerCount = Array.from(this.peerStatus.values()).filter(s => s === 'p2p').length;
+            this.metrics.broadcastedBytes += u8.byteLength * p2pPeerCount;
         };
 
         if (this.latency > 0) {
@@ -125,6 +138,16 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
         } else {
             task();
         }
+
+        const isDebug = (this as any).config?.debug;
+        if (isDebug) {
+            const peers = Array.from(this.peerStatus.keys());
+            logger.debug(`[P2PTransport] broadcast: ${u8.byteLength} bytes to ${peers.length} targets: ${peers.join(',')}`);
+        }
+
+        // P2P "Self-ACK": Since there's no central server to confirm,
+        // we acknowledge the transmission immediately to clear the client's queue.
+        this.emit('ack', 1);
     }
 
     public sendEphemeral(payload: any, to?: string): void {
@@ -149,6 +172,10 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
 
     public getPeers(): string[] {
         return Array.from(this.peerStatus.keys());
+    }
+
+    public getMetrics() {
+        return { ...this.metrics, latency: this.latency };
     }
 
     public async ping(peerId: string): Promise<number> {
@@ -206,6 +233,9 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
             onInit: (sync: SyncPacket) => {
                 // Emit as 'message' to follow unified binary pipeline
                 this.emit('message', sync.bb!.bytes());
+            },
+            onServerMessage: (data: Uint8Array) => {
+                this.handleRawMessage(data);
             },
             onEphemeral: (payload: any, from?: string) => {
                 if (payload && payload.type === '__ping__') {
@@ -281,9 +311,10 @@ export class P2PTransport extends EventEmitter<TransportEvents> implements Trans
      * Following the "Dumb Pipe" principle: Transport moves bytes, SyncEngine parses them.
      * All WirePacket parsing is handled by MessageRouter in SyncEngine.
      */
-    private handleRawMessage(bytes: Uint8Array): void {
-        // Simply emit the raw bytes - SyncEngine will parse via MessageRouter
-        this.emit('message', bytes);
+    private handleRawMessage(data: Uint8Array): void {
+        const isRelay = (this as any).signaling?.connected;
+        logger.debug(`[P2PTransport] handleRawMessage: ${data.byteLength} bytes (Relay=${isRelay})`);
+        this.emit('message', data);
     }
 
     private handlePresence(userId: string, status: string, meshId?: string): void {

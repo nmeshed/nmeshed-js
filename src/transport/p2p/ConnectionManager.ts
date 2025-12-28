@@ -33,9 +33,14 @@ export class ConnectionManager {
     private pendingCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
     private listeners: Partial<ConnectionEvents> = {};
     private config: ConnectionManagerConfig;
+    private debug: boolean;
+    private logger = logger;
 
-    constructor(config: ConnectionManagerConfig) {
+    constructor(config: ConnectionManagerConfig, debug: boolean = false) {
         this.config = config;
+        this.debug = debug;
+        this.logger = logger.child(this.debug ? 'P2P:DEBUG' : 'P2P');
+        if (this.debug) this.logger.setLogLevel(0); // DEBUG
     }
 
     public setListeners(listeners: Partial<ConnectionEvents>) {
@@ -63,11 +68,26 @@ export class ConnectionManager {
      */
     public broadcast(data: ArrayBuffer | Uint8Array) {
         const buffer = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-        this.dataChannels.forEach(dc => {
+        let sentCount = 0;
+        this.dataChannels.forEach((dc, peerId) => {
             if (dc.readyState === 'open') {
-                dc.send(buffer as unknown as ArrayBuffer);
+                try {
+                    // Use the specific slice/buffer to ensure we send the right bytes
+                    const toSend = buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength
+                        ? buffer.buffer
+                        : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+                    dc.send(toSend as any);
+                    sentCount++;
+                } catch (e) {
+                    logger.error(`Failed to send to ${peerId}`, e);
+                }
             }
         });
+        if (sentCount > 0) {
+            this.logger.info(`[P2P] Broadcasted ${buffer.byteLength} bytes to ${sentCount} peers`);
+        } else {
+            this.logger.warn(`[P2P] Broadcast attempt with 0 open channels (Total DCs: ${this.dataChannels.size})`);
+        }
     }
 
     /**
@@ -239,11 +259,26 @@ export class ConnectionManager {
 
         dc.onmessage = (e) => {
             try {
+                // node-datachannel / wrtc might return Buffer or ArrayBuffer
+                let data: Uint8Array;
                 if (e.data instanceof ArrayBuffer) {
-                    this.listeners.onMessage?.(peerId, e.data);
+                    data = new Uint8Array(e.data);
+                } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(e.data)) {
+                    data = new Uint8Array(e.data);
+                } else if (e.data instanceof Uint8Array) {
+                    data = e.data;
+                } else if (e.data && typeof e.data === 'object' && ('byteLength' in e.data || 'length' in e.data)) {
+                    // Fallback for Node.js Buffer / strange polyfill types
+                    data = new Uint8Array(e.data);
+                } else {
+                    this.logger.warn(`Unknown data type received from ${peerId}:`, typeof e.data, e.data?.constructor?.name);
+                    return;
                 }
+
+                this.logger.info(`[P2P] Received ${data.byteLength} bytes from ${peerId}`);
+                this.listeners.onMessage?.(peerId, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
             } catch (fatal) {
-                logger.error(`Critical DataChannel Error (Peer ${peerId})`, fatal);
+                this.logger.error(`Critical DataChannel Error (Peer ${peerId})`, fatal);
             }
         };
 
@@ -265,16 +300,16 @@ export class ConnectionManager {
 
         const pc = this.peers.get(peerId);
         if (pc) {
+            this.peers.delete(peerId); // Remove first to prevent recursion
             try {
                 pc.close();
             } catch (e) { /* ignore */ }
-            this.peers.delete(peerId);
             removed = true;
         }
 
         if (this.dataChannels.has(peerId)) {
             this.dataChannels.delete(peerId);
-            removed = true; // Consider it 'removed' if we had a channel too
+            removed = true;
         }
 
         if (removed) {

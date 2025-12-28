@@ -1,11 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { loadQueue, saveQueue } from './persistence';
-import 'fake-indexeddb/auto'; // Automatically mocks global indexedDB
+import 'fake-indexeddb/auto';
 
 describe('Persistence (Real IndexedDB)', () => {
-
-    // We don't need to manually mock indexedDB anymore because 'fake-indexeddb/auto' does it.
-    // However, we should clear the DB between tests to ensure isolation.
+    // Enable "real" IDB path (using fake-indexeddb) in tests
+    process.env.USE_REAL_IDB = 'true';
 
     const DB_NAME = 'nmeshed_db';
 
@@ -15,7 +14,7 @@ describe('Persistence (Real IndexedDB)', () => {
         await new Promise((resolve, reject) => {
             req.onsuccess = resolve;
             req.onerror = reject;
-            req.onblocked = resolve; // Resolve even if blocked (usually means open connection)
+            req.onblocked = resolve;
         });
         vi.restoreAllMocks();
     });
@@ -27,10 +26,7 @@ describe('Persistence (Real IndexedDB)', () => {
             { key: 'op2', value: { type: 'del' }, timestamp: 1001 }
         ];
 
-        // 1. Save
         await saveQueue(workspaceId, items);
-
-        // 2. Load
         const loaded = await loadQueue(workspaceId);
 
         expect(loaded).toHaveLength(2);
@@ -60,16 +56,12 @@ describe('Persistence (Real IndexedDB)', () => {
         const workspaceId = 'ws-delete';
         await saveQueue(workspaceId, [{ key: '1', value: 'v', timestamp: 1 }]);
 
-        // Verify saved
         let loaded = await loadQueue(workspaceId);
         expect(loaded).toHaveLength(1);
 
-        // Save empty
         await saveQueue(workspaceId, []);
-
-        // Verify deleted
         loaded = await loadQueue(workspaceId);
-        expect(loaded).toHaveLength(0); // Should be empty array
+        expect(loaded).toHaveLength(0);
     });
 
     it('should handle different workspaces in isolation', async () => {
@@ -86,44 +78,73 @@ describe('Persistence (Real IndexedDB)', () => {
         expect(loaded2).toEqual(ws2);
     });
 
-    it('should handle openDB failure gracefully', async () => {
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
-
-        // Mock open to fail
-        const originalOpen = indexedDB.open;
+    it('should handle openDB failure gracefully with silent fallback', async () => {
         vi.spyOn(indexedDB, 'open').mockImplementation(() => {
             throw new Error('Explosion');
         });
 
-        await saveQueue('ws-fail', []);
-        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save queue'), expect.any(Error));
-
+        const testData = [{ key: '1', value: 'v', timestamp: 1 }];
+        await saveQueue('ws-fail', testData);
         const loaded = await loadQueue('ws-fail');
-        expect(loaded).toEqual([]);
-        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to load queue'), expect.any(Error));
-
-        consoleSpy.mockRestore();
+        expect(loaded).toEqual(testData);
     });
 
-    it('should degrade gracefully if indexedDB is missing', async () => {
-        // Temporarily remove indexedDB
+    it('should degrade gracefully if indexedDB is missing with silent fallback', async () => {
         const original = globalThis.indexedDB;
         // @ts-ignore
         delete globalThis.indexedDB;
 
         try {
-            const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
-
-            await saveQueue('ws-no-idb', []);
-            // Should verify fallback behavior (currently logs warn)
-            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save queue'), expect.any(Error));
-
+            const testData = [{ key: '1', value: 'v', timestamp: 1 }];
+            await saveQueue('ws-no-idb', testData);
             const loaded = await loadQueue('ws-no-idb');
-            expect(loaded).toEqual([]);
-            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to load queue'), expect.any(Error));
-
+            expect(loaded).toEqual(testData);
         } finally {
             globalThis.indexedDB = original;
         }
+    });
+
+    it('handles transaction errors in saveQueue', async () => {
+        const originalTx = IDBDatabase.prototype.transaction;
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: any[]) {
+            const tx = originalTx.apply(this, args as any);
+            setTimeout(() => {
+                // @ts-ignore
+                if (tx.onerror) tx.onerror({ target: tx });
+            }, 0);
+            return tx;
+        });
+
+        const testData = [{ key: '1', value: 'tx-fail', timestamp: 1 }];
+        await saveQueue('ws-tx-fail', testData);
+        const loaded = await loadQueue('ws-tx-fail');
+        expect(loaded).toEqual(testData);
+    });
+
+    it('handles request errors in loadQueue', async () => {
+        const originalTx = IDBDatabase.prototype.transaction;
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: any[]) {
+            const tx = originalTx.apply(this, args as any);
+            const originalStore = tx.objectStore;
+            tx.objectStore = function (name: string) {
+                const store = originalStore.call(tx, name);
+                const originalGet = store.get;
+                store.get = function (key: any) {
+                    const req = originalGet.call(store, key);
+                    setTimeout(() => {
+                        // @ts-ignore
+                        if (req.onerror) req.onerror({ target: req });
+                    }, 0);
+                    return req;
+                };
+                return store;
+            };
+            return tx;
+        });
+
+        const result = await loadQueue('ws-req-fail-new');
+        expect(result).toEqual([]);
+
+        vi.restoreAllMocks();
     });
 });

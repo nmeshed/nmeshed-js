@@ -5,15 +5,30 @@ import { ProtocolUtils } from './ProtocolUtils';
 import { logger } from '../../utils/Logger';
 import { WirePacket } from '../../schema/nmeshed/wire-packet';
 
-// Stub logger to avoid noise
-vi.mock('../../utils/Logger', () => ({
-    logger: {
+// Stub logger to avoid noise - inline to fix hoisting issues
+vi.mock('../../utils/Logger', () => {
+    const mockLoggerInstance = {
         debug: vi.fn(),
         error: vi.fn(),
         warn: vi.fn(),
         info: vi.fn(),
+        child: vi.fn(),
+        setLogLevel: vi.fn(),
+    };
+    // Logger must be a class that returns mockLoggerInstance when instantiated
+    class MockLogger {
+        debug = mockLoggerInstance.debug;
+        error = mockLoggerInstance.error;
+        warn = mockLoggerInstance.warn;
+        info = mockLoggerInstance.info;
+        child = mockLoggerInstance.child;
+        setLogLevel = mockLoggerInstance.setLogLevel;
     }
-}));
+    return {
+        Logger: MockLogger,
+        logger: mockLoggerInstance
+    };
+});
 
 describe('SignalingClient', () => {
     let client: SignalingClient;

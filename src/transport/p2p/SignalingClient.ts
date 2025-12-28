@@ -10,7 +10,7 @@ import { Answer } from '../../schema/nmeshed/answer';
 import { Candidate } from '../../schema/nmeshed/candidate';
 import { Relay } from '../../schema/nmeshed/relay';
 import { ProtocolUtils } from './ProtocolUtils';
-import { logger } from '../../utils/Logger';
+import { Logger, logger } from '../../utils/Logger';
 
 export interface SignalingConfig {
     url: string;
@@ -18,6 +18,7 @@ export interface SignalingConfig {
     tokenProvider?: () => Promise<string>;
     workspaceId: string;
     myId: string;
+    debug?: boolean;
 }
 
 export interface SignalingEvents {
@@ -48,8 +49,11 @@ export class SignalingClient {
     private static readonly BASE_RECONNECT_DELAY_MS = 1000;
     private static readonly MAX_RECONNECT_DELAY_MS = 30000;
 
+    private logger: Logger;
+
     constructor(config: SignalingConfig) {
         this.config = config;
+        this.logger = new Logger('Signaling', config.debug);
     }
 
     public setListeners(listeners: Partial<SignalingEvents>) {
@@ -72,7 +76,7 @@ export class SignalingClient {
             try {
                 this.config.token = await this.config.tokenProvider();
             } catch (e) {
-                logger.error('Token Provider Error', e);
+                this.logger.error('Token Provider Error', e);
             }
         }
 
@@ -182,11 +186,40 @@ export class SignalingClient {
 
     private handleMessage(e: MessageEvent) {
         if (typeof e.data === 'string') {
-            console.warn('[SignalingClient] Unexpected text message received:', e.data);
+            this.handleTextMessage(e.data);
             return;
         }
         this.handleBinaryMessage(e.data as ArrayBuffer);
     }
+
+    private handleTextMessage(data: string) {
+        try {
+            const msg = JSON.parse(data);
+            if (!msg || !msg.type || !msg.payload) return;
+
+            if (msg.type === 'init') {
+                // Handle JSON Init (contains peer list)
+                if (msg.payload.peers && Array.isArray(msg.payload.peers)) {
+                    msg.payload.peers.forEach((p: any) => {
+                        if (p.userId && p.status === 'online') {
+                            this.listeners.onPresence?.(p.userId, 'online', p.meshId);
+                        }
+                    });
+                }
+                // Do NOT call onInit for JSON payload as P2PTransport expects Flatbuffer SyncPacket
+
+            } else if (msg.type === 'presence') {
+                // Handle JSON Presence
+                const p = msg.payload;
+                if (p.userId && p.status) {
+                    this.listeners.onPresence?.(p.userId, p.status, p.meshId);
+                }
+            }
+        } catch (e) {
+            logger.error('JSON Signaling Parse Error', e);
+        }
+    }
+
 
     private handleBinaryMessage(buffer: ArrayBuffer) {
         try {
@@ -195,7 +228,7 @@ export class SignalingClient {
             const wire = WirePacket.getRootAsWirePacket(buf);
             const msgType = wire.msgType();
 
-            if (msgType === MsgType.Sync) {
+            if (msgType === MsgType.Sync || msgType === MsgType.Op) {
                 // Check for new specialized SyncPacket first
                 const sync = wire.sync();
                 if (sync) {
@@ -204,10 +237,8 @@ export class SignalingClient {
                     return;
                 }
 
-                const payload = wire.payloadArray();
-                if (payload) {
-                    this.listeners.onServerMessage?.(payload);
-                }
+                this.listeners.onServerMessage?.(arr);
+                this.logger.debug(`[Signaling] Relayed Sync/Op received: ${arr.byteLength} bytes`);
             } else if (msgType === MsgType.Signal) {
                 const sig = wire.signal();
                 if (sig) {
@@ -239,7 +270,12 @@ export class SignalingClient {
                             }
                         } else if (dataType === SignalData.Relay) {
                             const relay = sig.data(new Relay());
-                            if (relay) parsed = { type: 'relay', data: relay.dataArray()! };
+                            if (relay) {
+                                parsed = {
+                                    type: 'relay',
+                                    data: relay.dataArray()!
+                                };
+                            }
                         }
 
                         if (parsed) {

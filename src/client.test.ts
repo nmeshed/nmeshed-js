@@ -1098,21 +1098,69 @@ describe('NMeshedClient', () => {
             expect(await client.ping('p1')).toBe(10);
         });
 
-        it('isLive reflects READY status', () => {
+        it('subscribe/onMessage/onPresence/onEphemeral coverage', () => {
             const client = new NMeshedClient(defaultConfig);
-            expect(client.isLive).toBe(false);
+            const h = () => { };
+            client.subscribe(h);
+            client.onMessage(h);
+            client.onPresence(h);
+            client.onEphemeral(h);
+            client.onPeerJoin(h);
+            client.onPeerLeave(h);
+            client.onPeerDisconnect(h);
+            const stopQueue = client.onQueueChange(h);
+            stopQueue();
 
-            // Mock transport status
-            vi.spyOn(client.transport, 'getStatus').mockReturnValue('CONNECTED');
-            // setStatus just emits, getStatus reads transport.
-            // But wait, client.getStatus maps CONNECTED to READY?
-            // Line 382: s === 'CONNECTED' ? 'READY' : s;
-            expect(client.isLive).toBe(true);
+            expect(() => client.subscribe(null as any)).toThrow();
+            expect(() => client.onStatusChange(null as any)).toThrow();
+            expect(() => client.onPresence(null as any)).toThrow();
+            expect(() => client.onEphemeral(null as any)).toThrow();
         });
 
-        it('exposes internal logger', () => {
+        it('onStatusChange handles immediate error peacefully', () => {
             const client = new NMeshedClient(defaultConfig);
-            expect((client as any).logger).toBeDefined();
+            // Should not throw even if handler throws during immediate call
+            client.onStatusChange(() => { throw new Error('immediate'); });
+        });
+
+        it('onKeyChange regex and handler errors', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+            client.onKeyChange('test:*', () => { throw new Error('fail'); });
+            (client as any).engine.emit('op', 'test:1', 'val', false);
+            expect(consoleSpy).toHaveBeenCalled();
+            consoleSpy.mockRestore();
+        });
+
+        it('onPeerJoin/onPeerLeave/onPeerDisconnect delegates', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const h = vi.fn();
+            client.onPeerJoin(h);
+            client.onPeerLeave(h);
+            client.onPeerDisconnect(h);
+
+            client.emit('peerJoin', 'p1');
+            expect(h).toHaveBeenCalledWith('p1');
+            client.emit('peerDisconnect', 'p2');
+            expect(h).toHaveBeenCalledWith('p2');
+
+            // Test alias coverage in on()
+            client.on('peerJoin', () => { });
+        });
+
+        it('isLive and getStatus mapping', () => {
+            const client = new NMeshedClient(defaultConfig);
+            vi.spyOn(client.transport, 'getStatus').mockReturnValue('CONNECTED');
+            expect(client.getStatus()).toBe('READY');
+            expect(client.isLive).toBe(true);
+
+            vi.spyOn(client.transport, 'getStatus').mockReturnValue('IDLE');
+            expect(client.getStatus()).toBe('IDLE');
+        });
+
+        it('getMetrics fallback', () => {
+            const client = new NMeshedClient(defaultConfig);
+            expect(client.getMetrics()).toBeNull();
         });
     });
 });

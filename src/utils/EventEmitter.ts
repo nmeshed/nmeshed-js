@@ -1,7 +1,20 @@
-
 /**
- * A tiny, type-safe event emitter to replace the sprawling Set<Handler> patterns.
- * Designed for readability and zero dependencies.
+ * A tiny, type-safe event emitter to replace sprawling Set<Handler> patterns.
+ * 
+ * Design Choices:
+ * - **Type-safe**: Event names and argument types are enforced at compile time.
+ * - **Error boundaries**: Exceptions in handlers don't break other listeners.
+ * - **Zero dependencies**: No external libraries required.
+ * - **Memory-safe**: Returns unsubscribe functions to prevent leaks.
+ * 
+ * @example
+ * ```typescript
+ * interface MyEvents { data: [string]; error: [Error] }
+ * const emitter = new EventEmitter<MyEvents>();
+ * const unsub = emitter.on('data', (msg) => console.log(msg));
+ * emitter.emit('data', 'hello');
+ * unsub(); // Clean up
+ * ```
  */
 export class EventEmitter<T extends Record<string, any[]> & { [K: string]: any[] }> {
     private listeners: { [K in keyof T]?: Set<(...args: T[K]) => void> } = {};

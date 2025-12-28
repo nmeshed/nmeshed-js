@@ -97,6 +97,26 @@ export class Logger {
             useJson: this.useJson
         };
     }
+
+    /**
+     * Converts an object to a JSON-safe format by handling BigInt values.
+     * Use this for debugging/logging state that may contain BigInts.
+     */
+    public static toViewable(obj: any): any {
+        if (obj === null || obj === undefined) return obj;
+        if (typeof obj === 'bigint') return obj.toString() + 'n';
+        if (Array.isArray(obj)) return obj.map(item => Logger.toViewable(item));
+        if (typeof obj === 'object') {
+            const result: any = {};
+            for (const key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    result[key] = Logger.toViewable(obj[key]);
+                }
+            }
+            return result;
+        }
+        return obj;
+    }
 }
 
 // Global default logger

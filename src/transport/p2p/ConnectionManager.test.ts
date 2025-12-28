@@ -2,16 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConnectionManager } from './ConnectionManager';
 import { MockRTCPeerConnection, setupTestMocks, teardownTestMocks } from '../../test-utils/mocks';
 
-// Stub logger
-vi.mock('../../utils/Logger', () => ({
-    logger: {
+// Stub logger with child() method - inline definition to avoid hoisting issues
+vi.mock('../../utils/Logger', () => {
+    const mockLogger: any = {
         debug: vi.fn(),
         error: vi.fn(),
         warn: vi.fn(),
         info: vi.fn(),
         conn: vi.fn(),
-    }
-}));
+        child: vi.fn(() => mockLogger),
+        setLogLevel: vi.fn(),
+    };
+    return { logger: mockLogger };
+});
 
 describe('ConnectionManager', () => {
     let mgr: ConnectionManager;

@@ -24,6 +24,7 @@ export interface NMeshedConfig {
     connectionTimeout?: number;
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
+    aggressiveRelay?: boolean;
 }
 
 /**
@@ -86,7 +87,9 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
                 userId: this.userId,
                 serverUrl: relayUrl,
                 iceServers: config.iceServers,
-                token: config.token || config.apiKey || ''
+                token: config.token || config.apiKey || '',
+                debug: config.debug,
+                aggressiveRelay: config.aggressiveRelay
             });
         } else {
             this.transport = new WebSocketTransport(relayUrl, {
@@ -126,6 +129,9 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
                 this.flushQueue();
             }
             this.emit('status', s === 'CONNECTED' ? 'READY' : s);
+        });
+        this.transport.on('ack' as any, (count: number) => {
+            this.engine.shiftQueue(count);
         });
         this.transport.on('error', (e) => this.emit('error', e));
         this.transport.on('peerJoin', (id) => {
@@ -233,11 +239,8 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     public set(key: string, value: any, schema?: Schema<any>): void {
-        try {
-            JSON.stringify(value);
-        } catch (e) {
-            this.logger.error('Failed to set value: potential circular reference', e);
-            return;
+        if (this.config.debug) {
+            console.log(`[NMeshedClient] ${this.userId} set(${key}):`, value);
         }
         this.engine.set(key, value, schema);
         this.flushQueue();
@@ -263,6 +266,13 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
     public getQueueSize(): number {
         return this.engine.getQueueSize();
+    }
+
+    public getMetrics() {
+        if ((this.transport as any).getMetrics) {
+            return (this.transport as any).getMetrics();
+        }
+        return null;
     }
 
     public broadcast(payload: any): void {
@@ -389,9 +399,5 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
     public async ping(peerId: string): Promise<number> {
         return this.transport.ping(peerId);
-    }
-
-    private get logger() {
-        return (this.engine as any).logger;
     }
 }

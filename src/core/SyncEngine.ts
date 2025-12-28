@@ -137,6 +137,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private workspaceId: string;
     private mode: 'crdt' | 'lww';
     private logger: Logger;
+    private debug: boolean;
 
     // The Monotonic Pulse
     public readonly clock: RealTimeClock;
@@ -164,11 +165,12 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     ) {
         super();
         this.workspaceId = workspaceId;
-        this.mode = mode as any;
+        this.mode = mode as 'crdt' | 'lww';
         this.maxQueueSize = maxQueueSize;
+        this.debug = debug;
         this.logger = new Logger('SyncEngine', debug);
 
-        this.clock = new RealTimeClock(peerId, 60, debug);
+        this.clock = new RealTimeClock(peerId, debug ? 1 : 10, debug);
         this.authority = new AuthorityManager(peerId, 20);
 
         // Chain clock ticks to global sync if authority
@@ -461,15 +463,26 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         const timestamp = BigInt(Date.now()) * 1000000n + BigInt(this.opSequence++);
         this.authority.trackKey(key);
 
+        this.logger.info(`[SyncEngine] apply_local_op key=${key} valPixels=${valBytes.length}`);
         const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as any;
-        if (!res) throw new Error('[SyncEngine] CORE FAILED TO APPLY OP');
+        if (!res) {
+            this.logger.error(`[SyncEngine] CORE FAILED TO APPLY OP for key: ${key}`);
+            throw new Error('[SyncEngine] CORE FAILED TO APPLY OP');
+        }
 
         const delta = reconstructBinary(res);
-        if (!delta) throw new Error('[SyncEngine] CORE RETURNED INVALID DELTA');
+        if (!delta) {
+            this.logger.error(`[SyncEngine] CORE RETURNED INVALID DELTA for key: ${key}`);
+            throw new Error('[SyncEngine] CORE RETURNED INVALID DELTA');
+        }
 
         if (shouldQueue) this.addToQueue(delta);
 
         this.viewCache.clear();
+        const verify = this.get(key);
+        if (this.debug) {
+            this.logger.debug(`[SyncEngine] setInternal complete. Key=${key}`, verify);
+        }
         this.emit('op', key, value, true);
         return delta;
     }
@@ -488,6 +501,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
      * Apply an incoming binary message.
      */
     public applyRawMessage(bytes: Uint8Array): void {
+        this.logger.debug(`[SyncEngine] applyRawMessage: ${bytes.byteLength} bytes`);
         if (this._state === EngineState.DESTROYED || this._state === EngineState.STOPPING) {
             return; // Silently drop
         }

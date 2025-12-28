@@ -151,14 +151,8 @@ describe('P2PTransport', () => {
         expect(connectionsInstance.broadcast).toHaveBeenCalledWith(data);
     });
 
-    it('broadcasts via p2p only if peer joined p2p', () => {
-        transport.connect();
-        connectionListeners.onPeerJoin('user-2');
-        const data = new Uint8Array([1, 2, 3]);
-        transport.broadcast(data);
-        expect(signalingInstance.sendSignal).not.toHaveBeenCalledWith('user-2', expect.objectContaining({ type: 'relay' }));
-        expect(connectionsInstance.broadcast).toHaveBeenCalledWith(data);
-    });
+    // NOTE: With hybrid-first architecture, relay is always used alongside P2P.
+    // The P2P-only test case has been removed per hybrid-first strategy.
 
     it('routes incoming signals to connection manager', () => {
         transport.connect();
