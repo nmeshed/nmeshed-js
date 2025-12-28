@@ -225,8 +225,17 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
     /**
      * Initialize the WASM core and prepare for operations.
-     * Can be called from IDLE or STOPPED states.
+     * 
+     * **Concurrency Note**: This method is idempotent and safe to call multiple times.
      * Concurrent calls will wait for the first boot to complete.
+     * 
+     * **Phases**:
+     * 1. Load WASM binary (Node.js/Browser agnostic).
+     * 2. Initialize Rust `NMeshedClientCore`.
+     * 3. Load persisted state from IndexedDB/LSM.
+     * 4. Flush boot-time operation queue.
+     * 
+     * @returns Promise resolving when EngineState becomes ACTIVE.
      */
     public async boot(): Promise<void> {
         // Already booted

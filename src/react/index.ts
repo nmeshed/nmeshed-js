@@ -3,23 +3,22 @@
  *
  * @example
  * ```tsx
- * import { useNmeshed, usePresence } from 'nmeshed/react';
+ * import { useSyncSession } from 'nmeshed/react';
  *
  * function App() {
- *   const { state, set, status } = useNmeshed({
+ *   // 1. Auto-connect
+ *   const { client, isReady, status } = useSyncSession({
  *     workspaceId: 'my-workspace',
- *     token: 'jwt-token'
+ *     apiKey: 'nm_live_xyz'
  *   });
  *
- *   const users = usePresence();
+ *   if (!isReady) return <div>Status: {status}</div>;
  *
+ *   // 2. Use Client
  *   return (
- *     <div>
- *       <p>Status: {status}</p>
- *       <p>Title: {state.title}</p>
- *       <input onChange={(e) => set('title', e.target.value)} />
- *       <p>{users.length} users online</p>
- *     </div>
+ *     <button onClick={() => client.set('clicked', true)}>
+ *       Click Me
+ *     </button>
  *   );
  * }
  * ```
