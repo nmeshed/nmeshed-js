@@ -44,6 +44,7 @@ export { NMeshedHUD } from './NMeshedHUD';
 
 // Context
 export { NMeshedProvider, useNmeshedContext, useNmeshedStatus } from './context';
+export { MockNMeshedProvider, createMockClient } from './testing';
 
 // UI Layer Constants
 export { UI_LAYERS } from './layers';
@@ -52,6 +53,5 @@ export type { UILayerKey } from './layers';
 // Types
 export type { UseNmeshedOptions, UseNmeshedReturn } from './useNmeshed';
 export type { UseDocumentOptions, UseDocumentReturn } from './useDocument';
-export type { UsePresenceOptions } from './usePresence';
 export type { UseCursorResult } from './useCursor';
 export type { NMeshedProviderProps } from './context';

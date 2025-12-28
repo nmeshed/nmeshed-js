@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNmeshedContext } from './context';
 import { Schema, SchemaDefinition, InferSchema } from '../schema/SchemaBuilder';
 import { NMeshedMessage } from '../types';
+import { TransportStatus } from '../transport/Transport';
 
 /**
  * Return type for useStore hook.
@@ -9,7 +10,7 @@ import { NMeshedMessage } from '../types';
 export type UseStoreReturn<T extends SchemaDefinition> = [
     InferSchema<Schema<T>>,
     (updates: Partial<InferSchema<Schema<T>>>) => void,
-    { pending: boolean }
+    { pending: boolean; isConnected: boolean; status: TransportStatus }
 ];
 
 /**
@@ -29,6 +30,9 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
         }
         return result;
     });
+
+    const [status, setStatus] = useState<TransportStatus>(client.getStatus());
+    const [isConnected, setIsConnected] = useState(client.isLive);
 
     const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
         for (const [key, value] of Object.entries(updates)) {
@@ -66,9 +70,22 @@ export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStor
             }
         });
 
+        // Track connection status
+        const unsubStatus = client.onStatusChange((s) => {
+            setStatus(s);
+            setIsConnected(s === 'READY' || s === 'CONNECTED');
+        });
+
         sync();
-        return unsub;
+        const currentStatus = client.getStatus();
+        setStatus(currentStatus);
+        setIsConnected(client.isLive);
+
+        return () => {
+            unsub();
+            unsubStatus();
+        };
     }, [client, schema]);
 
-    return [state, setStore, { pending: false }]; // Pending logic moved to internal reconciler
+    return [state, setStore, { pending: false, isConnected, status }]; // Pending logic moved to internal reconciler
 }

@@ -149,8 +149,10 @@ const TodoSchema = defineSchema({
 
 function TodoItem({ id }) {
   // Auto-validates and types the return value
-  const [todo, setTodo] = useStore(TodoSchema, `todo:${id}`);
+  const [todo, setTodo, { isConnected }] = useStore(TodoSchema);
   
+  if (!isConnected) return <span>Connecting...</span>;
+
   return <div onClick={() => setTodo({ ...todo, done: !todo.done })} />;
 }
 ```
@@ -206,6 +208,29 @@ interface NMeshedConfig {
   userId?: string;      // Explicit user ID
   debug?: boolean;      // Verbose logging
 }
+```
+
+## 🧪 Testing
+
+We provide a dedicated testing utility to simplify unit testing of your React components.
+
+```tsx
+import { render, screen } from '@testing-library/react';
+import { MockNMeshedProvider } from 'nmeshed/react';
+import { MyComponent } from './MyComponent';
+
+test('renders with mock data', () => {
+  render(
+    <MockNMeshedProvider 
+      status="CONNECTED" 
+      storeData={{ count: 42 }}
+    >
+      <MyComponent />
+    </MockNMeshedProvider>
+  );
+  
+  expect(screen.getByText('Count: 42')).toBeInTheDocument();
+});
 ```
 
 ## 📚 Resources

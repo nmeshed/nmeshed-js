@@ -10,6 +10,9 @@ const { mockClient, mockSet } = vi.hoisted(() => {
             get: vi.fn(),
             set: sendOp,
             subscribe: vi.fn(() => vi.fn()),
+            onStatusChange: vi.fn(() => vi.fn()),
+            getStatus: vi.fn(() => 'CONNECTED'),
+            isLive: true,
         },
         mockSet: sendOp,
     };

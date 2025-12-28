@@ -14,7 +14,7 @@ interface NMeshedContextValue {
 /**
  * Context for sharing an nMeshed client across components.
  */
-const NMeshedContext = createContext<NMeshedContextValue | null>(null);
+export const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 
 /**
  * Props for NMeshedProvider.
