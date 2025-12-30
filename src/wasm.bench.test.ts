@@ -24,85 +24,80 @@ describe('WASM Core Benchmarks', () => {
         }
     });
 
-    const runSuite = (mode: 'crdt' | 'lww') => {
-        describe(`Mode: ${mode.toUpperCase()}`, () => {
-            let core: NMeshedClientCore;
+    describe('Automerge Core', () => {
+        let core: NMeshedClientCore;
 
-            beforeAll(() => {
-                if (wasmBuffer) {
-                    core = new NMeshedClientCore(workspaceId, mode);
-                }
-            });
-
-            it(`Benchmark: apply_local_op (${mode})`, () => {
-                if (!core) return;
-                const key = 'bench-key';
-                const value = { x: 1, y: 2, note: 'benchmark' };
-                const valBytes = new TextEncoder().encode(JSON.stringify(value));
-                const timestamp = BigInt(Date.now() * 1000);
-
-                // Warmup
-                for (let i = 0; i < 100; i++) {
-                    core.apply_local_op(key, valBytes, timestamp);
-                }
-
-                const start = performance.now();
-                for (let i = 0; i < ITERATIONS; i++) {
-                    core.apply_local_op(key, valBytes, timestamp);
-                }
-                const end = performance.now();
-                const time = end - start;
-                const perOp = (time / ITERATIONS * 1000);
-
-                console.log(`[${mode.toUpperCase()}] apply_local_op: ${perOp.toFixed(2)} µs/op (${(ITERATIONS / (time / 1000)).toFixed(0)} ops/s)`);
-                expect(time).toBeGreaterThan(0);
-            });
-
-            it(`Benchmark: get_state (${mode})`, () => {
-                if (!core) return;
-
-                // Populate
-                for (let i = 0; i < 100; i++) {
-                    const valBytes = new TextEncoder().encode(JSON.stringify({ index: i }));
-                    core.apply_local_op(`item-${i}`, valBytes, BigInt(Date.now() * 1000));
-                }
-
-                const start = performance.now();
-                for (let i = 0; i < 100; i++) { // Fewer iterations for full snapshot
-                    core.get_all_values();
-                }
-                const end = performance.now();
-                const time = end - start;
-                const perOp = (time / 100 * 1000);
-
-                console.log(`[${mode.toUpperCase()}] get_state (100 items): ${perOp.toFixed(2)} µs/op`);
-            });
-
-            it(`Benchmark: merge_remote_delta (${mode})`, () => {
-                if (!core) return;
-
-                // Create a packet to merge
-                const key = 'merge-bench';
-                const value = { x: 1, y: 2, note: 'benchmark' };
-                const valBytes = new TextEncoder().encode(JSON.stringify(value));
-                const timestamp = BigInt(Date.now() * 1000);
-
-                // apply_local_op returns the Flatbuffer packet!
-                const packet = core.apply_local_op(key, valBytes, timestamp);
-
-                const start = performance.now();
-                for (let i = 0; i < ITERATIONS; i++) {
-                    core.apply_vessel(packet);
-                }
-                const end = performance.now();
-                const time = end - start;
-                const perOp = (time / ITERATIONS * 1000);
-
-                console.log(`[${mode.toUpperCase()}] merge_remote_delta: ${perOp.toFixed(2)} µs/op (${(ITERATIONS / (time / 1000)).toFixed(0)} ops/s)`);
-            });
+        beforeAll(() => {
+            if (wasmBuffer) {
+                core = new NMeshedClientCore(workspaceId);
+            }
         });
-    };
 
-    runSuite('lww');
-    runSuite('crdt');
+        it('Benchmark: apply_local_op', () => {
+            if (!core) return;
+            const key = 'bench-key';
+            const value = { x: 1, y: 2, note: 'benchmark' };
+            const valBytes = new TextEncoder().encode(JSON.stringify(value));
+            const timestamp = BigInt(Date.now() * 1000);
+
+            // Warmup
+            for (let i = 0; i < 100; i++) {
+                core.apply_local_op(key, valBytes, timestamp, 'bench', BigInt(i), false);
+            }
+
+            const start = performance.now();
+            for (let i = 0; i < ITERATIONS; i++) {
+                core.apply_local_op(key, valBytes, timestamp, 'bench', BigInt(i), false);
+            }
+            const end = performance.now();
+            const time = end - start;
+            const perOp = (time / ITERATIONS * 1000);
+
+            console.log(`[Automerge] apply_local_op: ${perOp.toFixed(2)} µs/op (${(ITERATIONS / (time / 1000)).toFixed(0)} ops/s)`);
+            expect(time).toBeGreaterThan(0);
+        });
+
+        it('Benchmark: get_state', () => {
+            if (!core) return;
+
+            // Populate
+            for (let i = 0; i < 100; i++) {
+                const valBytes = new TextEncoder().encode(JSON.stringify({ index: i }));
+                core.apply_local_op(`item-${i}`, valBytes, BigInt(Date.now() * 1000), 'bench', BigInt(i), false);
+            }
+
+            const start = performance.now();
+            for (let i = 0; i < 100; i++) { // Fewer iterations for full snapshot
+                core.get_all_values();
+            }
+            const end = performance.now();
+            const time = end - start;
+            const perOp = (time / 100 * 1000);
+
+            console.log(`[Automerge] get_state (100 items): ${perOp.toFixed(2)} µs/op`);
+        });
+
+        it('Benchmark: merge_remote_delta', () => {
+            if (!core) return;
+
+            // Create a packet to merge
+            const key = 'merge-bench';
+            const value = { x: 1, y: 2, note: 'benchmark' };
+            const valBytes = new TextEncoder().encode(JSON.stringify(value));
+            const timestamp = BigInt(Date.now() * 1000);
+
+            // apply_local_op returns the Flatbuffer packet!
+            const packet = core.apply_local_op(key, valBytes, timestamp, 'bench', BigInt(1), false);
+
+            const start = performance.now();
+            for (let i = 0; i < ITERATIONS; i++) {
+                core.apply_vessel(packet);
+            }
+            const end = performance.now();
+            const time = end - start;
+            const perOp = (time / ITERATIONS * 1000);
+
+            console.log(`[Automerge] merge_remote_delta: ${perOp.toFixed(2)} µs/op (${(ITERATIONS / (time / 1000)).toFixed(0)} ops/s)`);
+        });
+    });
 });

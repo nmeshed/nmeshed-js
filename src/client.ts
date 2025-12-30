@@ -160,7 +160,6 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.engine = new SyncEngine(
             config.workspaceId,
             this.userId,
-            'crdt',
             config.maxQueueSize || 1000,
             config.debug,
             config.wasmPath

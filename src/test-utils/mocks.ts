@@ -260,14 +260,14 @@ export class MockWasmCore {
     public state: Map<string, Uint8Array> = new Map();
     public timestamps: Map<string, bigint> = new Map();
 
-    constructor(public workspaceId: string, public mode: string) { }
+    constructor(public workspaceId: string) { }
 
     apply_remote_delta(delta: Uint8Array) {
         // Real core returns a list of things to apply. For mock, we'll just return the original if it looks like a WirePacket.
         return [delta];
     }
 
-    apply_local_op(key: string, value: Uint8Array, timestamp: bigint) {
+    apply_local_op(key: string, value: Uint8Array, timestamp: bigint, _actorId: string, _seq: bigint, _isDelete: boolean) {
         // In this Mock, 'value' is already encoded binary from SyncEngine.set
         this.state.set(key, value);
         this.timestamps.set(key, timestamp);

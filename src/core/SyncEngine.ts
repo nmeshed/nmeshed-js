@@ -137,7 +137,6 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private viewCache = new Map<string, any>();
     private opSequence = 0;
     private workspaceId: string;
-    private mode: 'crdt' | 'lww';
     private logger: Logger;
     private debug: boolean;
     private wasmPath?: string;
@@ -170,14 +169,12 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     constructor(
         workspaceId: string,
         peerId: string,
-        mode: string = 'crdt',
         maxQueueSize: number = 1000,
         debug: boolean = false,
         wasmPath?: string
     ) {
         super();
         this.workspaceId = workspaceId;
-        this.mode = mode as 'crdt' | 'lww';
         this.maxQueueSize = maxQueueSize;
         this.debug = debug;
         this.wasmPath = wasmPath;
@@ -282,6 +279,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     }
 
     /** Internal boot implementation */
+
     private async doBootInternal(): Promise<void> {
 
         try {
@@ -327,7 +325,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 }
             }
 
-            this.core = new NMeshedClientCore(this.workspaceId, this.mode);
+            this.core = new NMeshedClientCore(this.workspaceId);
             this.clock.start();
 
             // Auto-register System Schemas

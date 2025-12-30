@@ -43,7 +43,7 @@ describe('SyncEngine', () => {
 
     beforeEach(async () => {
         vi.useFakeTimers();
-        engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 'crdt', 100, false);
+        engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 100, false);
         await engine.boot();
     });
 
@@ -59,7 +59,7 @@ describe('SyncEngine', () => {
         });
 
         it('should drain bootQueue on boot', async () => {
-            const fresh = new SyncEngine(VALID_UUID_3, VALID_UUID_4, 'crdt', 100, false);
+            const fresh = new SyncEngine(VALID_UUID_3, VALID_UUID_4, 100, false);
             fresh.applyRawMessage(new Uint8Array([0xAA]));
             expect((fresh as any).bootQueue.length).toBe(1);
 
@@ -78,7 +78,7 @@ describe('SyncEngine', () => {
     describe('QUEUE MANAGEMENT', () => {
         it('should respect maxQueueSize when not operational', async () => {
             const maxQueueSize = 2;
-            const qEngine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 'crdt', maxQueueSize, false);
+            const qEngine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, maxQueueSize, false);
 
             qEngine.set('k1', 'v1');
             expect(qEngine.get('k1')).toBe('v1');
@@ -139,14 +139,14 @@ describe('SyncEngine', () => {
                 { data: new Uint8Array([0x02]) }
             ]);
 
-            const persistent = new SyncEngine(VALID_UUID_1, VALID_UUID_3, 'crdt', 100, false);
+            const persistent = new SyncEngine(VALID_UUID_1, VALID_UUID_3, 100, false);
             await persistent.boot();
             expect(persistent.getQueueLength()).toBe(2);
         });
 
         it('should handle loadQueue failure without crashing', async () => {
             vi.mocked(loadQueue).mockRejectedValue(new Error('DB Failed'));
-            const persistent = new SyncEngine(VALID_UUID_2, VALID_UUID_4, 'crdt', 100, false);
+            const persistent = new SyncEngine(VALID_UUID_2, VALID_UUID_4, 100, false);
             await expect(persistent.boot()).resolves.not.toThrow();
             expect(persistent.state).toBe('ACTIVE');
         });
@@ -169,7 +169,7 @@ describe('SyncEngine', () => {
         });
 
         it('should persist and recover preConnectState', async () => {
-            const preEngine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 'crdt', 100, false);
+            const preEngine = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 100, false);
             preEngine.set('pre-key', 'pre-val');
 
             // Advance timers to trigger scheduled persistence
@@ -223,7 +223,7 @@ describe('SyncEngine', () => {
     describe('COVERAGE BOOST', () => {
         it('getHeads should return empty array if not active', () => {
             // New engine is IDLE
-            const fresh = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 'crdt', 100, false);
+            const fresh = new SyncEngine(VALID_UUID_1, VALID_UUID_2, 100, false);
             expect(fresh.getHeads()).toEqual([]);
         });
 

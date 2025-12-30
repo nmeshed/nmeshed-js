@@ -94,10 +94,10 @@ describe('Milestone 5: The Zen Chaos Test', () => {
 
         for (let i = 0; i < clientCount; i++) {
             const peerId = `p${i}`;
-            const engine = new SyncEngine('chaos-ws', peerId, 'crdt', 1000, false);
+            const engine = new SyncEngine('chaos-ws', peerId, 1000, false);
 
             // Mock Core injection
-            const core = new MockWasmCore('chaos-ws', 'crdt');
+            const core = new MockWasmCore('chaos-ws');
             (engine as any).core = core;
             (engine as any)._state = EngineState.ACTIVE;
             (engine as any).localVector = new Map<string, bigint>();
