@@ -53,15 +53,16 @@ export class SyncedCollection<T extends any> extends EventEmitter<CollectionEven
     }
 
     private fullSync() {
-        const all = this.engine.getAllValues();
         let changed = false;
-        for (const [key, value] of Object.entries(all)) {
+        // Zen Optimization: Iterate directly without allocating intermediate object
+        this.engine.forEach((value, key) => {
             if (key.startsWith(this.prefix)) {
                 const id = this.idFromKey(key);
                 this.items.set(id, value as T);
                 changed = true;
             }
-        }
+        });
+
         if (changed) {
             this.invalidate();
             this.emit('change');

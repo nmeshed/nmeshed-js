@@ -258,6 +258,7 @@ export class MockRTCDataChannel extends EventEmitter<{ open: []; message: [any];
 
 export class MockWasmCore {
     public state: Map<string, Uint8Array> = new Map();
+    public timestamps: Map<string, bigint> = new Map();
 
     constructor(public workspaceId: string, public mode: string) { }
 
@@ -269,6 +270,7 @@ export class MockWasmCore {
     apply_local_op(key: string, value: Uint8Array, timestamp: bigint) {
         // In this Mock, 'value' is already encoded binary from SyncEngine.set
         this.state.set(key, value);
+        this.timestamps.set(key, timestamp);
         // Return a WirePacket containing the Op
         return createWireOp(key, value, timestamp);
     }
@@ -283,9 +285,40 @@ export class MockWasmCore {
                 if (op) {
                     const key = op.key();
                     const val = op.valueArray();
+                    const ts = op.timestamp(); // Check timestamp
                     if (key && val) {
-                        this.state.set(key, val);
-                        return [{ type: 'op', key, value: val }];
+                        // LWW Logic with Tie Breaking
+                        const existing = this.timestamps.get(key) || 0n;
+                        const existingVal = this.state.get(key);
+
+                        let shouldUpdate = false;
+                        if (ts > existing) {
+                            shouldUpdate = true;
+                        } else if (ts === existing) {
+                            // Tie-break: compare values lexicographically
+                            if (!existingVal) {
+                                shouldUpdate = true;
+                            } else {
+                                // Simple byte comparison
+                                for (let i = 0; i < val.length && i < existingVal.length; i++) {
+                                    if (val[i] > existingVal[i]) {
+                                        shouldUpdate = true;
+                                        break;
+                                    } else if (val[i] < existingVal[i]) {
+                                        shouldUpdate = false;
+                                        break;
+                                    }
+                                }
+                                // If prefixes match, longer wins? Or just equal.
+                                if (val.length > existingVal.length && !shouldUpdate) shouldUpdate = true;
+                            }
+                        }
+
+                        if (shouldUpdate) {
+                            this.state.set(key, val);
+                            this.timestamps.set(key, ts);
+                            return [{ type: 'op', key, value: val }];
+                        }
                     }
                 }
             }
@@ -360,8 +393,31 @@ export class MockWasmCore {
                 if (op) {
                     const key = op.key();
                     const val = op.valueArray();
+                    const ts = op.timestamp();
                     if (key && val) {
-                        this.state.set(key, new Uint8Array(val));
+                        // LWW Logic with Tie Breaking (Same as merge_remote_delta)
+                        const existing = this.timestamps.get(key) || 0n;
+                        const existingVal = this.state.get(key);
+
+                        let shouldUpdate = false;
+                        if (ts > existing) {
+                            shouldUpdate = true;
+                        } else if (ts === existing) {
+                            if (!existingVal) {
+                                shouldUpdate = true;
+                            } else {
+                                for (let i = 0; i < val.length && i < existingVal.length; i++) {
+                                    if (val[i] > existingVal[i]) { shouldUpdate = true; break; }
+                                    else if (val[i] < existingVal[i]) { shouldUpdate = false; break; }
+                                }
+                                if (val.length > existingVal.length && !shouldUpdate) shouldUpdate = true;
+                            }
+                        }
+
+                        if (shouldUpdate) {
+                            this.state.set(key, new Uint8Array(val));
+                            this.timestamps.set(key, ts);
+                        }
                     }
                 }
             }

@@ -11,6 +11,7 @@ import { AuthorityManager } from './AuthorityManager';
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from '../schema/nmeshed/wire-packet';
 import { MsgType } from '../schema/nmeshed/msg-type';
+import { ColumnarOpBatch } from '../schema/nmeshed/columnar-op-batch';
 import { RingBuffer } from '../utils/RingBuffer';
 
 // ============================================================================
@@ -158,6 +159,13 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
     // Schema registry for automatic encoding/decoding
     private schemaRegistry = new Map<string, Schema<any>>();
+
+    // Actor Registry (Milestone 3)
+    private actorMap = new Map<number, string>();
+
+    // Vector Clocks (Milestone 4)
+    private localVector = new Map<string, bigint>();
+    private remoteVectors = new Map<string, Map<string, bigint>>();
 
     constructor(
         workspaceId: string,
@@ -492,11 +500,18 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             return valBytes;
         }
 
-        const timestamp = BigInt(Date.now()) * 1000000n + BigInt(this.opSequence++);
+        const timestamp = BigInt(Date.now()) * 1000000n + BigInt(this.opSequence);
+        const seq = BigInt(this.opSequence++);
+        const actorId = this.authority.peerId;
+
+        // Update Local Vector Clock
+        this.localVector.set(actorId, seq);
+
+        const isDelete = value === null || value === undefined;
         this.authority.trackKey(key);
 
         this.logger.debug(`[SyncEngine] apply_local_op key = ${key} valPixels = ${valBytes.length} `);
-        const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as any;
+        const res = (this.core as any).apply_local_op(key, valBytes, timestamp, actorId, seq, isDelete) as any;
         if (!res) {
             this.logger.error(`[SyncEngine] CORE FAILED TO APPLY OP for key: ${key} `);
             throw new Error('[SyncEngine] CORE FAILED TO APPLY OP');
@@ -576,9 +591,46 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 }
             } else if (msgType === MsgType.Sync) {
                 try {
-                    (this.core as any).apply_vessel(bytes);
-                    this.viewCache.clear(); // Bulk sync still invalidates all
-                    this.emit('snapshot');
+                    const syncPacket = packet.sync();
+                    if (syncPacket) {
+                        // 1. Snapshot Application (Late Joiner w/ Payload)
+                        const snapshot = syncPacket.snapshotArray();
+                        if (snapshot && snapshot.length > 0) {
+                            this.logger.info(`[SyncEngine] Received SNAPSHOT (${snapshot.length} bytes). Applying full state...`);
+                            (this.core as any).apply_vessel(bytes); // Or specific snapshot method
+                            this.viewCache.clear();
+                            this.emit('snapshot');
+                        } else {
+                            // Standard Sync Packet
+                            (this.core as any).apply_vessel(bytes);
+                        }
+
+                        // 2. Vector Clock Update (Milestone 4)
+                        const currentVector = syncPacket.currentVector();
+                        if (currentVector) {
+                            const vectorMap = new Map<string, bigint>();
+                            const itemsLength = currentVector.itemsLength();
+                            for (let i = 0; i < itemsLength; i++) {
+                                const item = currentVector.items(i);
+                                if (item) {
+                                    const pId = item.peerId();
+                                    const seq = item.seq();
+                                    if (pId) vectorMap.set(pId, seq);
+                                }
+                            }
+                            // We don't have explicit 'sender' ID in SyncPacket root, 
+                            // but we can infer or just merge into a global view if we treat this as "World State".
+                            // Ideally we map this vector to the sender. 
+                            // For now, if we assume P2P/Server sends their OWN vector, we should really validly ID them.
+                            // But since we are updating 'remoteVectors', which is Map<PeerId, Vector>, we need the Key.
+                            // Let's assume the transport tells us, OR for now, we just incorporate the knowledge into the Horizon calculation
+                            // by adding a "Remote Aggregate" vector?
+
+                            // Simplification: In Server-Mediated topolgy, the Server sends the "Global" Vector.
+                            // So we update the 'server' vector.
+                            this.updateRemoteVector('server', vectorMap);
+                        }
+                    }
                 } catch (e) {
                     this.logger.error('[SyncEngine] CORE apply_vessel (Sync) FAILED:', e);
                 }
@@ -628,6 +680,19 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                     const val = this.get(k);
                     this.emit('op', k, val, false);
                 }
+            } else if (msgType === MsgType.ActorRegistry) {
+                const registry = packet.actorRegistry();
+                if (registry) {
+                    const mappingsLength = registry.mappingsLength();
+                    for (let i = 0; i < mappingsLength; i++) {
+                        const m = registry.mappings(i);
+                        if (m) {
+                            this.actorMap.set(m.idx(), m.id()!);
+                        }
+                    }
+                }
+            } else if (msgType === MsgType.ColumnarBatch) {
+                this.processColumnarBatch(packet.batch()!);
             }
         } catch (e) {
             this.logger.error('[SyncEngine] applyRawMessage Parse FAILED:', e);
@@ -635,11 +700,37 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     }
 
     /**
-     * Get the binary snapshot of the current state.
-     * Use this for generating Init packets or saving state.
+     * Efficiently iterate over all values without allocating a new object for the result.
+     * Useful for collections performing partial sync.
+     */
+    public forEach(callback: (value: any, key: string) => void) {
+        if (this._state !== EngineState.ACTIVE || !this.core) {
+            this.preConnectState.forEach(callback);
+            return;
+        }
+
+        const state = (this.core as any).get_all_values();
+        if (state) {
+            const entries = state instanceof Map ? state.entries() : Object.entries(state);
+            for (const [key, rawVal] of entries) {
+                const binaryVal = reconstructBinary(rawVal);
+                if (binaryVal) {
+                    const val = this.decodeBinary(key, binaryVal);
+                    // Populate cache while we are here? Maybe.
+                    callback(val, key);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get a binary snapshot of the current state.
      */
     public getBinarySnapshot(): Uint8Array | null {
         if (!this.core) return null;
+        if (typeof (this.core as any).get_state === 'function') {
+            return (this.core as any).get_state();
+        }
         if (typeof (this.core as any).get_binary_snapshot === 'function') {
             return (this.core as any).get_binary_snapshot();
         }
@@ -753,8 +844,128 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     }
 
     // ========================================================================
+    // Vector Clocks & Horizon (Milestone 4)
+    // ========================================================================
+
+    private calculateHorizon(): Map<string, bigint> {
+        // Horizon = Intersection (Min) of all known remote vectors (and local)
+        const horizon = new Map<string, bigint>();
+
+        // Start with local vector keys
+        for (const [peer, seq] of this.localVector) {
+            horizon.set(peer, seq);
+        }
+
+        // Intersect with remotes
+        for (const [_remotePeer, vector] of this.remoteVectors) {
+            for (const [peer, seq] of vector) {
+                const currentMin = horizon.get(peer);
+                if (currentMin === undefined) {
+                    horizon.set(peer, 0n);
+                } else if (seq < currentMin) {
+                    horizon.set(peer, seq);
+                }
+            }
+
+            // Any key in horizon NOT in this remote vector must become 0
+            for (const peer of horizon.keys()) {
+                if (!vector.has(peer)) {
+                    horizon.set(peer, 0n);
+                }
+            }
+        }
+
+        return horizon;
+    }
+
+    public updateRemoteVector(peerId: string, vector: Map<string, bigint>) {
+        this.remoteVectors.set(peerId, vector);
+        const horizon = this.calculateHorizon();
+        this.pruneHistory(horizon);
+    }
+
+    private pruneHistory(horizon: Map<string, bigint>) {
+        // In a real implementation, we would pass this horizon to the WASM core
+        // to compact the DAG (discard ops strictly older than horizon).
+
+        // For now, we simulate this by logging the stability threshold.
+        if (this.debug) {
+            const minSeq = Math.min(...Array.from(horizon.values()).map(v => Number(v)));
+            if (minSeq > 0) {
+                this.logger.debug(`[SyncEngine] Pruning history <= horizon seq ${minSeq}`);
+            }
+        }
+
+        if (this.core && (this.core as any).prune) {
+            // Future WASM integration
+            // (this.core as any).prune(horizon);
+        }
+    }
+
+    public getLocalVector(): Map<string, bigint> {
+        return new Map(this.localVector);
+    }
+
+    // ========================================================================
     // Persistence
     // ========================================================================
+
+    private processColumnarBatch(batch: ColumnarOpBatch): void {
+        const count = batch.keysLength();
+        if (count === 0) return;
+
+        // Arrays might be null if failed to decode, though length check passed
+        const actorIdxs = batch.actorIdxsArray();
+        const isDeletes = batch.isDeletesArray();
+
+        let prevTimestamp = 0n;
+        let prevSeq = 0n;
+
+        for (let i = 0; i < count; i++) {
+            const key = batch.keys(i);
+
+            // Delta Decoding for Timestamp (BigInt)
+            // Note: FlatBuffers TS doesn't generate *Array() for BigInt64, so we read one by one.
+            const tsDelta = batch.timestamps(i) || 0n;
+            const timestamp = prevTimestamp + tsDelta;
+            prevTimestamp = timestamp;
+
+            // Actor ID Mapping
+            const actorIdx = actorIdxs ? actorIdxs[i] : (batch.actorIdxs(i) || 0);
+            const actorId = this.actorMap.get(actorIdx) || "unknown";
+
+            // Delta Decoding for Sequence (BigInt)
+            const seqDelta = batch.seqs(i) || 0n;
+            const seq = prevSeq + seqDelta;
+            prevSeq = seq;
+
+            // Value
+            const valBlob = batch.valueBlobs(i);
+            const valBytes = valBlob ? valBlob.dataArray() : null; // Assuming ValueBlob has dataArray
+
+            // Delete Flag
+            const isDelete = isDeletes ? !!isDeletes[i] : (batch.isDeletes(i) || false);
+
+            // Apply to Core (Manually constructing separate op calls for now, 
+            // optimization would be to pass batch to core)
+            if (this.core) {
+                const safeValBytes = valBytes || new Uint8Array(0);
+                (this.core as any).apply_local_op(key, safeValBytes, timestamp, actorId, seq, isDelete);
+
+                // Op event
+                this.viewCache.delete(key);
+                if (!isDelete) {
+                    // We need to decode to emit 'op' event with value
+                    // checking cache or decoding valBytes
+                    const decoded = this.decodeBinary(key, safeValBytes);
+                    this.emit('op', key, decoded, false);
+                } else {
+                    this.emit('op', key, null, false);
+                }
+            }
+        }
+        this.emit('snapshot'); // Batch usually implies bigger change
+    }
 
     private get storageKey(): string {
         return `${this.workspaceId}::${this.authority.peerId} `;

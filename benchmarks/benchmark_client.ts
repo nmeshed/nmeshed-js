@@ -90,7 +90,7 @@ async function benchmark() {
         const payload = { x: 1, y: 2 };
         const start = performance.performance.now();
         for (let i = 0; i < ITERATIONS; i++) {
-            client.broadcast(payload);
+            client.sendMessage(payload);
         }
         const end = performance.performance.now();
         const elapsed = (end - start) / 1000;

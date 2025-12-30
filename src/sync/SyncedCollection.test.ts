@@ -14,6 +14,11 @@ class MockSyncEngine extends EventEmitter<any> {
     public simulateOp(key: string, value: any) {
         this.emit('op', key, value, false);
     }
+
+    public forEach(callback: (value: any, key: string) => void) {
+        const all = this.getAllValues();
+        Object.entries(all).forEach(([key, value]) => callback(value, key));
+    }
 }
 
 describe('SyncedCollection', () => {
@@ -158,6 +163,26 @@ describe('SyncedCollection', () => {
 
         const key = (col as any).idToKey('kevin');
         expect(key).toBe('org:123:users:kevin');
+    });
+
+    it('should maintain stable array reference if not invalidated', () => {
+        mockEngine.getAllValues.mockReturnValue({
+            'items:1': { id: 1, name: 'one' }
+        });
+        const col = new SyncedCollection(mockEngine as any, 'items');
+
+        const arr1 = col.data;
+        const arr2 = col.data;
+
+        expect(arr1).toBe(arr2); // Same reference (cached)
+
+        // Trigger op that doesn't change data (e.g. unrelated key)
+        mockEngine.simulateOp('other:1', { val: 2 });
+        expect(col.data).toBe(arr1); // Still same reference
+
+        // Trigger op that changes data
+        mockEngine.simulateOp('items:2', { id: 2, name: 'two' });
+        expect(col.data).not.toBe(arr1); // New reference
     });
 });
 

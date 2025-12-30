@@ -4,6 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
+import { ActorRegistry, ActorRegistryT } from '../nmeshed/actor-registry.js';
+import { ColumnarOpBatch, ColumnarOpBatchT } from '../nmeshed/columnar-op-batch.js';
 import { MsgType } from '../nmeshed/msg-type.js';
 import { Op, OpT } from '../nmeshed/op.js';
 import { Signal, SignalT } from '../nmeshed/signal.js';
@@ -63,8 +65,18 @@ sync(obj?:SyncPacket):SyncPacket|null {
   return offset ? (obj || new SyncPacket()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
 }
 
+actorRegistry(obj?:ActorRegistry):ActorRegistry|null {
+  const offset = this.bb!.__offset(this.bb_pos, 14);
+  return offset ? (obj || new ActorRegistry()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+batch(obj?:ColumnarOpBatch):ColumnarOpBatch|null {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? (obj || new ColumnarOpBatch()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
 static startWirePacket(builder:flatbuffers.Builder) {
-  builder.startObject(5);
+  builder.startObject(7);
 }
 
 static addMsgType(builder:flatbuffers.Builder, msgType:MsgType) {
@@ -99,6 +111,14 @@ static addSync(builder:flatbuffers.Builder, syncOffset:flatbuffers.Offset) {
   builder.addFieldOffset(4, syncOffset, 0);
 }
 
+static addActorRegistry(builder:flatbuffers.Builder, actorRegistryOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(5, actorRegistryOffset, 0);
+}
+
+static addBatch(builder:flatbuffers.Builder, batchOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(6, batchOffset, 0);
+}
+
 static endWirePacket(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
@@ -119,7 +139,9 @@ unpack(): WirePacketT {
     (this.op() !== null ? this.op()!.unpack() : null),
     this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength()),
     (this.signal() !== null ? this.signal()!.unpack() : null),
-    (this.sync() !== null ? this.sync()!.unpack() : null)
+    (this.sync() !== null ? this.sync()!.unpack() : null),
+    (this.actorRegistry() !== null ? this.actorRegistry()!.unpack() : null),
+    (this.batch() !== null ? this.batch()!.unpack() : null)
   );
 }
 
@@ -130,6 +152,8 @@ unpackTo(_o: WirePacketT): void {
   _o.payload = this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength());
   _o.signal = (this.signal() !== null ? this.signal()!.unpack() : null);
   _o.sync = (this.sync() !== null ? this.sync()!.unpack() : null);
+  _o.actorRegistry = (this.actorRegistry() !== null ? this.actorRegistry()!.unpack() : null);
+  _o.batch = (this.batch() !== null ? this.batch()!.unpack() : null);
 }
 }
 
@@ -139,7 +163,9 @@ constructor(
   public op: OpT|null = null,
   public payload: (number)[] = [],
   public signal: SignalT|null = null,
-  public sync: SyncPacketT|null = null
+  public sync: SyncPacketT|null = null,
+  public actorRegistry: ActorRegistryT|null = null,
+  public batch: ColumnarOpBatchT|null = null
 ){}
 
 
@@ -148,6 +174,8 @@ pack(builder:flatbuffers.Builder): flatbuffers.Offset {
   const payload = WirePacket.createPayloadVector(builder, this.payload);
   const signal = (this.signal !== null ? this.signal!.pack(builder) : 0);
   const sync = (this.sync !== null ? this.sync!.pack(builder) : 0);
+  const actorRegistry = (this.actorRegistry !== null ? this.actorRegistry!.pack(builder) : 0);
+  const batch = (this.batch !== null ? this.batch!.pack(builder) : 0);
 
   WirePacket.startWirePacket(builder);
   WirePacket.addMsgType(builder, this.msgType);
@@ -155,6 +183,8 @@ pack(builder:flatbuffers.Builder): flatbuffers.Offset {
   WirePacket.addPayload(builder, payload);
   WirePacket.addSignal(builder, signal);
   WirePacket.addSync(builder, sync);
+  WirePacket.addActorRegistry(builder, actorRegistry);
+  WirePacket.addBatch(builder, batch);
 
   return WirePacket.endWirePacket(builder);
 }

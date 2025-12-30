@@ -2,8 +2,11 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
+export { ActorMapping, ActorMappingT } from './nmeshed/actor-mapping.js';
+export { ActorRegistry, ActorRegistryT } from './nmeshed/actor-registry.js';
 export { Answer, AnswerT } from './nmeshed/answer.js';
 export { Candidate, CandidateT } from './nmeshed/candidate.js';
+export { ColumnarOpBatch, ColumnarOpBatchT } from './nmeshed/columnar-op-batch.js';
 export { Join, JoinT } from './nmeshed/join.js';
 export { MsgType } from './nmeshed/msg-type.js';
 export { Offer, OfferT } from './nmeshed/offer.js';
@@ -13,4 +16,6 @@ export { Signal, SignalT } from './nmeshed/signal.js';
 export { SignalData } from './nmeshed/signal-data.js';
 export { StateVectorEntry, StateVectorEntryT } from './nmeshed/state-vector-entry.js';
 export { SyncPacket, SyncPacketT } from './nmeshed/sync-packet.js';
+export { ValueBlob, ValueBlobT } from './nmeshed/value-blob.js';
+export { VersionVector, VersionVectorT } from './nmeshed/version-vector.js';
 export { WirePacket, WirePacketT } from './nmeshed/wire-packet.js';

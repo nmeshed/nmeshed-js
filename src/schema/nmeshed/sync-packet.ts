@@ -5,6 +5,7 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { StateVectorEntry, StateVectorEntryT } from '../nmeshed/state-vector-entry.js';
+import { VersionVector, VersionVectorT } from '../nmeshed/version-vector.js';
 
 
 export class SyncPacket implements flatbuffers.IUnpackableObject<SyncPacketT> {
@@ -55,8 +56,13 @@ ackSeq():bigint {
   return offset ? this.bb!.readInt64(this.bb_pos + offset) : BigInt('0');
 }
 
+currentVector(obj?:VersionVector):VersionVector|null {
+  const offset = this.bb!.__offset(this.bb_pos, 10);
+  return offset ? (obj || new VersionVector()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
 static startSyncPacket(builder:flatbuffers.Builder) {
-  builder.startObject(3);
+  builder.startObject(4);
 }
 
 static addStateVector(builder:flatbuffers.Builder, stateVectorOffset:flatbuffers.Offset) {
@@ -95,24 +101,22 @@ static addAckSeq(builder:flatbuffers.Builder, ackSeq:bigint) {
   builder.addFieldInt64(2, ackSeq, BigInt('0'));
 }
 
+static addCurrentVector(builder:flatbuffers.Builder, currentVectorOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(3, currentVectorOffset, 0);
+}
+
 static endSyncPacket(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createSyncPacket(builder:flatbuffers.Builder, stateVectorOffset:flatbuffers.Offset, snapshotOffset:flatbuffers.Offset, ackSeq:bigint):flatbuffers.Offset {
-  SyncPacket.startSyncPacket(builder);
-  SyncPacket.addStateVector(builder, stateVectorOffset);
-  SyncPacket.addSnapshot(builder, snapshotOffset);
-  SyncPacket.addAckSeq(builder, ackSeq);
-  return SyncPacket.endSyncPacket(builder);
-}
 
 unpack(): SyncPacketT {
   return new SyncPacketT(
     this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength()),
     this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength()),
-    this.ackSeq()
+    this.ackSeq(),
+    (this.currentVector() !== null ? this.currentVector()!.unpack() : null)
   );
 }
 
@@ -121,6 +125,7 @@ unpackTo(_o: SyncPacketT): void {
   _o.stateVector = this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength());
   _o.snapshot = this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength());
   _o.ackSeq = this.ackSeq();
+  _o.currentVector = (this.currentVector() !== null ? this.currentVector()!.unpack() : null);
 }
 }
 
@@ -128,18 +133,22 @@ export class SyncPacketT implements flatbuffers.IGeneratedObject {
 constructor(
   public stateVector: (StateVectorEntryT)[] = [],
   public snapshot: (number)[] = [],
-  public ackSeq: bigint = BigInt('0')
+  public ackSeq: bigint = BigInt('0'),
+  public currentVector: VersionVectorT|null = null
 ){}
 
 
 pack(builder:flatbuffers.Builder): flatbuffers.Offset {
   const stateVector = SyncPacket.createStateVectorVector(builder, builder.createObjectOffsetList(this.stateVector));
   const snapshot = SyncPacket.createSnapshotVector(builder, this.snapshot);
+  const currentVector = (this.currentVector !== null ? this.currentVector!.pack(builder) : 0);
 
-  return SyncPacket.createSyncPacket(builder,
-    stateVector,
-    snapshot,
-    this.ackSeq
-  );
+  SyncPacket.startSyncPacket(builder);
+  SyncPacket.addStateVector(builder, stateVector);
+  SyncPacket.addSnapshot(builder, snapshot);
+  SyncPacket.addAckSeq(builder, this.ackSeq);
+  SyncPacket.addCurrentVector(builder, currentVector);
+
+  return SyncPacket.endSyncPacket(builder);
 }
 }

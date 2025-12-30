@@ -3,18 +3,40 @@ import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 
 // 1. FORENSIC MOCK STABILITY: Use vi.hoisted to ensure a STABLE object reference.
-const { mockClient, mockSet } = vi.hoisted(() => {
+const { mockClient, mockSet, mockGet, mockSubscribe, engineUnsub } = vi.hoisted(() => {
     const sendOp = vi.fn();
+    const getFn = vi.fn();
+    const subscribeFn = vi.fn(() => vi.fn());
+
+    // Mock Engine Event Emitter
+    const engineOff = vi.fn();
+    // Return a mock unsubscribe function to verify disposal
+    const engineUnsub = vi.fn();
+    const engineOn = vi.fn(() => engineUnsub);
+
     return {
+        engineUnsub, // Export to verify call
         mockClient: {
-            get: vi.fn(),
+            // Client delegates to engine usually, but we mock the properties used by useStore
+            engine: {
+                get: getFn,
+                set: sendOp,
+                on: engineOn,
+                off: engineOff,
+                removeListener: engineOff,
+                removeAllListeners: vi.fn(),
+            },
+            // Legacy client methods still used by some hooks?
+            get: getFn,
             set: sendOp,
-            subscribe: vi.fn(() => vi.fn()),
+            subscribe: subscribeFn,
             onStatusChange: vi.fn(() => vi.fn()),
             getStatus: vi.fn(() => 'CONNECTED'),
             isLive: true,
         },
         mockSet: sendOp,
+        mockGet: getFn,
+        mockSubscribe: subscribeFn
     };
 });
 
@@ -33,8 +55,8 @@ vi.mock('../wasm/nmeshed_core', () => ({
 vi.mock('./context', () => ({
     useNmeshedContext: () => mockClient,
 }));
+// Mocks are already destructured and exported from hoisted block
 
-const { get: mockGet, subscribe: mockSubscribe } = mockClient;
 
 import { useStore } from './useStore';
 import { defineSchema } from '../schema/SchemaBuilder';
@@ -134,17 +156,26 @@ describe('useStore', () => {
     describe('Message Handling', () => {
         it('should subscribe to messages on mount', () => {
             renderHook(() => useStore(TestSchema));
-            expect(mockSubscribe).toHaveBeenCalledTimes(1);
+            // SyncedDocument calls engine.on('op', ...)
+            expect(mockClient.engine.on).toHaveBeenCalledWith('op', expect.any(Function));
         });
 
         it('should unsubscribe on unmount', () => {
-            const unsubscribe = vi.fn();
-            mockSubscribe.mockReturnValue(unsubscribe);
+            // SyncedDocument.dispose() calls removeAllListeners on itself,
+            // but internally it doesn't strictly call off() on engine unless defined.
+            // Wait, SyncedDocument uses engine.on(). Does it unsubscribe?
+            // SyncedDocument doesn't currently store the unsub function from engine.on or call off/removeListener on engine in dispose().
+            // It calls `this.removeAllListeners()` which is for its OWN events.
+            // THIS IS A BUG/FEATURE in SyncedDocument. It should clean up engine subscription!
+
+            // Let's assume for now we just verify mount logic, or fix SyncedDocument behavior (which I should).
+            // For this test, I'll verifying engine.on was called. Unsubscribe application-level logic might be missing.
 
             const { unmount } = renderHook(() => useStore(TestSchema));
             unmount();
 
-            expect(unsubscribe).toHaveBeenCalled();
+            // Verify that SyncedDocument called the unsubscribe function returned by engine.on
+            expect(engineUnsub).toHaveBeenCalled();
         });
     });
 });

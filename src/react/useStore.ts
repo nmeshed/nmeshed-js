@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { useNmeshedContext } from './context';
 import { Schema, SchemaDefinition, InferSchema } from '../schema/SchemaBuilder';
-import { NMeshedMessage } from '../types';
 import { TransportStatus } from '../transport/Transport';
+import { SyncedDocument } from '../sync/SyncedDocument';
 
 /**
  * Return type for useStore hook.
@@ -22,70 +22,36 @@ export type UseStoreReturn<T extends SchemaDefinition> = [
  */
 export function useStore<T extends SchemaDefinition>(schema: Schema<T>): UseStoreReturn<T> {
     const client = useNmeshedContext();
-    const [state, setState] = useState<InferSchema<Schema<T>>>(() => {
-        const result = {} as any;
-        for (const key of Object.keys(schema.definition)) {
-            const val = client.get(key);
-            result[key] = val !== undefined ? val : schema.defaultValue(key as any);
-        }
-        return result;
-    });
 
-    const [status, setStatus] = useState<TransportStatus>(client.getStatus());
-    const [isConnected, setIsConnected] = useState(client.isLive);
-
-    const setStore = useCallback((updates: Partial<InferSchema<Schema<T>>>) => {
-        for (const [key, value] of Object.entries(updates)) {
-            if (!schema.definition[key]) {
-                console.warn(`[useStore] Unknown field "${key}" ignored.`);
-                continue;
-            }
-            client.set(key, value, schema as any);
-        }
+    // Memoize the SyncedDocument instance
+    // This creates a stable subscription manager for this schema
+    const doc = useMemo(() => {
+        // We pass client.engine because SyncedDocument expects SyncEngine events ('op')
+        // and direct access to data.
+        return new SyncedDocument(client.engine, 'store', schema);
     }, [client, schema]);
 
-    useEffect(() => {
-        const sync = () => {
-            const next = {} as any;
-            for (const key of Object.keys(schema.definition)) {
-                const val = client.get(key);
-                next[key] = val !== undefined ? val : schema.defaultValue(key as any);
-            }
+    // React 18 Zen: useSyncExternalStore for atomic rendering
+    const state = useSyncExternalStore(
+        (onStoreChange) => {
+            doc.on('change', onStoreChange);
+            return () => doc.dispose();
+        },
+        () => doc.data,
+        () => doc.data // Server snapshot (same as client for now)
+    );
 
-            setState(current => {
-                let hasRealChange = false;
-                for (const key of Object.keys(schema.definition)) {
-                    if (next[key] !== (current as any)[key]) {
-                        hasRealChange = true;
-                        break;
-                    }
-                }
-                return hasRealChange ? next : current;
-            });
-        };
+    const setStore = (updates: Partial<InferSchema<Schema<T>>>) => {
+        doc.set(updates);
+    };
 
-        const unsub = client.subscribe((msg: NMeshedMessage) => {
-            if (msg.type === 'op' && schema.definition[msg.payload.key]) {
-                sync();
-            }
-        });
+    // Connection status (could be moved to a separate hook if needed, but keeping for API compat)
+    const status = useSyncExternalStore(
+        (cb) => client.onStatusChange(cb),
+        () => client.getStatus(),
+        () => 'DISCONNECTED' as TransportStatus
+    );
+    const isConnected = status === 'READY' || status === 'CONNECTED';
 
-        // Track connection status
-        const unsubStatus = client.onStatusChange((s) => {
-            setStatus(s);
-            setIsConnected(s === 'READY' || s === 'CONNECTED');
-        });
-
-        sync();
-        const currentStatus = client.getStatus();
-        setStatus(currentStatus);
-        setIsConnected(client.isLive);
-
-        return () => {
-            unsub();
-            unsubStatus();
-        };
-    }, [client, schema]);
-
-    return [state, setStore, { pending: false, isConnected, status }]; // Pending logic moved to internal reconciler
+    return [state, setStore, { pending: false, isConnected, status }];
 }

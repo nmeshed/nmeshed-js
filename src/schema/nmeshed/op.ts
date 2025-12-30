@@ -58,8 +58,25 @@ valueArray():Uint8Array|null {
   return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
 }
 
+actorId():string|null
+actorId(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+actorId(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
+seq():bigint {
+  const offset = this.bb!.__offset(this.bb_pos, 14);
+  return offset ? this.bb!.readInt64(this.bb_pos + offset) : BigInt('0');
+}
+
+isDelete():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
+
 static startOp(builder:flatbuffers.Builder) {
-  builder.startObject(4);
+  builder.startObject(7);
 }
 
 static addWorkspaceId(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset) {
@@ -90,17 +107,32 @@ static startValueVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(1, numElems, 1);
 }
 
+static addActorId(builder:flatbuffers.Builder, actorIdOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(4, actorIdOffset, 0);
+}
+
+static addSeq(builder:flatbuffers.Builder, seq:bigint) {
+  builder.addFieldInt64(5, seq, BigInt('0'));
+}
+
+static addIsDelete(builder:flatbuffers.Builder, isDelete:boolean) {
+  builder.addFieldInt8(6, +isDelete, +false);
+}
+
 static endOp(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createOp(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset, keyOffset:flatbuffers.Offset, timestamp:bigint, valueOffset:flatbuffers.Offset):flatbuffers.Offset {
+static createOp(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset, keyOffset:flatbuffers.Offset, timestamp:bigint, valueOffset:flatbuffers.Offset, actorIdOffset:flatbuffers.Offset, seq:bigint, isDelete:boolean):flatbuffers.Offset {
   Op.startOp(builder);
   Op.addWorkspaceId(builder, workspaceIdOffset);
   Op.addKey(builder, keyOffset);
   Op.addTimestamp(builder, timestamp);
   Op.addValue(builder, valueOffset);
+  Op.addActorId(builder, actorIdOffset);
+  Op.addSeq(builder, seq);
+  Op.addIsDelete(builder, isDelete);
   return Op.endOp(builder);
 }
 
@@ -109,7 +141,10 @@ unpack(): OpT {
     this.workspaceId(),
     this.key(),
     this.timestamp(),
-    this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength())
+    this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength()),
+    this.actorId(),
+    this.seq(),
+    this.isDelete()
   );
 }
 
@@ -119,6 +154,9 @@ unpackTo(_o: OpT): void {
   _o.key = this.key();
   _o.timestamp = this.timestamp();
   _o.value = this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength());
+  _o.actorId = this.actorId();
+  _o.seq = this.seq();
+  _o.isDelete = this.isDelete();
 }
 }
 
@@ -127,7 +165,10 @@ constructor(
   public workspaceId: string|Uint8Array|null = null,
   public key: string|Uint8Array|null = null,
   public timestamp: bigint = BigInt('0'),
-  public value: (number)[] = []
+  public value: (number)[] = [],
+  public actorId: string|Uint8Array|null = null,
+  public seq: bigint = BigInt('0'),
+  public isDelete: boolean = false
 ){}
 
 
@@ -135,12 +176,16 @@ pack(builder:flatbuffers.Builder): flatbuffers.Offset {
   const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
   const key = (this.key !== null ? builder.createString(this.key!) : 0);
   const value = Op.createValueVector(builder, this.value);
+  const actorId = (this.actorId !== null ? builder.createString(this.actorId!) : 0);
 
   return Op.createOp(builder,
     workspaceId,
     key,
     this.timestamp,
-    value
+    value,
+    actorId,
+    this.seq,
+    this.isDelete
   );
 }
 }

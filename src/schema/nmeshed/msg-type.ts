@@ -7,5 +7,7 @@ export enum MsgType {
   Op = 1,
   Sync = 2,
   Signal = 3,
-  Init = 4
+  Init = 4,
+  ActorRegistry = 5,
+  ColumnarBatch = 6
 }
