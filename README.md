@@ -113,6 +113,8 @@ stateDiagram-v2
 1.  **Invisible**: The user should never see a loading spinner after the initial load.
 2.  **Optimistic**: Local changes apply instantly (0ms latency).
 3.  **Authoritative**: The Server is the source of truth if conflicts occur.
+4.  **Infinite**: History is automatically compacting using a "Stable Horizon", so performance never degrades over time.
+5.  **Causal**: Vector Clocks ensure that if you see a response, you see the cause, even in complex P2P topologies.
 
 ---
 
