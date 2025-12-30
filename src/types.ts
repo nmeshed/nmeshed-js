@@ -24,6 +24,7 @@ export interface NMeshedConfig {
     debug?: boolean;
     transport?: 'server';
     replicationFactor?: number;
+    schemas?: Record<string, import('./schema/SchemaBuilder').Schema<any>>;
 }
 
 /**

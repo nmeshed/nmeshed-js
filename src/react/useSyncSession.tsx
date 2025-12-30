@@ -55,7 +55,18 @@ export interface SyncSessionOptions {
     /**
      * Explicit relay URL (auto-derived if omitted)
      */
+    /**
+     * Explicit relay URL (auto-derived if omitted)
+     */
     relayUrl?: string;
+
+    /**
+     * Client-side schema registry.
+     * 
+     * Zen Pattern: "The Laws of Physics" — Define your data shapes once, here.
+     * The client will automatically hydrate/dehydrate data matching these prefixes.
+     */
+    schemas?: Record<string, import('../schema/SchemaBuilder').Schema<any>>;
 }
 
 export interface SyncSessionResult {
@@ -123,6 +134,7 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
         debug: options.debug,
         transport: options.transport || 'server',
         relayUrl: options.relayUrl,
+        schemas: options.schemas,
         onError: (err) => setLocalError(err)
     });
 

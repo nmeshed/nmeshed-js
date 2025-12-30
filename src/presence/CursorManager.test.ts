@@ -194,7 +194,7 @@ describe('CursorManager', () => {
             mockClient.emit('ephemeral', {
                 type: '__cursor__',
                 namespace: 'cursor',
-                userId: 'peer-1',
+                userId: '00000000-0000-0000-0000-000000000001',
                 x: 10,
                 y: 20,
                 timestamp: Date.now(),
@@ -203,7 +203,7 @@ describe('CursorManager', () => {
             mockClient.emit('ephemeral', {
                 type: '__cursor__',
                 namespace: 'cursor',
-                userId: 'peer-2',
+                userId: '00000000-0000-0000-0000-000000000002',
                 x: 30,
                 y: 40,
                 timestamp: Date.now(),
@@ -211,8 +211,8 @@ describe('CursorManager', () => {
 
             const cursors = manager.getCursors();
             expect(cursors.size).toBe(2);
-            expect(cursors.get('peer-1')).toEqual(expect.objectContaining({ x: 10, y: 20 }));
-            expect(cursors.get('peer-2')).toEqual(expect.objectContaining({ x: 30, y: 40 }));
+            expect(cursors.get('00000000-0000-0000-0000-000000000001')).toEqual(expect.objectContaining({ x: 10, y: 20 }));
+            expect(cursors.get('00000000-0000-0000-0000-000000000002')).toEqual(expect.objectContaining({ x: 30, y: 40 }));
         });
 
         it('should return a copy (not the internal map)', () => {
@@ -232,13 +232,13 @@ describe('CursorManager', () => {
             mockClient.emit('ephemeral', {
                 type: '__cursor__',
                 namespace: 'cursor',
-                userId: 'peer-1',
+                userId: '00000000-0000-0000-0000-000000000001',
                 x: 10,
                 y: 20,
                 timestamp: Date.now(),
             });
 
-            expect(manager.getCursor('peer-1')).toEqual(expect.objectContaining({ x: 10, y: 20 }));
+            expect(manager.getCursor('00000000-0000-0000-0000-000000000001')).toEqual(expect.objectContaining({ x: 10, y: 20 }));
         });
 
         it('should return undefined for unknown peer', () => {
@@ -258,19 +258,19 @@ describe('CursorManager', () => {
             mockClient.emit('ephemeral', {
                 type: '__cursor__',
                 namespace: 'cursor',
-                userId: 'peer-1',
+                userId: '00000000-0000-0000-0000-000000000001',
                 x: 10,
                 y: 20,
                 timestamp: Date.now(),
             });
 
-            expect(manager.getCursor('peer-1')).toBeDefined();
+            expect(manager.getCursor('00000000-0000-0000-0000-000000000001')).toBeDefined();
 
             // Peer disconnects
-            mockClient.emit('peerDisconnect', 'peer-1');
+            mockClient.emit('peerDisconnect', '00000000-0000-0000-0000-000000000001');
 
-            expect(manager.getCursor('peer-1')).toBeUndefined();
-            expect(removeCallback).toHaveBeenCalledWith('peer-1');
+            expect(manager.getCursor('00000000-0000-0000-0000-000000000001')).toBeUndefined();
+            expect(removeCallback).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000001');
         });
 
         it('should not call remove callback for unknown peer', () => {
@@ -294,7 +294,7 @@ describe('CursorManager', () => {
             mockClient.emit('ephemeral', {
                 type: '__cursor__',
                 namespace: 'cursor',
-                userId: 'peer-1',
+                userId: '00000000-0000-0000-0000-000000000001',
                 x: 10,
                 y: 20,
                 timestamp: Date.now(),

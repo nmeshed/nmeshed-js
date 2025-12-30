@@ -40,18 +40,10 @@ const { mockClient, mockSet, mockGet, mockSubscribe, engineUnsub } = vi.hoisted(
     };
 });
 
-// Mock WASM core to prevent OOM
-vi.mock('../wasm/nmeshed_core', () => ({
-    default: vi.fn(),
-    NMeshedCore: vi.fn().mockImplementation(() => ({
-        state: {},
-        apply_local_op: vi.fn(),
-        merge_remote_delta: vi.fn(),
-        get_state: vi.fn(() => ({})),
-    })),
-}));
-
 // 2. STABLE CONTEXT MOCK
+vi.mock('./context', () => ({
+    useNmeshedContext: () => mockClient,
+}));
 vi.mock('./context', () => ({
     useNmeshedContext: () => mockClient,
 }));

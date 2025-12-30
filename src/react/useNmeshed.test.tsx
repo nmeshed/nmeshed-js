@@ -8,7 +8,12 @@ const VALID_WS = '00000000-0000-0000-0000-000000000001';
 
 // Sequential to avoid global WebSocket stub collisions
 describe.sequential('useNmeshed hook', () => {
-    const config = { workspaceId: VALID_WS, userId: 'u-1', token: 'tk-1', connectionTimeout: 2000 };
+    const config = {
+        workspaceId: VALID_WS,
+        userId: '00000000-0000-0000-0000-000000000010',
+        token: 'tk-1',
+        connectionTimeout: 2000
+    };
 
     beforeEach(() => {
         setupTestMocks();

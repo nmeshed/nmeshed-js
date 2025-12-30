@@ -8,8 +8,9 @@ describe('SyncEngine Cache Behavior (Integration)', () => {
     beforeEach(async () => {
         // Use real engine with real WASM core.
         // The core requires valid UUIDs for workspaceId.
-        const workspaceId = '123e4567-e89b-12d3-a456-426614174000';
-        engine = new SyncEngine(workspaceId, 'user-cache-test');
+        const workspaceId = '00000000-0000-0000-0000-000000000001';
+        const userId = '00000000-0000-0000-0000-000000000010';
+        engine = new SyncEngine(workspaceId, userId);
         await engine.boot();
     });
 

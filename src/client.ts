@@ -1,12 +1,12 @@
 import { EventEmitter } from './utils/EventEmitter';
 import { AuthProvider, StaticAuthProvider } from './auth/AuthProvider';
 import { SyncEngine } from './core/SyncEngine';
-import { SyncedCollection } from './sync/SyncedCollection';
+import { SyncedCollection, Filters, SyncedCollectionOptions } from './sync/SyncedCollection';
 import { Transport, TransportStatus } from './transport/Transport';
 import { WebSocketTransport } from './transport/WebSocketTransport';
 
-import { Schema } from './schema/SchemaBuilder';
-import { NMeshedMessage } from './types';
+import { Schema, InferSchema } from './schema/SchemaBuilder';
+import { NMeshedMessage, ConnectionStatus } from './types';
 import { ConfigurationError, ConnectionError } from './errors';
 import { Logger } from './utils/Logger';
 
@@ -32,11 +32,19 @@ export interface NMeshedConfig {
     maxReconnectDelay?: number;
     /** Custom path to the nmeshed_core.wasm file (Node.js only) */
     wasmPath?: string;
+    /** Registry of schemas to pre-register on initialization */
+    schemas?: Record<string, Schema<any>>;
 }
+
 
 // Environment Constants
 const IS_NODE = typeof process !== 'undefined' && process.versions && !!process.versions.node;
 const IS_BROWSER = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+
+
+
+
+
 
 
 /**
@@ -83,7 +91,7 @@ function deriveRelayUrl(workspaceId: string, config: NMeshedConfig): string {
  * and optimistic state management.
  */
 export interface NMeshedEvents {
-    status: [TransportStatus];
+    status: [ConnectionStatus];
     message: [NMeshedMessage];
     ephemeral: [unknown, string?];
     error: [any];
@@ -102,7 +110,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public readonly config: NMeshedConfig;
     private logger: Logger;
     private isDestroyed = false;
-    private _status: TransportStatus = 'IDLE';
+    private _status: ConnectionStatus = 'IDLE';
     /** Registry to ensure singleton SyncedCollection instances per prefix */
     private _collections = new Map<string, SyncedCollection<any>>();
     private _latestState: Record<string, any> | null = null;
@@ -166,6 +174,14 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
             config.wasmPath
         );
 
+        // Zen Convenience: Pre-register schemas
+        if (config.schemas) {
+            for (const [prefix, schema] of Object.entries(config.schemas)) {
+                const normalizedPrefix = prefix.endsWith(':') ? prefix : (prefix === '' ? '' : `${prefix}:`);
+                this.engine.registerSchema(normalizedPrefix, schema);
+            }
+        }
+
         this.bootPromise = this.engine.boot();
 
 
@@ -223,10 +239,13 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
             // Re-emit as 'message' with type 'init' and full state for legacy/generic listeners
             this.emit('message', { type: 'init', data: state } as any);
             this.emit('ready' as any, state);
+
+            // Re-evaluate status now that we are hydrated
+            this.updateStatus(this.transport.getStatus());
         });
 
 
-        this.transport.on('status', (s) => this.transitionTo(s));
+        this.transport.on('status', (s) => this.updateStatus(s));
         this.transport.on('ack' as any, (count: number) => {
             this.engine.shiftQueue(count);
         });
@@ -279,18 +298,33 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         }));
     }
 
-    private transitionTo(newStatus: TransportStatus) {
-        if (this._status === newStatus) return;
-        this._status = newStatus;
+    private updateStatus(transportStatus?: TransportStatus) {
+        const ts = transportStatus || this.transport.getStatus();
+        const isHydrated = this.engine.isHydrated;
 
-        const clientStatus = newStatus === 'CONNECTED' ? 'READY' : newStatus;
+        let derived: ConnectionStatus;
+        if (ts === 'CONNECTED') {
+            derived = isHydrated ? 'READY' : 'SYNCING';
+        } else if (ts === 'RECONNECTING') {
+            derived = 'RECONNECTING';
+        } else if (ts === 'CONNECTING') {
+            derived = 'CONNECTING';
+        } else {
+            derived = ts as ConnectionStatus;
+        }
 
-        if (newStatus === 'CONNECTED') {
+        if (this._status === derived) return;
+        this._status = derived;
+
+        if (derived === 'READY') {
             this.flushQueue();
             this.emit('status', 'READY');
             this.emit('connected' as any);
         } else {
-            this.emit('status', clientStatus as any);
+            this.emit('status', derived);
+            if (derived === 'DISCONNECTED') {
+                this.emit('disconnected' as any);
+            }
         }
     }
 
@@ -316,47 +350,21 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
         if (!this.connectPromise) {
             this.connectPromise = (async () => {
-                let hydrationTimer: ReturnType<typeof setTimeout> | null = null;
-                let hydrationError: Error | null = null;
-
                 try {
                     await this.engine.boot();
 
-                    // Zen: The "Tethered Guard" Pattern
-                    // Create hydration promise and immediately tether it with .catch()
-                    // This prevents "orphaned screams" when tests cleanup before hydration settles.
-                    const hydrationGuard = new Promise<void>((resolve, reject) => {
-                        const timeoutMs = this.config.connectionTimeout || 10000;
-                        hydrationTimer = setTimeout(() => {
-                            reject(new ConnectionError('Hydration Timeout'));
-                        }, timeoutMs);
-                        this.engine.once('ready', () => {
-                            if (hydrationTimer) clearTimeout(hydrationTimer);
-                            hydrationTimer = null;
-                            resolve();
-                        });
-                    }).catch((err) => {
-                        // SILENCE THE ORPHAN: Capture error, don't re-throw
-                        hydrationError = err;
-                    });
+                    // Start engine ready listener (internal)
+                    this.engine.once('ready', () => this.updateStatus());
 
                     const heads = this.engine.getHeads();
                     await this.transport.connect(heads);
 
-                    // Wait for hydration (may resolve or set hydrationError)
-                    await hydrationGuard;
-
-                    // If hydration failed, throw the captured error
-                    if (hydrationError) throw hydrationError;
                 } catch (err: any) {
-                    // Clear hydration timer to prevent orphaned callbacks
-                    if (hydrationTimer) clearTimeout(hydrationTimer);
                     this.connectPromise = null;
                     throw new ConnectionError(err.message || 'Connection failed');
                 }
             })();
 
-            // Tether the connectPromise to silence orphaned rejections
             this.connectPromise.catch(() => { /* Silenced - caller handles via await */ });
         }
 
@@ -367,7 +375,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.connectPromise = null;
         this.transport.disconnect();
         this.engine.stop();
-        this.transitionTo('IDLE');
+        this.updateStatus('DISCONNECTED');
     }
 
 
@@ -380,19 +388,33 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public async awaitReady(): Promise<void> {
         if (this.getStatus() === 'READY') return;
         return new Promise((resolve, reject) => {
-            const statusHandler = (s: TransportStatus) => {
+            const timeout = setTimeout(() => {
+                cleanup();
+                reject(new Error('Timeout waiting for READY (Hydration)'));
+            }, this.config.connectionTimeout || 10000);
+
+            const statusHandler = (s: ConnectionStatus) => {
                 if (s === 'READY') {
-                    this.off('status', statusHandler);
-                    this.off('error', errorHandler);
+                    cleanup();
                     resolve();
+                } else if (s === 'ERROR') {
+                    cleanup();
+                    reject(new Error('Connection error status received'));
                 }
             };
-            const errorHandler = (e: any) => {
-                this.off('status', statusHandler);
-                this.off('error', errorHandler);
-                reject(e);
+
+            const errorHandler = (err: any) => {
+                cleanup();
+                reject(err instanceof Error ? err : new Error(String(err)));
             };
-            this.on('status', statusHandler);
+
+            const cleanup = () => {
+                clearTimeout(timeout);
+                this.off('status', statusHandler as any);
+                this.off('error', errorHandler);
+            };
+
+            this.on('status', statusHandler as any);
             this.on('error', errorHandler);
         });
     }
@@ -401,12 +423,20 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.logger.debug(`${this.userId} set(${key}):`, value);
         const delta = this.engine.set(key, value, schema);
 
-        const status = this.getStatus();
-        if (status === 'READY') {
+        if (this.transport.getStatus() === 'CONNECTED') {
             this.transport.broadcast(delta);
         } else {
-            console.warn(`[NMeshedClient] set() called but status is ${status}. Delta dropped/queued?`, delta.length);
+            this.logger.debug(`[NMeshedClient] set() queued (transport: ${this.transport.getStatus()})`);
         }
+    }
+
+    /**
+     * Typed deletion API.
+     * 
+     * Zen Pattern: "Absolute Clarity" — Type-safe deletion without `as any` escapes.
+     */
+    public delete(key: string): void {
+        this.set(key, null);
     }
 
     public get<T = unknown>(key: string): T {
@@ -469,23 +499,83 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.transport.sendEphemeral(data, to);
     }
 
-    public getCollection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
-        const normalizedPrefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
+    /**
+     * Get a synced collection. Pattern: "Absolute Clarity".
+     * 
+     * Schema is inferred from the client configuration (Zen Mode).
+     */
+    /**
+     * Get a synced collection. Pattern: "Absolute Clarity".
+     * 
+     * Schema is inferred from the client configuration (Zen Mode), 
+     * or passed via options.
+     */
+    public getCollection<T = any>(prefix: string, options?: SyncedCollectionOptions<T>): SyncedCollection<T> {
+        const normalizedPrefix = prefix.endsWith(':') ? prefix : (prefix === '' ? '' : `${prefix}:`);
+
+        // If options are provided, we bypass the standard cache key to avoid collision of filters/schemas
+        if (options) {
+            return new SyncedCollection<T>(this.engine, normalizedPrefix, undefined, options);
+        }
+
         if (!this._collections.has(normalizedPrefix)) {
-            const collection = new SyncedCollection<T>(this.engine, normalizedPrefix, schema);
+            const collection = new SyncedCollection<T>(this.engine, normalizedPrefix);
             this._collections.set(normalizedPrefix, collection);
         }
         return this._collections.get(normalizedPrefix)!;
     }
 
-
     /**
-     * Alias for getCollection() to match the Zen API.
+     * Alias for getCollection().
      */
-    public collection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
-        return this.getCollection(prefix, schema);
+    public collection<T = any>(prefix: string, options?: SyncedCollectionOptions<T>): SyncedCollection<T> {
+        return this.getCollection(prefix, options);
     }
 
+
+    /**
+     * Convenience Getter: All business entities (excludes system/internal keys).
+     * 
+     * Zen Pattern: "The Zen Garden" — Easy access to what matters.
+     */
+    public get entities(): SyncedCollection<any> {
+        return this.collection('', { filter: Filters.onlyEntities });
+    }
+
+    /**
+     * Convenience Getter: System state (keys containing `__`).
+     */
+    public get system(): SyncedCollection<any> {
+        return this.collection('', {
+            filter: (k) => k.includes('__')
+        });
+    }
+
+    /**
+     * Convenience Getter: Ephemeral state (keys prefixed with `_` but not system `__`).
+     */
+    public get ephemera(): SyncedCollection<any> {
+        return this.collection('', {
+            filter: (k) => k.startsWith('_') && !k.includes('__')
+        });
+    }
+
+    /**
+     * Convenience Getter: Internal state (all keys starting with `_`).
+     */
+    public get internal(): SyncedCollection<any> {
+        return this.collection('', {
+            filter: (k) => k.startsWith('_')
+        });
+    }
+
+    /**
+     * Convenience Method: Typed entities with schema.
+     * Equivalent to: client.collection('', { schema, filter: Filters.onlyEntities })
+     */
+    public entitiesOf<T extends Schema<any>>(schema: T): SyncedCollection<InferSchema<T>> {
+        return this.collection<InferSchema<T>>('', { schema: schema as any, filter: Filters.onlyEntities });
+    }
 
     public getSyncedMap(prefix: string): any {
         return this.getCollection(prefix);
@@ -498,12 +588,12 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     /** Compatibility Aliases */
-    public onStatusChange(handler: (status: TransportStatus) => void) {
+    public onStatusChange(handler: (status: ConnectionStatus) => void) {
         if (typeof handler !== 'function') throw new Error('Status handler must be a function');
         try {
             handler(this.getStatus());
         } catch (e) { }
-        return super.on('status', handler);
+        return super.on('status', handler as any);
     }
     public onMessage(handler: (msg: NMeshedMessage) => void) {
         if (typeof handler !== 'function') throw new Error('Message handler must be a function');
@@ -626,22 +716,15 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     public setStatus(s: TransportStatus): void {
-        this.transitionTo(s);
+        this.updateStatus(s);
     }
 
-    public getStatus(): TransportStatus {
-        const s = this.transport.getStatus();
-        if (s === 'IDLE') return 'IDLE';
-        if (s === 'CONNECTING') return 'CONNECTING';
-        if (s === 'DISCONNECTED') return 'DISCONNECTED';
-        if (s === 'RECONNECTING') return 'RECONNECTING';
-        if (s === 'ERROR') return 'ERROR';
-        return s === 'CONNECTED' ? 'READY' : s;
+    public getStatus(): ConnectionStatus {
+        return this._status;
     }
 
     public get isLive(): boolean {
-        const s = this.getStatus();
-        return s === 'READY';
+        return this.getStatus() === 'READY';
     }
 
     public async ping(peerId: string): Promise<number> {

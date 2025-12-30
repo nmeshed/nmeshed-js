@@ -25,7 +25,7 @@ describe('SyncEngine Global Schema Integration', () => {
         registerGlobalSchema('global_test', GlobalTestSchema);
 
         // 2. Instantiate Engine
-        const engine = new SyncEngine('test-ws', 'test-peer');
+        const engine = new SyncEngine('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000010');
 
         // Mock internal set to intercept
         const setInternalSpy = vi.spyOn(engine as any, 'setInternal');
@@ -44,7 +44,7 @@ describe('SyncEngine Global Schema Integration', () => {
     it('should use inherited schema for encoding', () => {
         registerGlobalSchema('auto_', GlobalTestSchema);
 
-        const engine = new SyncEngine('test-ws', 'test-peer');
+        const engine = new SyncEngine('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000010');
 
         // Mock core to avoid runtime errors during set
         (engine as any).core = {

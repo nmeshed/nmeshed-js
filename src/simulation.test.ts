@@ -97,22 +97,24 @@ describe('High Fidelity Simulation: Host-Guest Synchronization', () => {
         guest = new NMeshedClient({ workspaceId: validWsId, peerId: 'guest-2' } as any);
 
         // Host Init
-        host.connect();
+        const hostConnectPromise = host.connect();
         await vi.waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
         const s1 = MockWebSocket.instances[MockWebSocket.instances.length - 1];
         if (s1) {
             s1.onopen({} as any);
             s1.onmessage({ data: packInit({}) } as any);
         }
+        await hostConnectPromise;
 
         // Guest Init (Start empty)
-        guest.connect();
+        const guestConnectPromise = guest.connect();
         await vi.waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(1));
         const s2 = MockWebSocket.instances[MockWebSocket.instances.length - 1];
         if (s2) {
             s2.onopen({} as any);
             s2.onmessage({ data: packInit({}) } as any);
         }
+        await guestConnectPromise;
 
         // Spy on Host send to capture Op
         if (s1) {

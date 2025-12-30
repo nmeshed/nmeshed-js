@@ -2,7 +2,55 @@ import { EventEmitter } from '../utils/EventEmitter';
 import { SyncEngine } from '../core/SyncEngine';
 import { Schema } from '../schema/SchemaBuilder';
 
+// ============================================================================
+// Prebuilt Filters: Zen Sugar for Common Patterns
+// ============================================================================
+
+/**
+ * Excludes system keys (prefixed with `__`).
+ * Use: `{ filter: Filters.excludeSystem }`
+ */
+export const excludeSystem = (key: string) => !key.includes('__');
+
+/**
+ * Excludes ephemeral/transient keys (prefixed with `_`).
+ * Use: `{ filter: Filters.excludeEphemeral }`
+ */
+export const excludeEphemeral = (key: string) => !key.startsWith('_');
+
+/**
+ * Excludes all internal keys (system and ephemeral).
+ * Use: `{ filter: Filters.excludeInternal }`
+ */
+export const excludeInternal = (key: string) => !key.startsWith('_') && !key.includes('__');
+
+/**
+ * Only includes entity-like keys (common prefixes).
+ * Use: `{ filter: Filters.onlyEntities }`
+ */
+export const onlyEntities = (key: string) =>
+    /^(entity_|item_|miner_|belt_|i_|\d+$)/.test(key);
+
+/**
+ * Namespace object for prebuilt filters.
+ * 
+ * @example
+ * ```typescript
+ * import { Filters } from 'nmeshed';
+ * const entities = client.collection('', EntitySchema, { filter: Filters.excludeSystem });
+ * ```
+ */
+export const Filters = {
+    excludeSystem,
+    excludeEphemeral,
+    excludeInternal,
+    onlyEntities
+} as const;
+
+// ============================================================================
+
 export interface CollectionEvents<T> {
+
     add: [string, T];
     remove: [string];
     update: [string, T];
@@ -21,6 +69,13 @@ export interface CollectionEvents<T> {
  * It automatically handles schema-aware encoding, optimistic updates, 
  * and reactive events for the whole set.
  */
+export interface SyncedCollectionOptions<T> {
+    /** Optional filter function to exclude certain keys/values */
+    filter?: (key: string, value: T) => boolean;
+    /** Optional schema to register for this collection (Zen Overload) */
+    schema?: Schema<any>;
+}
+
 export class SyncedCollection<T extends any> extends EventEmitter<CollectionEvents<T>> {
     private items = new Map<string, T>();
     private _cachedArray: (T & { id: string })[] | null = null;
@@ -28,16 +83,23 @@ export class SyncedCollection<T extends any> extends EventEmitter<CollectionEven
     private engine: SyncEngine;
     private prefix: string;
     private schema?: Schema<any>;
+    private filter?: (key: string, value: T) => boolean;
 
-    constructor(engine: SyncEngine, prefix: string, schema?: Schema<any>) {
+    constructor(engine: SyncEngine, prefix: string, schema?: Schema<any>, options?: SyncedCollectionOptions<T>) {
         super();
         this.engine = engine;
-        this.prefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
-        this.schema = schema;
+        this.prefix = prefix.endsWith(':') ? prefix : (prefix === '' ? '' : `${prefix}:`);
+
+        // Resolve Schema: Explicit Arg -> Options -> Registry
+        this.schema = schema || options?.schema;
+        this.filter = options?.filter;
 
         // Register prefix schema if provided
-        if (schema) {
-            this.engine.registerSchema(this.prefix, schema);
+        if (this.schema) {
+            this.engine.registerSchema(this.prefix, this.schema);
+        } else {
+            // Check if schema was already registered globally
+            this.schema = this.engine.getSchema(this.prefix);
         }
 
         this.subscribe();
@@ -46,7 +108,11 @@ export class SyncedCollection<T extends any> extends EventEmitter<CollectionEven
 
     private subscribe() {
         this.engine.on('op', (key, value) => {
-            if (key.startsWith(this.prefix)) {
+            if (this.prefix === '' || key.startsWith(this.prefix)) {
+                // Apply filter if provided
+                if (this.filter && value !== null && value !== undefined) {
+                    if (!this.filter(key, value as T)) return;
+                }
                 this.handleOp(key, value);
             }
         });
@@ -56,7 +122,9 @@ export class SyncedCollection<T extends any> extends EventEmitter<CollectionEven
         let changed = false;
         // Zen Optimization: Iterate directly without allocating intermediate object
         this.engine.forEach((value, key) => {
-            if (key.startsWith(this.prefix)) {
+            if (this.prefix === '' || key.startsWith(this.prefix)) {
+                // Apply filter if provided
+                if (this.filter && !this.filter(key, value as T)) return;
                 const id = this.idFromKey(key);
                 this.items.set(id, value as T);
                 changed = true;

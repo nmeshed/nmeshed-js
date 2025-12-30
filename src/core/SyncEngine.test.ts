@@ -96,7 +96,7 @@ describe('SyncEngine', () => {
 
             expect(qEngine.get('k3')).toBe('v3');
             expect(qEngine.get('k2')).toBe('v2');
-            expect(qEngine.get('k1')).toBeUndefined();
+            expect(qEngine.get('k1')).toBeNull();
         });
     });
 
@@ -670,7 +670,7 @@ describe('SyncEngine', () => {
             builder.finish(WirePacket.endWirePacket(builder));
 
             fresh.applyRawMessage(builder.asUint8Array());
-            expect(spy).toHaveBeenCalledWith(expect.stringContaining('Critical: No hydration method found'));
+            expect(spy).toHaveBeenCalledWith(expect.stringContaining('Init Hydration FAILED'), expect.any(Object));
             fresh.destroy();
         });
     });

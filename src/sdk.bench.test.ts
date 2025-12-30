@@ -19,6 +19,7 @@ class MockTransport extends EventEmitter<TransportEvents> implements Transport {
     simulatePacketLoss(rate: number) { }
     getPeers() { return []; }
     async ping() { return 0; }
+    getLatency() { return 0; }
 }
 
 // Mock persistence to avoid IndexedDB errors
@@ -45,7 +46,7 @@ describe('SDK High-Level Benchmarks', () => {
 
     describe('SyncEngine Performance', () => {
         it('Benchmark: SyncEngine.set (json/codec overhead)', async () => {
-            const engine = new SyncEngine(workspaceId, 'crdt');
+            const engine = new SyncEngine(workspaceId, '00000000-0000-0000-0000-000000000100');
             await engine.boot();
 
             const start = performance.now();
@@ -58,7 +59,7 @@ describe('SDK High-Level Benchmarks', () => {
         });
 
         it('Benchmark: SyncEngine.applyRawMessage (parse + merge + decode)', async () => {
-            const engine = new SyncEngine(workspaceId, 'crdt');
+            const engine = new SyncEngine(workspaceId, '00000000-0000-0000-0000-000000000100');
             await engine.boot();
             const delta = engine.set('bench', { x: 10, y: 20 });
 

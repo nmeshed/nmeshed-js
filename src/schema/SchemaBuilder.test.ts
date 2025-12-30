@@ -276,4 +276,55 @@ describe('SchemaBuilder', () => {
             expect(isBinary([])).toBe(false);
         });
     });
+
+    describe('hydrate', () => {
+        it('should apply defaults to missing fields', () => {
+            const EntitySchema = defineSchema({
+                x: 'float32',
+                y: 'float32',
+                name: 'string',
+                active: 'boolean'
+            });
+
+            const result = EntitySchema.hydrate({ x: 100 });
+            expect(result.x).toBe(100);
+            expect(result.y).toBe(0);
+            expect(result.name).toBe('');
+            expect(result.active).toBe(false);
+        });
+
+        it('should preserve valid values', () => {
+            const Schema = defineSchema({
+                count: 'int32',
+                label: 'string'
+            });
+
+            const result = Schema.hydrate({ count: 42, label: 'test' });
+            expect(result.count).toBe(42);
+            expect(result.label).toBe('test');
+        });
+
+        it('should coerce invalid types to defaults', () => {
+            const Schema = defineSchema({
+                x: 'float32',
+                name: 'string'
+            });
+
+            // Intentionally pass invalid types to test coercion
+            const result = Schema.hydrate({ x: 'not a number' as any, name: 123 as any });
+            expect(result.x).toBe(0);
+            expect(result.name).toBe('');
+        });
+
+        it('should handle nested objects', () => {
+            const InnerSchema = defineSchema({ value: 'int32' });
+            const OuterSchema = defineSchema({
+                nested: { type: 'object', schema: InnerSchema.definition }
+            });
+
+            // Intentionally pass empty nested object to test default hydration
+            const result = OuterSchema.hydrate({ nested: {} as any });
+            expect(result.nested.value).toBe(0);
+        });
+    });
 });

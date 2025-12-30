@@ -22,7 +22,7 @@ describe('Milestone 4: The Stable Horizon (Absolutist Quality Check)', () => {
     let mockCore: MockCore;
 
     beforeEach(() => {
-        engine = new SyncEngine('ws-audited', 'peer-local');
+        engine = new SyncEngine('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000010');
         mockCore = new MockCore();
         (engine as any).core = mockCore;
         (engine as any)._state = EngineState.ACTIVE;

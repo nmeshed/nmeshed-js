@@ -1,26 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SyncEngine, EngineState, InvalidStateTransitionError } from './SyncEngine';
 
-// Mock WASM module - class must be defined inline to avoid hoisting issues
-vi.mock('../wasm/nmeshed_core', () => {
-    const MockNMeshedClientCore = class {
-        apply_local_op = vi.fn().mockReturnValue(new Uint8Array([1, 2, 3]));
-        apply_vessel = vi.fn();
-        get_raw_value = vi.fn().mockReturnValue(null);
-        get_heads = vi.fn().mockReturnValue([]);
-        get_all_values = vi.fn().mockReturnValue({});
-    };
-    return {
-        default: vi.fn().mockResolvedValue(undefined),
-        NMeshedClientCore: MockNMeshedClientCore,
-    };
-});
-
 // Mock persistence
 vi.mock('../persistence', () => ({
     loadQueue: vi.fn().mockResolvedValue([]),
     saveQueue: vi.fn().mockResolvedValue(undefined),
 }));
+
+const VALID_UUID_1 = '00000000-0000-0000-0000-000000000001';
+const VALID_UUID_2 = '00000000-0000-0000-0000-000000000002';
 
 describe('SyncEngine State Machine', () => {
     let engine: SyncEngine;
@@ -39,19 +27,19 @@ describe('SyncEngine State Machine', () => {
 
     describe('Initial State', () => {
         it('should start in IDLE state', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             expect(engine.state).toBe(EngineState.IDLE);
         });
 
         it('should not be operational in IDLE state', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             expect(engine.isOperational).toBe(false);
         });
     });
 
     describe('boot() Transitions', () => {
         it('should transition IDLE -> BOOTING -> ACTIVE on successful boot', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             const stateChanges: [EngineState, EngineState][] = [];
             engine.on('stateChange', (from, to) => stateChanges.push([from, to]));
 
@@ -64,7 +52,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should be operational after boot', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -72,7 +60,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should allow re-boot from STOPPED state', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -85,7 +73,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should be idempotent when already ACTIVE', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -95,7 +83,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should throw when booting from DESTROYED state', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             engine.destroy();
 
             await expect(engine.boot()).rejects.toThrow(InvalidStateTransitionError);
@@ -104,7 +92,7 @@ describe('SyncEngine State Machine', () => {
 
     describe('stop() Transitions', () => {
         it('should transition ACTIVE -> STOPPING -> STOPPED', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -119,7 +107,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should not be operational after stop', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -129,7 +117,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should be idempotent when already STOPPED', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -139,20 +127,20 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should throw when stopping from IDLE state', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             expect(() => engine.stop()).toThrow(InvalidStateTransitionError);
         });
     });
 
     describe('destroy() Transitions', () => {
         it('should transition to DESTROYED from IDLE', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             engine.destroy();
             expect(engine.state).toBe(EngineState.DESTROYED);
         });
 
         it('should transition to DESTROYED from ACTIVE', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -161,7 +149,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should transition to DESTROYED from STOPPED', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -171,7 +159,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should be idempotent when already DESTROYED', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             engine.destroy();
             engine.destroy(); // Should not throw
             expect(engine.state).toBe(EngineState.DESTROYED);
@@ -180,7 +168,7 @@ describe('SyncEngine State Machine', () => {
 
     describe('Operation Guards', () => {
         it('should buffer set() calls in IDLE state', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             const result = engine.set('key', 'value');
 
             expect(result).toBeInstanceOf(Uint8Array);
@@ -188,7 +176,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should allow set() in ACTIVE state', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -196,7 +184,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should throw set() in DESTROYED state', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -206,7 +194,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should buffer applyRawMessage() calls before boot', () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             const bytes = new Uint8Array([1, 2, 3]);
 
             // Should not throw
@@ -214,7 +202,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should silently drop applyRawMessage() calls after destroy', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             await engine.boot();
             await vi.advanceTimersByTimeAsync(100);
 
@@ -227,7 +215,7 @@ describe('SyncEngine State Machine', () => {
 
     describe('Reconnection Flow', () => {
         it('should support full connect -> disconnect -> reconnect cycle', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
 
             // Connect
             await engine.boot();
@@ -246,7 +234,7 @@ describe('SyncEngine State Machine', () => {
         });
 
         it('should process buffered messages after reconnect', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
 
             // Buffer a message before boot
             const bytes = new Uint8Array([1, 2, 3, 4]);
@@ -263,7 +251,7 @@ describe('SyncEngine State Machine', () => {
 
     describe('State Change Events', () => {
         it('should emit stateChange event on every transition', async () => {
-            engine = new SyncEngine('test-workspace', 'peer-1');
+            engine = new SyncEngine(VALID_UUID_1, VALID_UUID_2);
             const stateChanges: [EngineState, EngineState][] = [];
             engine.on('stateChange', (from, to) => stateChanges.push([from, to]));
 

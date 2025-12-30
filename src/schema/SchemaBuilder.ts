@@ -29,6 +29,19 @@ export interface Schema<T extends SchemaDefinition> {
     encode: (data: InferObject<T>) => Uint8Array;
     decode: (buffer: Uint8Array) => InferObject<T>;
     defaultValue: (key: keyof T) => InferField<T[keyof T]>;
+    /**
+     * Hydrate partial data with schema defaults.
+     * 
+     * Zen Pattern: "Action through Inaction" — The schema does the work.
+     * Eliminates manual type guards and default assignments.
+     * 
+     * @example
+     * ```ts
+     * const entity = EntitySchema.hydrate({ x: 100 });
+     * // All fields are now valid with defaults applied
+     * ```
+     */
+    hydrate: (partial: Partial<InferObject<T>>) => InferObject<T>;
 }
 
 // ============================================================================
@@ -96,7 +109,8 @@ export function defineSchema<T extends SchemaDefinition>(definition: T): Schema<
         definition,
         encode: (data: InferObject<T>) => SchemaSerializer.encode(definition, data),
         decode: (buffer: Uint8Array) => SchemaSerializer.decode(definition, buffer) as InferObject<T>,
-        defaultValue: (key: keyof T) => SchemaSerializer.getDefaultValue(definition[key as string]) as any
+        defaultValue: (key: keyof T) => SchemaSerializer.getDefaultValue(definition[key as string]) as any,
+        hydrate: (partial: Partial<InferObject<T>>) => SchemaSerializer.hydrate(definition, partial) as InferObject<T>
     };
 }
 
@@ -285,6 +299,63 @@ export class SchemaSerializer {
             default: return null;
         }
     }
+
+    /**
+     * Hydrate partial data with schema defaults.
+     * 
+     * Zen Pattern: "Action through Inaction" — The schema does the work.
+     * Validates types and applies defaults for missing/invalid fields.
+     */
+    public static hydrate(schema: SchemaDefinition, partial: any): any {
+        const result: any = {};
+        const keys = Object.keys(schema);
+
+        for (const key of keys) {
+            const fieldType = schema[key];
+            const value = partial?.[key];
+
+            if (value === undefined || value === null) {
+                // Missing value: use default
+                result[key] = this.getDefaultValue(fieldType);
+            } else if (!this.isValidType(fieldType, value)) {
+                // Invalid type: use default
+                result[key] = this.getDefaultValue(fieldType);
+            } else if (typeof fieldType === 'object' && fieldType.type === 'object') {
+                // Nested object: recurse
+                result[key] = this.hydrate(fieldType.schema, value);
+            } else {
+                // Valid value: keep it
+                result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Type validation helper for hydrate().
+     */
+    private static isValidType(fieldType: SchemaField, value: any): boolean {
+        if (typeof fieldType === 'string') {
+            switch (fieldType) {
+                case 'string': return typeof value === 'string';
+                case 'boolean': return typeof value === 'boolean';
+                case 'float32': case 'float64':
+                case 'int32': case 'int64': case 'uint32': case 'uint64':
+                case 'uint8': case 'uint16':
+                    return typeof value === 'number' && isFinite(value);
+            }
+        }
+        if (typeof fieldType === 'object') {
+            switch (fieldType.type) {
+                case 'array': return Array.isArray(value);
+                case 'map': return typeof value === 'object' && value !== null;
+                case 'object': return typeof value === 'object' && value !== null;
+            }
+        }
+        return true;
+    }
+
 
 
     private static encodeField(type: SchemaField, value: any): Uint8Array {

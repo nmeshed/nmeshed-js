@@ -3,17 +3,21 @@ import { SyncedCollection } from './SyncedCollection';
 import { SyncEngine } from '../core/SyncEngine';
 import { defineSchema } from '../schema/SchemaBuilder';
 
+import { MockSyncEngine } from '../test-utils/mocks';
+
 describe('SyncedCollection', () => {
-    let mockEngine: any;
+    let mockEngine: MockSyncEngine;
     let collection: SyncedCollection<any>;
 
     beforeEach(() => {
-        mockEngine = {
-            on: vi.fn(),
-            registerSchema: vi.fn(),
-            forEach: vi.fn(),
-            set: vi.fn(),
-        };
+        mockEngine = new MockSyncEngine();
+        // Spy on methods to assert calls
+        vi.spyOn(mockEngine, 'on');
+        vi.spyOn(mockEngine, 'registerSchema');
+        vi.spyOn(mockEngine, 'getSchema');
+        vi.spyOn(mockEngine, 'forEach');
+        vi.spyOn(mockEngine, 'set');
+
         collection = new SyncedCollection(mockEngine as any, 'items:');
     });
 
@@ -108,5 +112,26 @@ describe('SyncedCollection', () => {
         expect(collection.getAll().get('1')).toEqual({ name: 'A' });
         expect(collection.asArray()).toEqual([{ name: 'A', id: '1' }]);
         expect(collection.version).toBeGreaterThan(0);
+    });
+
+    it('should filter keys using optional filter function', () => {
+        const filterFn = vi.fn((key: string) => !key.startsWith('items:__'));
+        const filteredCollection = new SyncedCollection(mockEngine as any, 'items:', undefined, { filter: filterFn });
+
+        // Get the LAST registered listener (for the filteredCollection)
+        const opCalls = mockEngine.on.mock.calls.filter((call: any) => call[0] === 'op');
+        const opListener = opCalls[opCalls.length - 1][1];
+
+        opListener('items:regular', { name: 'Regular' });
+        opListener('items:__system', { name: 'System' });
+
+        expect(filteredCollection.get('regular')).toEqual({ name: 'Regular' });
+        expect(filteredCollection.get('__system')).toBeUndefined();
+    });
+
+
+    it('should handle empty prefix for all keys', () => {
+        const allKeysCollection = new SyncedCollection(mockEngine as any, '');
+        expect(allKeysCollection.size).toBe(0);
     });
 });

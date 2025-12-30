@@ -46,7 +46,7 @@ export enum EngineState {
 /** Valid state transitions */
 const VALID_TRANSITIONS: Record<EngineState, EngineState[]> = {
     [EngineState.IDLE]: [EngineState.BOOTING, EngineState.DESTROYED],
-    [EngineState.BOOTING]: [EngineState.ACTIVE, EngineState.STOPPING],
+    [EngineState.BOOTING]: [EngineState.ACTIVE, EngineState.STOPPING, EngineState.STOPPED],
     [EngineState.ACTIVE]: [EngineState.STOPPING],
     [EngineState.STOPPING]: [EngineState.STOPPED, EngineState.DESTROYED],
     [EngineState.STOPPED]: [EngineState.BOOTING, EngineState.DESTROYED],
@@ -154,7 +154,9 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private isQueueDirty = false;
     private persistenceTimer: any = null;
     private bootQueue: Uint8Array[] = [];
-    private bootPromise: Promise<void> | null = null;
+    private wasmLoadPromise: Promise<void> | null = null;
+    private _bootPromise: Promise<void> | null = null;
+    private _isHydrated = false;
 
     // Schema registry for automatic encoding/decoding
     private schemaRegistry = new Map<string, Schema<any>>();
@@ -200,7 +202,12 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                     timestamp: Date.now(),
                     peerId
                 };
-                this.set('__global_tick', payload, SystemSchemas['__global_tick'], true);
+                // Zen: Defer global tick update to avoid WASM re-entrancy during same microtask
+                setTimeout(() => {
+                    if (this._state === EngineState.ACTIVE) {
+                        this.set('__global_tick', payload, SystemSchemas['__global_tick'], true);
+                    }
+                }, 0);
             }
         });
 
@@ -219,6 +226,11 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     /** Check if engine is in a state that can process operations */
     public get isOperational(): boolean {
         return this._state === EngineState.ACTIVE;
+    }
+
+    /** Check if engine has received its initial snapshot (Init) */
+    public get isHydrated(): boolean {
+        return this._isHydrated;
     }
 
     /** Transition to a new state with validation */
@@ -253,117 +265,121 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
      * 
      * @returns Promise resolving when EngineState becomes ACTIVE.
      */
-    public async boot(): Promise<void> {
-        // Already booted
-        if (this._state === EngineState.ACTIVE && this.core) {
-            return;
-        }
+    /**
+     * Unified WASM Loader.
+     * Ensures WASM is loaded exactly once, regardless of environment or race conditions.
+     */
+    private async ensureWasmLoaded(): Promise<void> {
+        if (this.core) return;
+        if (this.wasmLoadPromise) return this.wasmLoadPromise;
 
-        // If already booting, wait for that to complete
-        if (this._state === EngineState.BOOTING && this.bootPromise) {
-            return this.bootPromise;
-        }
-
-        if (this._state !== EngineState.IDLE && this._state !== EngineState.STOPPED) {
-            throw new InvalidStateTransitionError(this._state, EngineState.BOOTING, 'boot()');
-        }
-
-        this.transition(EngineState.BOOTING, 'boot()');
-        this.bootPromise = this.doBootInternal();
-
-        try {
-            await this.bootPromise;
-        } finally {
-            this.bootPromise = null;
-        }
-    }
-
-    /** Internal boot implementation */
-
-    private async doBootInternal(): Promise<void> {
-
-        try {
-            // Auto-initialize WASM
-            if ((wasmModule as any).default) {
+        this.wasmLoadPromise = (async () => {
+            try {
+                // Determine Environment
                 const isNode = typeof process !== 'undefined' && process.versions && !!process.versions.node;
-                const isRealBrowser = typeof window !== 'undefined' && !isNode;
 
                 if (isNode) {
-                    // Node/Vitest loading path
+                    // Node/Vitest: Manual Buffer Loading
                     const fs = await import('fs');
                     const path = await import('path');
 
                     const pathsToTry = [
-                        this.wasmPath, // 1. Custom path takes priority
-                        path.resolve(process.cwd(), 'src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
-                        path.resolve(process.cwd(), 'sdks/javascript/src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
-                        path.join(__dirname || '', '../wasm/nmeshed_core/nmeshed_core_bg.wasm'),
+                        this.wasmPath,
+                        path.resolve(process.cwd(), 'src/wasm/nmeshed_core_bg.wasm'),
+                        path.resolve(process.cwd(), 'sdks/javascript/src/wasm/nmeshed_core_bg.wasm'),
+                        path.join(__dirname || '', '../wasm/nmeshed_core_bg.wasm'),
                     ].filter(Boolean) as string[];
 
-                    let found = false;
-                    for (const wasmPath of pathsToTry) {
-                        try {
-                            if (fs.existsSync(wasmPath)) {
-                                this.logger.info(`[SyncEngine] Loading WASM from: ${wasmPath}`);
-                                const wasmBuffer = fs.readFileSync(wasmPath);
-                                await (wasmModule as any).default(wasmBuffer);
-                                found = true;
-                                break;
-                            }
-                        } catch (e) {
-                            this.logger.debug(`Failed to load WASM from ${wasmPath}: ${e}`);
+                    let wasmBuffer: Buffer | null = null;
+                    for (const p of pathsToTry) {
+                        if (fs.existsSync(p)) {
+                            wasmBuffer = fs.readFileSync(p);
+                            break;
                         }
                     }
 
-
-                    if (!found) {
-                        this.logger.error(`[SyncEngine] WASM NOT FOUND! Checked paths: ${JSON.stringify(pathsToTry)}. CWD: ${process.cwd()}`);
+                    if (!wasmBuffer) {
+                        throw new Error(`WASM binary not found. Searched: ${pathsToTry.join(', ')}`);
                     }
 
-                } else if (isRealBrowser) {
-                    await (wasmModule as any).default({ module_or_path: '/nmeshed_core_bg.wasm' });
+                    // Zen: Universal Init
+                    if ((wasmModule as any).default) {
+                        await (wasmModule as any).default(wasmBuffer);
+                    }
+                } else {
+                    // Browser: Standard Init
+                    if ((wasmModule as any).default) {
+                        await (wasmModule as any).default({ module_or_path: '/nmeshed_core_bg.wasm' });
+                    }
                 }
-            }
 
-            this.core = new NMeshedClientCore(this.workspaceId);
-            this.clock.start();
+                // Instantiate Core
+                this.core = new NMeshedClientCore(this.workspaceId);
 
-            // Auto-register System Schemas
-            for (const [key, schema] of Object.entries(SystemSchemas)) {
-                this.registerSchema(key, schema);
-            }
-
-            // Apply pre-connect state
-            for (const [key, value] of this.preConnectState) {
-                this.setInternal(key, value);
-            }
-
-            await this.loadPersistedState();
-            this.preConnectState.clear();
-
-            // Flush boot queue
-            if (this.bootQueue.length > 0) {
-                const queue = [...this.bootQueue];
-                this.bootQueue = [];
-                for (const item of queue) {
-                    this.applyRawMessageInternal(item);
+                // Check Capability
+                if (typeof (this.core as any).load_snapshot !== 'function') {
+                    throw new Error('WASM Core outdated: load_snapshot missing.');
                 }
-            }
 
-            // Check if engine was destroyed during async boot
-            if (this._state === EngineState.DESTROYED || this._state === EngineState.STOPPING || this._state === EngineState.STOPPED) {
-                return; // Abort - engine was destroyed or stopped
+            } catch (e) {
+                this.wasmLoadPromise = null; // Allow retry
+                throw e;
             }
+        })();
 
-            this.transition(EngineState.ACTIVE, 'boot() complete');
-        } catch (e: any) {
-            // If boot fails, go to STOPPED so we can retry (unless destroyed)
-            this.logger.error('[SyncEngine] Boot failed:', e);
-            if (this._state !== EngineState.DESTROYED) {
-                this._state = EngineState.STOPPED;
+        return this.wasmLoadPromise;
+    }
+
+    public async boot(): Promise<void> {
+        if (this._state === EngineState.ACTIVE) return;
+        if (this._bootPromise) return this._bootPromise;
+
+        this._bootPromise = (async () => {
+            try {
+                this.transition(EngineState.BOOTING, 'boot()');
+                await this.ensureWasmLoaded();
+
+                this.clock.start();
+
+                // Auto-register System Schemas
+                for (const [key, schema] of Object.entries(SystemSchemas)) {
+                    this.registerSchema(key, schema);
+                }
+
+                // Apply pre-connect state (Queued so they are sent once connected)
+                for (const [key, value] of this.preConnectState) {
+                    this.setInternal(key, value, undefined, true);
+                }
+
+                await this.loadPersistedState();
+                this.preConnectState.clear();
+
+                // Transition to ACTIVE first, so that messages flushed from the bootQueue
+                // (like an Init packet) will cause isOperational to be true.
+                if (this._state === EngineState.BOOTING) {
+                    this.transition(EngineState.ACTIVE, 'boot() complete');
+                }
+
+                // Flush boot queue
+                if (this.bootQueue.length > 0) {
+                    const queue = [...this.bootQueue];
+                    this.bootQueue = [];
+                    for (const item of queue) {
+                        this.applyRawMessageInternal(item);
+                    }
+                }
+            } catch (e) {
+                this.logger.error('[SyncEngine] Boot failed:', e);
+                if (this._state === EngineState.BOOTING) {
+                    this._state = EngineState.STOPPED;
+                }
+                throw e;
+            } finally {
+                this._bootPromise = null;
             }
-            throw e;
-        }
+        })();
+
+        return this._bootPromise;
     }
 
     /**
@@ -435,6 +451,10 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
         if (catchAll) return catchAll;
         return findSchema(key);
+    }
+
+    public getSchema(prefix: string): Schema<any> | undefined {
+        return this.schemaRegistry.get(prefix);
     }
 
     // ========================================================================
@@ -639,21 +659,14 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 if (payload) {
                     try {
                         // Hydration Flow:
-                        // 1. Feed binary directly to WASM core via apply_vessel (handles Init parsing internally)
-                        // 1. Feed the packet or payload to the core.
-                        // Based on the current WASM binary, merge_remote_delta is the primary entry point.
-                        if (this.core && typeof (this.core as any).merge_remote_delta === 'function') {
-                            (this.core as any).merge_remote_delta(payload);
+                        this._isHydrated = true;
+
+                        // 1. Feed binary directly to WASM core via load_snapshot (for Snapshot payloads)
+                        if (this.core && typeof (this.core as any).load_snapshot === 'function') {
+                            (this.core as any).load_snapshot(payload);
                         } else if (this.core && typeof (this.core as any).apply_vessel === 'function') {
                             (this.core as any).apply_vessel(bytes);
-                        } else {
-                            const proto = this.core ? Object.getPrototypeOf(this.core) : {};
-                            const methods = Object.getOwnPropertyNames(proto);
-                            this.logger.error(`[SyncEngine] Critical: No hydration method found! Core methods: ${methods.join(', ')}`);
                         }
-
-
-
 
                         // 2. Retrieve the materialized state.
                         const fullState = this.getAllValues();
@@ -739,9 +752,9 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     /**
      * Get a value from the sync engine.
      */
-    public get<T = unknown>(key: string): T | undefined {
+    public get<T = unknown>(key: string): T | null {
         if (this._state !== EngineState.ACTIVE) {
-            return this.preConnectState.get(key) as T | undefined;
+            return (this.preConnectState.get(key) as T) ?? null;
         }
 
         if (this.viewCache.has(key)) {
@@ -749,10 +762,10 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
 
         const raw = (this.core as any).get_raw_value(key);
-        if (raw === undefined || raw === null) return undefined;
+        if (raw === undefined || raw === null) return null;
 
         const binary = reconstructBinary(raw);
-        if (!binary) return undefined;
+        if (!binary) return null;
 
         const value = this.decodeBinary(key, binary);
         this.viewCache.set(key, value);
@@ -782,7 +795,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
     }
 
-    public getConfirmed<T = unknown>(key: string): T | undefined {
+    public getConfirmed<T = unknown>(key: string): T | null {
         return this.get<T>(key);
     }
 

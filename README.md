@@ -105,7 +105,7 @@ stateDiagram-v2
 
 | Use Case | Tool | Persisted? | Frequency |
 |----------|------|------------|-----------|
-| **Document State** | `client.set(key, val)` | ✅ Yes | Low-Medium (Save edits) |
+| **Document State** | `client.set(key, val)` / `delete(key)` | ✅ Yes | Low-Medium (Save edits) |
 | **Ephemeral Events** | `client.sendMessage(payload)` | ❌ No | High (Cursors, Typing) |
 | **Presence** | `useSyncSession().peers` | ❌ No | Low (Online list) |
 
@@ -157,6 +157,31 @@ function TodoItem({ id }) {
 
   return <div onClick={() => setTodo({ ...todo, done: !todo.done })} />;
 }
+```
+
+### Pattern C: Collections (The "Zen" Way)
+For managing lists of similar entities (e.g., Game Objects, Kanban Cards).
+
+```tsx
+// 1. Define Schema
+const EntitySchema = defineSchema({ x: 'number', y: 'number' });
+
+// 2. Use Collection
+const { client } = useSyncSession(...);
+// Auto-filters keys starting with 'entity_'
+const entities = client.collection('entity_', { schema: EntitySchema });
+
+// 3. React to Changes
+useEffect(() => {
+    // Zero-alloc iterator for performance
+    entities.on('change', () => {
+        console.log('Entities updated:', entities.size);
+    });
+}, [entities]);
+
+// 4. Create/Delete
+entities.add('entity_1', { x: 10, y: 20 });
+entities.delete('entity_1');
 ```
 
 ---

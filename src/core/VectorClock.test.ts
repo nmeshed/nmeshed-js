@@ -9,11 +9,14 @@ class MockCore {
     get_raw_value() { return null; }
 }
 
+const VALID_WS = '00000000-0000-0000-0000-000000000001';
+const VALID_PEER = '00000000-0000-0000-0000-000000000010';
+
 describe('SyncEngine Vector Clocks (Milestone 4)', () => {
     let engine: SyncEngine;
 
     beforeEach(() => {
-        engine = new SyncEngine('ws1', 'peerA');
+        engine = new SyncEngine(VALID_WS, VALID_PEER);
         (engine as any).core = new MockCore(); // Inject mock core
         (engine as any)._state = EngineState.ACTIVE; // Force active
     });
@@ -21,9 +24,9 @@ describe('SyncEngine Vector Clocks (Milestone 4)', () => {
     it('should track local vector clock on operations', () => {
         engine.set('foo', 'bar');
         const vector = engine.getLocalVector();
-        expect(vector.get('peerA')).toBeDefined();
+        expect(vector.get(VALID_PEER)).toBeDefined();
         // first op is index 0. Check if map is populated.
-        expect(vector.has('peerA')).toBe(true);
+        expect(vector.has(VALID_PEER)).toBe(true);
     });
 
     it('should calculate horizon correctly (min of all vectors)', () => {

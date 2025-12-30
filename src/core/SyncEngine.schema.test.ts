@@ -16,7 +16,7 @@ describe('SyncEngine Schema Fallback', () => {
     });
 
     beforeEach(() => {
-        engine = new SyncEngine('test-ws', 'test-peer');
+        engine = new SyncEngine('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000010');
         // Mock core to avoid WASM requirement in this unit test
         (engine as any).core = {
             apply_local_op: vi.fn((k, v, t) => new Uint8Array([1, 2, 3])),
