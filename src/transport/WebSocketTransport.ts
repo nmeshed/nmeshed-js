@@ -200,7 +200,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
         if (data instanceof ArrayBuffer) {
             // Browser ArrayBuffer
-            this.emit('message', new Uint8Array(data));
+            this.handleBinaryMessage(new Uint8Array(data));
         } else if (data instanceof Uint8Array) {
             // Already Uint8Array
             this.handleBinaryMessage(data);
@@ -252,8 +252,10 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
 
             if (status === 0) {
                 this.emit('peerJoin', userId);
+                this.emit('presence', { userId, status: 'online' });
             } else if (status === 1) {
                 this.emit('peerDisconnect', userId);
+                this.emit('presence', { userId, status: 'offline' });
             }
             return;
         } else if (msgType === 0x04) { // Signal (Ephemeral)

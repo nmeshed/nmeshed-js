@@ -33,3 +33,54 @@ export function packInit(data: Record<string, any> | Uint8Array = new Uint8Array
 export function packSync(snapshot?: Uint8Array): Uint8Array {
     return WireFactory.createSyncPacket(snapshot || new Uint8Array(0));
 }
+
+/**
+ * Packs an ephemeral signal as it would arrive from the relay.
+ */
+export function packSignal(payload: Uint8Array, senderId: string = 'system'): Uint8Array {
+    const senderBytes = new TextEncoder().encode(senderId);
+    const totalLen = 4 + senderBytes.length + 4 + payload.length;
+    const packet = new Uint8Array(1 + 4 + totalLen);
+    const view = new DataView(packet.buffer);
+
+    view.setUint8(0, 0x04); // MsgType::Signal
+    view.setUint32(1, totalLen, true);
+
+    let offset = 5;
+    view.setUint32(offset, senderBytes.length, true);
+    offset += 4;
+    packet.set(senderBytes, offset);
+    offset += senderBytes.length;
+
+    view.setUint32(offset, payload.length, true);
+    offset += 4;
+    packet.set(payload, offset);
+
+    return packet;
+}
+
+/**
+ * Packs a presence Join/Leave event.
+ */
+export function packPresence(userId: string, isJoin: boolean = true): Uint8Array {
+    const userBytes = new TextEncoder().encode(userId);
+    const payloadLen = 16 + 4 + userBytes.length + 1;
+    const packet = new Uint8Array(1 + 4 + payloadLen);
+    const view = new DataView(packet.buffer);
+
+    view.setUint8(0, 0x03); // MsgType::Presence
+    view.setUint32(1, payloadLen, true);
+
+    let offset = 5;
+    // Skip Workspace ID (16 bytes)
+    offset += 16;
+
+    view.setUint32(offset, userBytes.length, true);
+    offset += 4;
+    packet.set(userBytes, offset);
+    offset += userBytes.length;
+
+    packet[offset] = isJoin ? 0 : 1;
+
+    return packet;
+}

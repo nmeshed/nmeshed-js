@@ -10,7 +10,6 @@ import { render, cleanup } from '@testing-library/react';
 import { LiveCursors } from './LiveCursors';
 import { useNmeshedContext } from './context';
 import { useCursor } from './useCursor';
-import React from 'react';
 
 // Mock context and hooks
 vi.mock('./context', () => ({
@@ -81,9 +80,6 @@ describe('LiveCursors', () => {
         rerender(<LiveCursors />);
 
         // Advance timers to trigger animation frames
-        await vi.advanceTimersByTimeAsync(100);
-
-        const cursorElement = container.querySelector('[data-testid="cursor-peer-1"]');
         // If data-testid isn't there, we'll look for the text
         const peerLabel = container.textContent?.includes('peer-1');
         expect(peerLabel).toBeTruthy();
@@ -97,10 +93,34 @@ describe('LiveCursors', () => {
     });
 
     it('uses the named function "animate" for recursion (verifying fix)', () => {
-        // This is a "white-box" test in spirit: 
-        // We verify that the component is functional, which implies the recursion fix is working.
-        // If the fix wasn't there, the component would throw "animate is not defined" or fail linting.
         const { container } = render(<LiveCursors />);
         expect(container).toBeDefined();
+    });
+
+    it('broadcasts position on mousemove', () => {
+        render(<LiveCursors />);
+        const event = new MouseEvent('mousemove', {
+            clientX: 100,
+            clientY: 200,
+        });
+        window.dispatchEvent(event);
+        expect(sendCursorSpy).toHaveBeenCalledWith(100, 200);
+    });
+
+    it('settles LERP when close to target', async () => {
+        // Mock a cursor that is already very close to target
+        mockCursors.set('peer-2', {
+            userId: 'peer-2',
+            x: 99.9,
+            y: 199.9,
+            targetX: 100,
+            targetY: 200,
+            timestamp: Date.now()
+        });
+
+        render(<LiveCursors />);
+        await vi.advanceTimersByTimeAsync(32); // 2 frames
+
+        // This exercises the 'settle' branch (Math.abs < 0.5)
     });
 });

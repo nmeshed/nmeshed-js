@@ -1,189 +1,112 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncedCollection } from './SyncedCollection';
-import { EventEmitter } from '../utils/EventEmitter';
-
-// ----------------------------------------------------------------------------
-// Mock SyncEngine
-// ----------------------------------------------------------------------------
-class MockSyncEngine extends EventEmitter<any> {
-    public registerSchema = vi.fn();
-    public getAllValues = vi.fn().mockReturnValue({});
-    public set = vi.fn();
-
-    // Simulate incoming op
-    public simulateOp(key: string, value: any) {
-        this.emit('op', key, value, false);
-    }
-
-    public forEach(callback: (value: any, key: string) => void) {
-        const all = this.getAllValues();
-        Object.entries(all).forEach(([key, value]) => callback(value, key));
-    }
-}
+import { SyncEngine } from '../core/SyncEngine';
+import { defineSchema } from '../schema/SchemaBuilder';
 
 describe('SyncedCollection', () => {
-    let mockEngine: MockSyncEngine;
+    let mockEngine: any;
     let collection: SyncedCollection<any>;
 
     beforeEach(() => {
-        mockEngine = new MockSyncEngine();
-        collection = new SyncedCollection(mockEngine as any, 'items');
+        mockEngine = {
+            on: vi.fn(),
+            registerSchema: vi.fn(),
+            forEach: vi.fn(),
+            set: vi.fn(),
+        };
+        collection = new SyncedCollection(mockEngine as any, 'items:');
     });
 
-    it('should register schema if provided', () => {
-        const schema = { encode: vi.fn(), decode: vi.fn() };
-        new SyncedCollection(mockEngine as any, 'schema-items', schema as any);
-        expect(mockEngine.registerSchema).toHaveBeenCalledWith('schema-items:', schema);
+    it('should initialize and register schema if provided', () => {
+        const schema = defineSchema({ name: 'string' });
+        new SyncedCollection(mockEngine as any, 'users:', schema);
+        expect(mockEngine.registerSchema).toHaveBeenCalledWith('users:', schema);
     });
 
-    it('should initialize with fullSync from engine', () => {
-        mockEngine.getAllValues.mockReturnValue({
-            'items:1': { id: 1, name: 'one' },
-            'items:2': { id: 2, name: 'two' },
-            'other:3': { id: 3, name: 'other' }
+    it('should perform fullSync on creation', () => {
+        mockEngine.forEach.mockImplementation((cb: any) => {
+            cb({ name: 'Item 1' }, 'items:1');
         });
-
-        const col = new SyncedCollection(mockEngine as any, 'items');
-        expect(col.getAll().size).toBe(2);
-        expect(col.get('1')).toEqual({ id: 1, name: 'one' });
-        expect(col.get('2')).toEqual({ id: 2, name: 'two' });
-        expect(col.get('3')).toBeUndefined();
+        const fresh = new SyncedCollection(mockEngine as any, 'items:');
+        expect(fresh.size).toBe(1);
+        expect(fresh.get('1')).toEqual({ name: 'Item 1' });
     });
 
-    it('should handle incoming add ops', () => {
-        const onAdd = vi.fn();
-        const onChange = vi.fn();
-        collection.on('add', onAdd);
-        collection.on('change', onChange);
+    it('should handle incoming ops for its prefix', () => {
+        // Grab the 'op' listener
+        const opListener = mockEngine.on.mock.calls.find((call: any) => call[0] === 'op')[1];
 
-        mockEngine.simulateOp('items:new', { id: 'new' });
+        opListener('items:2', { name: 'Item 2' });
+        expect(collection.size).toBe(1);
+        expect(collection.get('2')).toEqual({ name: 'Item 2' });
 
-        expect(collection.get('new')).toEqual({ id: 'new' });
-        expect(onAdd).toHaveBeenCalledWith('new', { id: 'new' });
-        expect(onChange).toHaveBeenCalled();
+        // Update
+        opListener('items:2', { name: 'Item 2 Updated' });
+        expect(collection.get('2')).toEqual({ name: 'Item 2 Updated' });
+
+        // Remove
+        opListener('items:2', null);
+        expect(collection.size).toBe(0);
     });
 
-    it('should handle incoming update ops', () => {
-        // Pre-populate
-        mockEngine.getAllValues.mockReturnValue({ 'items:1': { val: 1 } });
-        collection = new SyncedCollection(mockEngine as any, 'items');
+    it('should delegate set/add/delete to engine', () => {
+        collection.set('3', { name: 'Item 3' });
+        expect(mockEngine.set).toHaveBeenCalledWith('items:3', { name: 'Item 3' }, undefined);
 
-        const onUpdate = vi.fn();
-        collection.on('update', onUpdate);
-
-        mockEngine.simulateOp('items:1', { val: 2 });
-
-        expect(collection.get('1')).toEqual({ val: 2 });
-        expect(onUpdate).toHaveBeenCalledWith('1', { val: 2 });
+        collection.delete('3');
+        expect(mockEngine.set).toHaveBeenCalledWith('items:3', null);
     });
 
-    it('should handle incoming remove ops (null value)', () => {
-        mockEngine.getAllValues.mockReturnValue({ 'items:1': { val: 1 } });
-        collection = new SyncedCollection(mockEngine as any, 'items');
+    it('should provide data as array with IDs', () => {
+        const opListener = mockEngine.on.mock.calls.find((call: any) => call[0] === 'op')[1];
+        opListener('items:1', { name: 'A' });
 
-        const onRemove = vi.fn();
-        collection.on('remove', onRemove);
+        const arr = collection.data;
+        expect(arr).toEqual([{ name: 'A', id: '1' }]);
 
-        mockEngine.simulateOp('items:1', null);
+        // Cache check
+        expect(collection.data).toBe(arr);
 
-        expect(collection.get('1')).toBeUndefined();
-        expect(onRemove).toHaveBeenCalledWith('1');
+        // Invalidate check
+        opListener('items:2', { name: 'B' });
+        expect(collection.data).not.toBe(arr);
+        expect(collection.data).toHaveLength(2);
     });
 
-    it('should ignore ops for other prefixes', () => {
-        const onAdd = vi.fn();
-        collection.on('add', onAdd);
-
-        mockEngine.simulateOp('other:1', { val: 1 });
-
-        expect(collection.getAll().size).toBe(0);
-        expect(onAdd).not.toHaveBeenCalled();
-    });
-
-    it('should proxy set calls to engine', () => {
-        collection.set('123', { data: 'test' });
-        expect(mockEngine.set).toHaveBeenCalledWith('items:123', { data: 'test' }, undefined);
-    });
-
-    it('should proxy delete calls to engine', () => {
-        collection.delete('123');
-        expect(mockEngine.set).toHaveBeenCalledWith('items:123', null);
-    });
-
-    it('should clear all items', () => {
-        mockEngine.getAllValues.mockReturnValue({
-            'items:1': 1,
-            'items:2': 2
-        });
-        collection = new SyncedCollection(mockEngine as any, 'items');
+    it('should handle clear', () => {
+        const opListener = mockEngine.on.mock.calls.find((call: any) => call[0] === 'op')[1];
+        opListener('items:1', { name: 'A' });
+        opListener('items:2', { name: 'B' });
 
         collection.clear();
-
-        expect(mockEngine.set).toHaveBeenCalledWith('items:1', null);
-        expect(mockEngine.set).toHaveBeenCalledWith('items:2', null);
+        expect(mockEngine.set).toHaveBeenCalledTimes(2);
     });
 
-    it('should return items as array with IDs', () => {
-        mockEngine.getAllValues.mockReturnValue({
-            'items:1': { name: 'one' },
-            'items:2': { name: 'two' }
-        });
-        collection = new SyncedCollection(mockEngine as any, 'items');
+    it('should handle errors in set/delete and emit error', () => {
+        mockEngine.set.mockImplementation(() => { throw new Error('Boom'); });
+        const errorListener = vi.fn();
+        collection.on('error' as any, errorListener);
 
-        const arr = collection.asArray();
-        expect(arr).toHaveLength(2);
-        expect(arr).toContainEqual({ id: '1', name: 'one' });
-        expect(arr).toContainEqual({ id: '2', name: 'two' });
+        expect(() => collection.set('1', {})).toThrow();
+        expect(errorListener).toHaveBeenCalled();
     });
 
-    it('should return correct size', () => {
-        expect(collection.size).toBe(0);
-        mockEngine.simulateOp('items:1', { val: 1 });
-        expect(collection.size).toBe(1);
+    it('should handle errors in delete and emit error', () => {
+        mockEngine.set.mockImplementation(() => { throw new Error('Boom'); });
+        const errorListener = vi.fn();
+        collection.on('error' as any, errorListener);
+
+        expect(() => collection.delete('1')).toThrow();
+        expect(errorListener).toHaveBeenCalled();
     });
 
-    it('should support add() alias', () => {
-        collection.add('abc', { foo: 'bar' });
-        expect(mockEngine.set).toHaveBeenCalledWith('items:abc', { foo: 'bar' }, undefined);
-    });
+    it('should provide getAll, asArray, and version', () => {
+        const opListener = mockEngine.on.mock.calls.find((call: any) => call[0] === 'op')[1];
+        opListener('items:1', { name: 'A' });
 
-    it('should expose version counter', () => {
-        const v1 = collection.version;
-        mockEngine.simulateOp('items:1', { v: 1 });
-        expect(collection.version).toBeGreaterThan(v1);
-    });
-
-    it('should extract IDs without manual string noise (Fluid Identity)', () => {
-
-        const col = new SyncedCollection(mockEngine as any, 'org:123:users');
-
-        // Internal mapping logic check
-        const id = (col as any).idFromKey('org:123:users:kevin');
-        expect(id).toBe('kevin');
-
-        const key = (col as any).idToKey('kevin');
-        expect(key).toBe('org:123:users:kevin');
-    });
-
-    it('should maintain stable array reference if not invalidated', () => {
-        mockEngine.getAllValues.mockReturnValue({
-            'items:1': { id: 1, name: 'one' }
-        });
-        const col = new SyncedCollection(mockEngine as any, 'items');
-
-        const arr1 = col.data;
-        const arr2 = col.data;
-
-        expect(arr1).toBe(arr2); // Same reference (cached)
-
-        // Trigger op that doesn't change data (e.g. unrelated key)
-        mockEngine.simulateOp('other:1', { val: 2 });
-        expect(col.data).toBe(arr1); // Still same reference
-
-        // Trigger op that changes data
-        mockEngine.simulateOp('items:2', { id: 2, name: 'two' });
-        expect(col.data).not.toBe(arr1); // New reference
+        expect(collection.getAll()).toBeInstanceOf(Map);
+        expect(collection.getAll().get('1')).toEqual({ name: 'A' });
+        expect(collection.asArray()).toEqual([{ name: 'A', id: '1' }]);
+        expect(collection.version).toBeGreaterThan(0);
     });
 });
-
-

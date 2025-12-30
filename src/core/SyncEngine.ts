@@ -588,22 +588,26 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                     this.logger.error('[SyncEngine] CORE apply_vessel (Op) FAILED:', e);
                 }
             } else if (msgType === MsgType.Sync) {
-                try {
-                    const syncPacket = packet.sync();
-                    if (syncPacket) {
-                        // 1. Snapshot Application (Late Joiner w/ Payload)
+                const syncPacket = packet.sync();
+                if (syncPacket) {
+                    // 1. Core Application
+                    try {
                         const snapshot = syncPacket.snapshotArray();
                         if (snapshot && snapshot.length > 0) {
                             this.logger.info(`[SyncEngine] Received SNAPSHOT (${snapshot.length} bytes). Applying full state...`);
-                            (this.core as any).apply_vessel(bytes); // Or specific snapshot method
+                            (this.core as any).apply_vessel(bytes);
                             this.viewCache.clear();
                             this.emit('snapshot');
                         } else {
                             // Standard Sync Packet
                             (this.core as any).apply_vessel(bytes);
                         }
+                    } catch (e) {
+                        this.logger.error('[SyncEngine] CORE apply_vessel (Sync) FAILED (continuing to SDK logic):', e);
+                    }
 
-                        // 2. Vector Clock Update (Milestone 4)
+                    // 2. SDK-level Vector Clock Update (Milestone 4)
+                    try {
                         const currentVector = syncPacket.currentVector();
                         if (currentVector) {
                             const vectorMap = new Map<string, bigint>();
@@ -616,21 +620,13 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                                     if (pId) vectorMap.set(pId, seq);
                                 }
                             }
-                            // We don't have explicit 'sender' ID in SyncPacket root, 
-                            // but we can infer or just merge into a global view if we treat this as "World State".
-                            // Ideally we map this vector to the sender. 
-                            // For now, if we assume P2P/Server sends their OWN vector, we should really validly ID them.
-                            // But since we are updating 'remoteVectors', which is Map<PeerId, Vector>, we need the Key.
-                            // Let's assume the transport tells us, OR for now, we just incorporate the knowledge into the Horizon calculation
-                            // by adding a "Remote Aggregate" vector?
-
-                            // Simplification: In Server-Mediated topolgy, the Server sends the "Global" Vector.
-                            // So we update the 'server' vector.
+                            // In Server-Mediated topology, the Server sends the "Global" Vector.
+                            // We update the 'server' entry which represents the aggregate horizon.
                             this.updateRemoteVector('server', vectorMap);
                         }
+                    } catch (e) {
+                        this.logger.error('[SyncEngine] SDK Vector Update FAILED:', e);
                     }
-                } catch (e) {
-                    this.logger.error('[SyncEngine] CORE apply_vessel (Sync) FAILED:', e);
                 }
             }
 
@@ -691,6 +687,8 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 }
             } else if (msgType === MsgType.ColumnarBatch) {
                 this.processColumnarBatch(packet.batch()!);
+            } else {
+                this.logger.warn(`[SyncEngine] Unknown MsgType: ${msgType}`);
             }
         } catch (e) {
             this.logger.error('[SyncEngine] applyRawMessage Parse FAILED:', e);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { defineSchema, SchemaSerializer } from './SchemaBuilder';
+import { encodeValue, decodeValue, isBinary } from '../codec';
 
 describe('SchemaBuilder', () => {
     describe('defineSchema', () => {
@@ -229,6 +230,50 @@ describe('SchemaBuilder', () => {
             // Null/undefined (should encode to default/empty)
             const buf = SchemaSerializer.encodeValue(arrayType, null as any);
             expect(SchemaSerializer.decodeValue(arrayType, buf)).toEqual([]);
+        });
+    });
+
+    describe('codec.ts specific gaps', () => {
+        it('throws for unsupported types', () => {
+            expect(() => encodeValue(() => { })).toThrow(/FBC cannot encode type: function/);
+            expect(() => encodeValue(Symbol('test'))).toThrow(/FBC cannot encode type: symbol/);
+        });
+
+        it('throws for excessive recursion depth during encoding', () => {
+            const root: any[] = [];
+            let curr = root;
+            for (let i = 0; i < 40; i++) {
+                const next: any[] = [];
+                curr.push(next);
+                curr = next;
+            }
+            expect(() => encodeValue(root)).toThrow(/Max recursion depth/);
+        });
+
+        it('throws for excessive recursion depth during decoding', () => {
+            // Manually create a deeply nested TAG_ARRAY buffer
+            // TAG_ARRAY (5), Count (uint32: 1), TAG_ARRAY (5), ...
+            const TAG_ARRAY = 5;
+            const size = 50 * 5; // 50 levels, 5 bytes per level (tag + uint32)
+            const buf = new Uint8Array(size + 1);
+            let offset = 0;
+            for (let i = 0; i < 50; i++) {
+                buf[offset++] = TAG_ARRAY;
+                // uint32(1) in little endian
+                buf[offset++] = 1;
+                buf[offset++] = 0;
+                buf[offset++] = 0;
+                buf[offset++] = 0;
+            }
+            buf[offset] = 0; // TAG_NULL at the end
+
+            expect(() => decodeValue(buf)).toThrow(/Max recursion depth/);
+        });
+
+        it('isBinary works for Uint8Array and ArrayBuffer', () => {
+            expect(isBinary(new Uint8Array())).toBe(true);
+            expect(isBinary(new ArrayBuffer(0))).toBe(true);
+            expect(isBinary([])).toBe(false);
         });
     });
 });

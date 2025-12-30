@@ -134,17 +134,11 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
 
         // Subscribe to status changes
         const unsubscribeStatus = currentClient.onStatusChange((newStatus) => {
-            if (!isMounted) return;
-            setStatus(newStatus);
-
-            if (newStatus === 'READY') {
-                onConnect?.();
-            } else if (newStatus === 'DISCONNECTED') {
-                onDisconnect?.();
-            } else if (newStatus === 'ERROR') {
-                onError?.(new Error('Connection error'));
-            }
+            if (isMounted) setStatus(newStatus);
         });
+
+        // Effect for callbacks to ensure they see the updated state
+        // (Handled by the dependency array of another useEffect or just split it)
 
         // Subscribe to queue changes
         const unsubscribeQueue = currentClient.onQueueChange((size) => {
@@ -164,6 +158,11 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
             }
         });
 
+        // Subscribe to errors
+        const unsubscribeError = currentClient.on('error', (err) => {
+            if (isMounted) onError?.(err instanceof Error ? err : new Error(String(err)));
+        });
+
         // Connect
         currentClient.connect().catch((error) => {
             if (isMounted) onError?.(error);
@@ -175,10 +174,27 @@ export function useNmeshed(options: UseNmeshedOptions): UseNmeshedReturn {
             unsubscribeStatus();
             unsubscribeQueue();
             unsubscribeMessage();
+            unsubscribeError();
             currentClient.disconnect();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // Only run on mount
+
+    // Standalone effect for callbacks to ensure they always see updated 'status'
+    const lastNotifiedStatus = useRef<ConnectionStatus | null>(null);
+    useEffect(() => {
+        if (status === lastNotifiedStatus.current) return;
+        lastNotifiedStatus.current = status;
+
+        if (status === 'READY') {
+            onConnect?.();
+        } else if (status === 'DISCONNECTED') {
+            onDisconnect?.();
+        } else if (status === 'ERROR') {
+            onError?.(new Error('Connection error'));
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [status, onConnect, onDisconnect, onError]);
 
     // Memoized setters
     const set = useCallback((key: string, value: unknown) => {

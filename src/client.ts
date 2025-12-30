@@ -102,6 +102,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public readonly config: NMeshedConfig;
     private logger: Logger;
     private isDestroyed = false;
+    private _status: TransportStatus = 'IDLE';
     /** Registry to ensure singleton SyncedCollection instances per prefix */
     private _collections = new Map<string, SyncedCollection<any>>();
     private _latestState: Record<string, any> | null = null;
@@ -225,12 +226,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         });
 
 
-        this.transport.on('status', (s) => {
-            if (s === 'CONNECTED') {
-                this.flushQueue();
-            }
-            this.emit('status', s === 'CONNECTED' ? 'READY' : s);
-        });
+        this.transport.on('status', (s) => this.transitionTo(s));
         this.transport.on('ack' as any, (count: number) => {
             this.engine.shiftQueue(count);
         });
@@ -281,6 +277,21 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
             type: 'op',
             payload: { key: k, value: v, isOptimistic: opt, timestamp: Date.now() }
         }));
+    }
+
+    private transitionTo(newStatus: TransportStatus) {
+        if (this._status === newStatus) return;
+        this._status = newStatus;
+
+        const clientStatus = newStatus === 'CONNECTED' ? 'READY' : newStatus;
+
+        if (newStatus === 'CONNECTED') {
+            this.flushQueue();
+            this.emit('status', 'READY');
+            this.emit('connected' as any);
+        } else {
+            this.emit('status', clientStatus as any);
+        }
     }
 
     private flushQueue() {
@@ -356,7 +367,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.connectPromise = null;
         this.transport.disconnect();
         this.engine.stop();
-        this.emit('status', 'IDLE');
+        this.transitionTo('IDLE');
     }
 
 
@@ -615,7 +626,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     public setStatus(s: TransportStatus): void {
-        this.emit('status', s);
+        this.transitionTo(s);
     }
 
     public getStatus(): TransportStatus {

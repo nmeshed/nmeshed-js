@@ -10,7 +10,7 @@ import {
     setupTestMocks,
     teardownTestMocks
 } from './test-utils/mocks';
-import { packOp, packInit } from './test-utils/wire-utils';
+import { packOp, packInit, packSync, packSignal, packPresence } from './test-utils/wire-utils';
 import * as flatbuffers from 'flatbuffers';
 import { WirePacket } from './schema/nmeshed/wire-packet';
 import { MsgType } from './schema/nmeshed/msg-type';
@@ -1572,6 +1572,70 @@ describe('NMeshedClient', () => {
 
             expect(errorSpy).toHaveBeenCalled();
             errorSpy.mockRestore();
+        });
+    });
+
+    describe('Zen Coverage Gaps', () => {
+        it('bubbles up presence events from transport', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            (client as any)._booted = true;
+            const presenceListener = vi.fn();
+            const joinListener = vi.fn();
+
+            client.on('presence', presenceListener);
+            client.on('peerJoin', joinListener);
+
+            // Use the centralized helper representing a real Join event
+            const bytes = packPresence('peer-X', true);
+            (client.transport as any).handleRawMessage({ data: bytes.buffer });
+
+            expect(presenceListener).toHaveBeenCalled();
+            expect(joinListener).toHaveBeenCalledWith('peer-X');
+        });
+
+        it('bubbles up ephemeral events from transport', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            (client as any)._booted = true;
+            const ephemeralListener = vi.fn();
+            client.on('ephemeral', ephemeralListener);
+
+            const payload = new Uint8Array([1, 2, 3]);
+            // Use the centralized helper representing an incoming Signal
+            const bytes = packSignal(payload, 'peer-Y');
+            (client.transport as any).handleRawMessage({ data: bytes.buffer });
+
+            expect(ephemeralListener).toHaveBeenCalledWith(payload, 'peer-Y');
+        });
+
+        it('handles sendMessage with ArrayBuffer', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const connectPromise = client.connect();
+
+            await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+            const ws = MockWebSocket.instances[0];
+            ws.simulateOpen();
+            ws.simulateBinaryMessage(packInit({}));
+
+            await connectPromise;
+
+            const buffer = new ArrayBuffer(4);
+            const view = new Uint8Array(buffer);
+            view.set([1, 2, 3, 4]);
+
+            client.sendMessage(buffer);
+            expect(ws.send).toHaveBeenCalled();
+
+            const sent = (ws.send as any).mock.calls[0][0];
+            expect(sent).toBeInstanceOf(Uint8Array);
+            // Protocol check: 0x04 (Signal) + 4-byte LE length (4) + payload
+            expect(Array.from(sent)).toEqual([0x04, 4, 0, 0, 0, 1, 2, 3, 4]);
+        });
+
+        it('provides collection alias', () => {
+            const client = new NMeshedClient(defaultConfig);
+            const coll = client.collection('test:');
+            expect(coll).toBeDefined();
+            expect(client.collection('test:')).toBe(coll); // Singleton check
         });
     });
 });
