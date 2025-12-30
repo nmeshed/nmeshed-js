@@ -1,7 +1,8 @@
 /**
  * Error types for nMeshed SDK.
  * 
- * Using typed errors allows consumers to handle specific failure modes.
+ * Using typed errors allows consumers to handle specific failure modes 
+ * with structural precision.
  */
 
 /**
@@ -65,8 +66,6 @@ export class MessageError extends NMeshedError {
     }
 }
 
-// import { MeshErrorCode } from './mesh/types';
-
 /**
  * Thrown when the operation queue exceeds capacity.
  */
@@ -82,17 +81,21 @@ export class QueueOverflowError extends NMeshedError {
 }
 
 /**
- * Thrown by the Mesh module for P2P or signaling failures.
+ * Thrown when an operation is attempted on a destroyed client.
  */
-/*
-export class MeshError extends NMeshedError {
-    constructor(
-        public readonly code: string, // MeshErrorCode
-        message: string,
-        public readonly diagnostics?: Record<string, unknown>
-    ) {
-        super(message, code);
-        this.name = 'MeshError';
+export class ClientError extends NMeshedError {
+    constructor(message: string) {
+        super(message, 'CLIENT_ERROR');
+        this.name = 'ClientError';
     }
 }
-*/
+
+/**
+ * Thrown when schema registration or decoding fails.
+ */
+export class SchemaError extends NMeshedError {
+    constructor(message: string) {
+        super(message, 'SCHEMA_ERROR');
+        this.name = 'SchemaError';
+    }
+}

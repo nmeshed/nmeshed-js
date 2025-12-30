@@ -1503,7 +1503,39 @@ describe('NMeshedClient', () => {
             expect(() => client.onReady('string' as any)).toThrow('Handler must be a function');
         });
 
-        it('fires immediately if client already has state', async () => {
+        it('resolves immediately if client already has state (Promise)', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            (client as any)._latestState = { ok: true };
+            const state = await client.onReady();
+            expect(state).toEqual({ ok: true });
+        });
+
+        it('executes callback when client becomes ready later', async () => {
+            const client = new NMeshedClient(defaultConfig);
+            const handler = vi.fn();
+            client.onReady(handler);
+
+            expect(handler).not.toHaveBeenCalled();
+
+            (client as any).emit('ready', { ok: true });
+            expect(handler).toHaveBeenCalledWith({ ok: true });
+        });
+
+        it('resolves Promise when client becomes ready', async () => {
+
+            const client = new NMeshedClient(defaultConfig);
+            const readyPromise = client.onReady();
+
+            // Simulate readiness
+            (client as any)._latestState = { ok: true };
+            (client as any).emit('ready', { ok: true });
+
+            const state = await readyPromise;
+            expect(state).toEqual({ ok: true });
+        });
+
+        it('resolves immediately if client already has state', async () => {
+
             const client = new NMeshedClient(defaultConfig);
             const connectPromise = client.connect();
             await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));

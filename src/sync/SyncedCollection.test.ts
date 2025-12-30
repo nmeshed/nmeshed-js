@@ -54,7 +54,7 @@ describe('SyncedCollection', () => {
         mockEngine.simulateOp('items:new', { id: 'new' });
 
         expect(collection.get('new')).toEqual({ id: 'new' });
-        expect(onAdd).toHaveBeenCalledWith('items:new', { id: 'new' });
+        expect(onAdd).toHaveBeenCalledWith('new', { id: 'new' });
         expect(onChange).toHaveBeenCalled();
     });
 
@@ -69,7 +69,7 @@ describe('SyncedCollection', () => {
         mockEngine.simulateOp('items:1', { val: 2 });
 
         expect(collection.get('1')).toEqual({ val: 2 });
-        expect(onUpdate).toHaveBeenCalledWith('items:1', { val: 2 });
+        expect(onUpdate).toHaveBeenCalledWith('1', { val: 2 });
     });
 
     it('should handle incoming remove ops (null value)', () => {
@@ -82,7 +82,7 @@ describe('SyncedCollection', () => {
         mockEngine.simulateOp('items:1', null);
 
         expect(collection.get('1')).toBeUndefined();
-        expect(onRemove).toHaveBeenCalledWith('items:1');
+        expect(onRemove).toHaveBeenCalledWith('1');
     });
 
     it('should ignore ops for other prefixes', () => {
@@ -117,4 +117,48 @@ describe('SyncedCollection', () => {
         expect(mockEngine.set).toHaveBeenCalledWith('items:1', null);
         expect(mockEngine.set).toHaveBeenCalledWith('items:2', null);
     });
+
+    it('should return items as array with IDs', () => {
+        mockEngine.getAllValues.mockReturnValue({
+            'items:1': { name: 'one' },
+            'items:2': { name: 'two' }
+        });
+        collection = new SyncedCollection(mockEngine as any, 'items');
+
+        const arr = collection.asArray();
+        expect(arr).toHaveLength(2);
+        expect(arr).toContainEqual({ id: '1', name: 'one' });
+        expect(arr).toContainEqual({ id: '2', name: 'two' });
+    });
+
+    it('should return correct size', () => {
+        expect(collection.size).toBe(0);
+        mockEngine.simulateOp('items:1', { val: 1 });
+        expect(collection.size).toBe(1);
+    });
+
+    it('should support add() alias', () => {
+        collection.add('abc', { foo: 'bar' });
+        expect(mockEngine.set).toHaveBeenCalledWith('items:abc', { foo: 'bar' }, undefined);
+    });
+
+    it('should expose version counter', () => {
+        const v1 = collection.version;
+        mockEngine.simulateOp('items:1', { v: 1 });
+        expect(collection.version).toBeGreaterThan(v1);
+    });
+
+    it('should extract IDs without manual string noise (Fluid Identity)', () => {
+
+        const col = new SyncedCollection(mockEngine as any, 'org:123:users');
+
+        // Internal mapping logic check
+        const id = (col as any).idFromKey('org:123:users:kevin');
+        expect(id).toBe('kevin');
+
+        const key = (col as any).idToKey('kevin');
+        expect(key).toBe('org:123:users:kevin');
+    });
 });
+
+

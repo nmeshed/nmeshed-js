@@ -53,10 +53,8 @@ export interface NMeshedProviderProps {
     /**
      * Optional callback for status changes.
      */
-    /**
-     * Optional callback for status changes.
-     */
     onStatusChange?: (status: ConnectionStatus) => void;
+
 
     // --- Zen Convenience Props (Alternative to `config` object) ---
     /** @deprecated Use this or `config`. Auto-configures for this workspace. */

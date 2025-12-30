@@ -22,9 +22,9 @@ const createMockClient = () => {
             listeners.get(event)?.forEach(h => h(...args));
         },
         sendEphemeral: vi.fn(),
-        sendEphemeral: vi.fn(),
         sendMessage: vi.fn(),
     };
+
 };
 
 describe('CursorManager', () => {

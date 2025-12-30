@@ -6,9 +6,10 @@ export interface CollectionEvents<T> {
     add: [string, T];
     remove: [string];
     update: [string, T];
-    change: [Map<string, T>];
+    change: [Map<string, T>?]; // Optional for Zen performance
     [key: string]: any[];
 }
+
 
 /**
  * SyncedCollection: High-Level Entity Orchestration.
@@ -22,6 +23,8 @@ export interface CollectionEvents<T> {
  */
 export class SyncedCollection<T extends any> extends EventEmitter<CollectionEvents<T>> {
     private items = new Map<string, T>();
+    private _cachedArray: (T & { id: string })[] | null = null;
+    private _version = 0;
     private engine: SyncEngine;
     private prefix: string;
     private schema?: Schema<any>;
@@ -51,65 +54,132 @@ export class SyncedCollection<T extends any> extends EventEmitter<CollectionEven
 
     private fullSync() {
         const all = this.engine.getAllValues();
+        let changed = false;
         for (const [key, value] of Object.entries(all)) {
             if (key.startsWith(this.prefix)) {
-                this.items.set(key, value as T);
+                const id = this.idFromKey(key);
+                this.items.set(id, value as T);
+                changed = true;
             }
         }
-        this.emit('change', new Map(this.items));
+        if (changed) {
+            this.invalidate();
+            this.emit('change');
+        }
+    }
+
+    private invalidate() {
+        this._cachedArray = null;
+        this._version++;
+    }
+
+    private idFromKey(key: string): string {
+        return key.substring(this.prefix.length);
+    }
+
+    private idToKey(id: string): string {
+        return this.prefix + id;
     }
 
     private handleOp(key: string, value: unknown) {
+        const id = this.idFromKey(key);
+        this.invalidate(); // Bone-Deep Zen: Invalidate the pointer immediately
+
         if (value === null || value === undefined) {
-            if (this.items.has(key)) {
-                this.items.delete(key);
-                this.emit('remove', key);
-                this.emit('change', new Map(this.items));
+            if (this.items.has(id)) {
+                this.items.delete(id);
+                this.emit('remove', id);
+                this.emit('change');
             }
         } else {
-            const isNew = !this.items.has(key);
-            this.items.set(key, value as T);
+            const isNew = !this.items.has(id);
+            this.items.set(id, value as T);
             if (isNew) {
-                this.emit('add', key, value as T);
+                this.emit('add', id, value as T);
             } else {
-                this.emit('update', key, value as T);
+                this.emit('update', id, value as T);
             }
-            this.emit('change', new Map(this.items));
+            this.emit('change');
         }
+    }
+
+    /**
+     * Action through Inaction: Rebuild the array ONLY when the UI requests it.
+     */
+    public get data(): (T & { id: string })[] {
+        if (!this._cachedArray) {
+            this._cachedArray = Array.from(this.items.entries()).map(([id, value]) => ({
+                ...(value as any),
+                id
+            }));
+        }
+        return this._cachedArray;
     }
 
     /**
      * Add or update an item in the collection.
      */
+    /**
+     * Internal implementation of the 'set' operation with defensive guard.
+     */
     public set(id: string, value: T) {
-        const key = this.prefix + id;
-        this.engine.set(key, value, this.schema as any);
+        try {
+            const key = this.idToKey(id);
+            this.engine.set(key, value, this.schema as any);
+        } catch (e) {
+            this.emit('error' as any, e);
+            throw e;
+        }
     }
 
     /**
-     * Remove an item from the collection.
+     * Alias for set().
      */
-    public delete(id: string) {
-        const key = this.prefix + id;
-        this.engine.set(key, null);
+    public add(id: string, value: T) {
+        this.set(id, value);
     }
 
+    /**
+     * Removals with defensive guard.
+     */
+    public delete(id: string) {
+        try {
+            const key = this.idToKey(id);
+            this.engine.set(key, null);
+        } catch (e) {
+            this.emit('error' as any, e);
+            throw e;
+        }
+    }
+
+
     public get(id: string): T | undefined {
-        return this.items.get(this.prefix + id);
+        return this.items.get(id);
     }
 
     public getAll(): Map<string, T> {
         return new Map(this.items);
     }
 
-    public asArray(): T[] {
-        return Array.from(this.items.values());
+    public asArray(): (T & { id: string })[] {
+        return this.data;
     }
 
     public clear() {
-        for (const key of this.items.keys()) {
-            const id = key.replace(this.prefix, '');
+        for (const id of this.items.keys()) {
             this.delete(id);
         }
     }
+
+    public get size(): number {
+        return this.items.size;
+    }
+
+    public get version(): number {
+        return this._version;
+    }
 }
+
+
+
+

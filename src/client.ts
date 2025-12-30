@@ -102,7 +102,11 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public readonly config: NMeshedConfig;
     private logger: Logger;
     private isDestroyed = false;
+    /** Registry to ensure singleton SyncedCollection instances per prefix */
+    private _collections = new Map<string, SyncedCollection<any>>();
     private _latestState: Record<string, any> | null = null;
+
+
 
     /**
      * Creates a client instance pre-configured for local development.
@@ -198,17 +202,30 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     private setupBindings() {
-        this.transport.on('message', (bytes) => this.engine.applyRawMessage(bytes));
+        this.transport.on('message', (bytes) => {
+            try {
+                this.engine.applyRawMessage(bytes);
+            } catch (e) {
+                this.logger.error('Failed to apply raw message to SyncEngine:', e);
+                this.emit('error', e);
+            }
+        });
         // Backward compatibility for legacy transports
-        this.transport.on('sync' as any, (bytes: Uint8Array) => this.engine.applyRawMessage(bytes));
+        this.transport.on('sync' as any, (bytes: Uint8Array) => {
+            try {
+                this.engine.applyRawMessage(bytes);
+            } catch (e) {
+                this.logger.error('Failed to apply raw sync message:', e);
+            }
+        });
         this.engine.on('ready', (state: any) => {
-            // Latching: Store the truth.
             this._latestState = state;
-
             // Re-emit as 'message' with type 'init' and full state for legacy/generic listeners
             this.emit('message', { type: 'init', data: state } as any);
             this.emit('ready' as any, state);
         });
+
+
         this.transport.on('status', (s) => {
             if (s === 'CONNECTED') {
                 this.flushQueue();
@@ -338,23 +355,11 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
     public disconnect(): void {
         this.connectPromise = null;
-        // The following lines (this.status, this.notifyStatusListeners, this.reconnectTimeout)
-        // are not present in the original document's class definition.
-        // To maintain faithfulness and avoid introducing undeclared properties,
-        // they are commented out or omitted.
-        // this.status = 'DISCONNECTING';
-        // this.notifyStatusListeners('DISCONNECTING');
-
-        // if (this.reconnectTimeout) {
-        //     clearTimeout(this.reconnectTimeout);
-        //     this.reconnectTimeout = null;
-        // }
-
         this.transport.disconnect();
         this.engine.stop();
-        // this.status = 'IDLE';
-        // this.notifyStatusListeners('IDLE');
+        this.emit('status', 'IDLE');
     }
+
 
     public destroy(): void {
         this.isDestroyed = true;
@@ -455,16 +460,27 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     public getCollection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
-        return new SyncedCollection<T>(this.engine, prefix, schema);
+        const normalizedPrefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
+        if (!this._collections.has(normalizedPrefix)) {
+            const collection = new SyncedCollection<T>(this.engine, normalizedPrefix, schema);
+            this._collections.set(normalizedPrefix, collection);
+        }
+        return this._collections.get(normalizedPrefix)!;
     }
 
-    public getSyncedMap(prefix: string): any {
-        if (!(this as any)._maps) (this as any)._maps = new Map();
-        if (!(this as any)._maps.has(prefix)) {
-            (this as any)._maps.set(prefix, this.getCollection(prefix));
-        }
-        return (this as any)._maps.get(prefix);
+
+    /**
+     * Alias for getCollection() to match the Zen API.
+     */
+    public collection<T = any>(prefix: string, schema?: Schema<any>): SyncedCollection<T> {
+        return this.getCollection(prefix, schema);
     }
+
+
+    public getSyncedMap(prefix: string): any {
+        return this.getCollection(prefix);
+    }
+
 
     public subscribe(handler: (msg: NMeshedMessage) => void) {
         if (typeof handler !== 'function') throw new Error('Handler must be a function');
@@ -498,36 +514,48 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
     /**
      * Zen Pattern: Latching Signal for Readiness.
-     * Executes the callback immediately if the client is already ready/hydrated.
-     * Otherwise, waits for the 'ready' event.
+     * 
+     * If a handler is provided: Executes immediately if ready, or subscribes to the next 'ready' event.
+     * If no handler is provided: Returns a Promise that resolves when the client is ready.
+     * 
+     * @example
+     * await client.onReady();
+     * // Or
+     * client.onReady((state) => console.log('Ready!', state));
      */
-    public onReady(handler: (state: Record<string, any>) => void): () => void {
-        if (typeof handler !== 'function') throw new Error('Handler must be a function');
+    public onReady(handler?: (state: Record<string, any>) => void): any {
+        if (handler !== undefined && typeof handler !== 'function') {
+            throw new Error('Handler must be a function');
+        }
 
-        // If we already have the state, fire immediately (Latching)
+        if (!handler) {
+            return new Promise((resolve) => {
+                if (this._latestState) {
+                    resolve(this._latestState);
+                } else {
+                    this.once('ready' as any, (state) => resolve(state));
+                }
+            });
+        }
+
+        // Latching behavior for callbacks
         if (this._latestState) {
             try {
                 handler(this._latestState);
             } catch (e) {
-                console.error('[NMeshedClient] Error in onReady immediate callback:', e);
+                this.logger.error('[NMeshedClient] Error in onReady immediate callback:', e);
             }
         }
 
-        // Always subscribe for future updates (re-hydration / re-connect)
         const wrapper = (state: Record<string, any>) => {
-            // Avoid double-calling if we just called it immediately?
-            // Actually, if 'ready' fires AGAIN (re-sync), we want to call it.
-            // But 'ready' event sets _latestState just before emitting.
-            // So if we subscribe here, we will get the NEXT event.
-            // But if we are subscribing, we might get the event we just processed?
-            // No, EventEmitter emits to registered listeners. If we register now, we catch future events.
-            // If we just fired immediately, we don't want to fire again for the *same* event context.
-            // But since 'ready' is emitted by SyncEngine, if it happens again, it's a new state.
             handler(state);
         };
 
         return this.on('ready' as any, wrapper);
     }
+
+
+
 
     public onQueueChange(handler: (size: number) => void) {
         const h = () => {
