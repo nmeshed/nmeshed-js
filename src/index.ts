@@ -24,6 +24,8 @@ export * from './react/context';
 export * from './react/useStore';
 export * from './react/usePresence';
 export * from './react/useSyncSession';
+export { useNMeshedClient, useOptionalNMeshedClient } from './react/useNMeshedClient';
+
 
 export { NMeshedClient } from './client';
 
@@ -59,3 +61,11 @@ export { SystemSchemas, TickSyncSchema, PresenceSchema } from './schema/SystemSc
 
 // Debug Utilities (development only)
 export { debugPacket, hexDump, tryParseAsJson, formatBytes, startTimer } from './debug';
+
+// Auth Adapters (for third-party auth integrations)
+export type { AuthProvider } from './auth/AuthProvider';
+export { StaticAuthProvider, CallbackAuthProvider } from './auth/AuthProvider';
+export { clerkAuth, ClerkAdapter } from './auth/ClerkAdapter';
+export { auth0Auth, Auth0Adapter } from './auth/Auth0Adapter';
+export { supabaseAuth, SupabaseAdapter } from './auth/SupabaseAdapter';
+

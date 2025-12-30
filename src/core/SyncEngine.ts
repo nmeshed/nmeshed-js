@@ -3,8 +3,7 @@ import * as wasmModule from '../wasm/nmeshed_core';
 import { EventEmitter } from '../utils/EventEmitter';
 import { encodeValue, decodeValue } from '../codec';
 import { saveQueue, loadQueue } from '../persistence';
-import type { Schema } from '../schema/SchemaBuilder';
-import { findSchema } from '../schema/SchemaBuilder';
+import { Schema, findSchema, SchemaRegistry } from '../schema/SchemaBuilder';
 import { SystemSchemas } from '../schema/SystemSchema';
 import { Logger } from '../utils/Logger';
 import { RealTimeClock, RTCUpdate } from './RealTimeClock';
@@ -106,6 +105,7 @@ export interface SyncEngineEvents {
     op: [string, unknown, boolean]; // key, value, isOptimistic
     queueChange: [number];
     snapshot: [];
+    ready: [Record<string, unknown>];
     ephemeral: [unknown, string];   // payload, from
     signal: [any];
     stateChange: [EngineState, EngineState]; // from, to
@@ -139,6 +139,8 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     private mode: 'crdt' | 'lww';
     private logger: Logger;
     private debug: boolean;
+    private wasmPath?: string;
+
 
     // The Monotonic Pulse
     public readonly clock: RealTimeClock;
@@ -162,19 +164,28 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         peerId: string,
         mode: string = 'crdt',
         maxQueueSize: number = 1000,
-        debug: boolean = false
+        debug: boolean = false,
+        wasmPath?: string
     ) {
         super();
         this.workspaceId = workspaceId;
         this.mode = mode as 'crdt' | 'lww';
         this.maxQueueSize = maxQueueSize;
         this.debug = debug;
+        this.wasmPath = wasmPath;
         this.logger = new Logger('SyncEngine', debug);
+
 
         this.operationQueue = new RingBuffer<Uint8Array>(maxQueueSize);
 
         this.clock = new RealTimeClock(peerId, debug ? 1 : 10, debug);
         this.authority = new AuthorityManager(peerId, 20);
+
+        // Zen: Automatically inherit globally registered schemas
+        // This ensures "invisible" registration works for all engines
+        for (const [pattern, schema] of SchemaRegistry) {
+            this.schemaRegistry.set(pattern, schema);
+        }
 
         // Chain clock ticks to global sync if authority
         this.clock.on('tick', (tick) => {
@@ -188,7 +199,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             }
         });
 
-        this.logger.info(`[SyncEngine] Created in state: ${this._state}`);
+        this.logger.info(`[SyncEngine] Created in state: ${this._state} `);
     }
 
     // ========================================================================
@@ -277,28 +288,34 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                     const path = await import('path');
 
                     const pathsToTry = [
+                        this.wasmPath, // 1. Custom path takes priority
                         path.resolve(process.cwd(), 'src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
                         path.resolve(process.cwd(), 'sdks/javascript/src/wasm/nmeshed_core/nmeshed_core_bg.wasm'),
                         path.join(__dirname || '', '../wasm/nmeshed_core/nmeshed_core_bg.wasm'),
-                        // Zen: Removed hardcoded user paths. "Works on everyone's machine."
-                    ];
+                    ].filter(Boolean) as string[];
 
                     let found = false;
                     for (const wasmPath of pathsToTry) {
-                        if (wasmPath && fs.existsSync(wasmPath)) {
-                            this.logger.info(`[SyncEngine] Loading WASM from: ${wasmPath}`);
-                            const wasmBuffer = fs.readFileSync(wasmPath);
-                            await (wasmModule as any).default(wasmBuffer);
-                            found = true;
-                            break;
+                        try {
+                            if (fs.existsSync(wasmPath)) {
+                                this.logger.info(`[SyncEngine] Loading WASM from: ${wasmPath}`);
+                                const wasmBuffer = fs.readFileSync(wasmPath);
+                                await (wasmModule as any).default(wasmBuffer);
+                                found = true;
+                                break;
+                            }
+                        } catch (e) {
+                            this.logger.debug(`Failed to load WASM from ${wasmPath}: ${e}`);
                         }
                     }
 
+
                     if (!found) {
-                        this.logger.error(`[SyncEngine] WASM NOT FOUND! Checked paths: ${JSON.stringify(pathsToTry)}`);
+                        this.logger.error(`[SyncEngine] WASM NOT FOUND! Checked paths: ${JSON.stringify(pathsToTry)}. CWD: ${process.cwd()}`);
                     }
+
                 } else if (isRealBrowser) {
-                    await (wasmModule as any).default('/nmeshed_core_bg.wasm');
+                    await (wasmModule as any).default({ module_or_path: '/nmeshed_core_bg.wasm' });
                 }
             }
 
@@ -328,8 +345,8 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             }
 
             // Check if engine was destroyed during async boot
-            if (this._state === EngineState.DESTROYED || this._state === EngineState.STOPPING) {
-                return; // Abort - engine was destroyed
+            if (this._state === EngineState.DESTROYED || this._state === EngineState.STOPPING || this._state === EngineState.STOPPED) {
+                return; // Abort - engine was destroyed or stopped
             }
 
             this.transition(EngineState.ACTIVE, 'boot() complete');
@@ -437,7 +454,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
                 this.emit('queueChange', this.getQueueSize());
                 return encodeValue(value);
             }
-            throw new Error(`Cannot set() in state ${this._state}`);
+            throw new Error(`Cannot set() in state ${this._state} `);
         }
 
         return this.setInternal(key, value, schema, shouldQueue);
@@ -450,13 +467,18 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         }
 
         let valBytes: Uint8Array;
-        if (schema) {
+
+        // Zen Fix: If schema is not provided, try to find it in the registry.
+        const effectiveSchema = schema || this.getSchemaForKey(key);
+
+        // If value is null (deletion), skip schema encoding and use FBC tombstone
+        if (effectiveSchema && value !== null && value !== undefined) {
             const prefixMatch = key.match(/^([a-zA-Z_]+)/);
-            if (prefixMatch) this.schemaRegistry.set(prefixMatch[1], schema);
+            if (prefixMatch) this.schemaRegistry.set(prefixMatch[1], effectiveSchema);
             try {
-                valBytes = schema.encode(value as any);
+                valBytes = effectiveSchema.encode(value as any);
             } catch (e) {
-                this.logger.warn(`Schema encode failed for key "${key}", falling back to FBC:`, e);
+                this.logger.warn(`Schema encode failed for key "${key}", falling back to FBC: `, e);
                 valBytes = encodeValue(value);
             }
         } else {
@@ -473,16 +495,16 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
         const timestamp = BigInt(Date.now()) * 1000000n + BigInt(this.opSequence++);
         this.authority.trackKey(key);
 
-        this.logger.debug(`[SyncEngine] apply_local_op key=${key} valPixels=${valBytes.length}`);
+        this.logger.debug(`[SyncEngine] apply_local_op key = ${key} valPixels = ${valBytes.length} `);
         const res = (this.core as any).apply_local_op(key, valBytes, timestamp) as any;
         if (!res) {
-            this.logger.error(`[SyncEngine] CORE FAILED TO APPLY OP for key: ${key}`);
+            this.logger.error(`[SyncEngine] CORE FAILED TO APPLY OP for key: ${key} `);
             throw new Error('[SyncEngine] CORE FAILED TO APPLY OP');
         }
 
         const delta = reconstructBinary(res);
         if (!delta) {
-            this.logger.error(`[SyncEngine] CORE RETURNED INVALID DELTA for key: ${key}`);
+            this.logger.error(`[SyncEngine] CORE RETURNED INVALID DELTA for key: ${key} `);
             throw new Error('[SyncEngine] CORE RETURNED INVALID DELTA');
         }
 
@@ -494,7 +516,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
 
         const verify = this.get(key);
         if (this.debug) {
-            this.logger.debug(`[SyncEngine] setInternal complete. Key=${key}`, verify);
+            this.logger.debug(`[SyncEngine] setInternal complete.Key = ${key} `, verify);
         }
         this.emit('op', key, value, true);
         return delta;
@@ -569,7 +591,32 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             } else if (msgType === MsgType.Init) {
                 const payload = packet.payloadArray();
                 if (payload) {
-                    this.emit('init', payload);
+                    try {
+                        // Hydration Flow:
+                        // 1. Feed binary directly to WASM core via apply_vessel (handles Init parsing internally)
+                        // 1. Feed the packet or payload to the core.
+                        // Based on the current WASM binary, merge_remote_delta is the primary entry point.
+                        if (this.core && typeof (this.core as any).merge_remote_delta === 'function') {
+                            (this.core as any).merge_remote_delta(payload);
+                        } else if (this.core && typeof (this.core as any).apply_vessel === 'function') {
+                            (this.core as any).apply_vessel(bytes);
+                        } else {
+                            const proto = this.core ? Object.getPrototypeOf(this.core) : {};
+                            const methods = Object.getOwnPropertyNames(proto);
+                            this.logger.error(`[SyncEngine] Critical: No hydration method found! Core methods: ${methods.join(', ')}`);
+                        }
+
+
+
+
+                        // 2. Retrieve the materialized state.
+                        const fullState = this.getAllValues();
+
+                        // 3. Emit the world.
+                        this.emit('ready', fullState);
+                    } catch (e) {
+                        this.logger.error('[SyncEngine] Init Hydration FAILED:', e);
+                    }
                 }
             } else if (msgType === MsgType.Op) {
                 const op = packet.op();
@@ -586,6 +633,21 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
             this.logger.error('[SyncEngine] applyRawMessage Parse FAILED:', e);
         }
     }
+
+    /**
+     * Get the binary snapshot of the current state.
+     * Use this for generating Init packets or saving state.
+     */
+    public getBinarySnapshot(): Uint8Array | null {
+        if (!this.core) return null;
+        if (typeof (this.core as any).get_binary_snapshot === 'function') {
+            return (this.core as any).get_binary_snapshot();
+        }
+        // Fallback: serialize all values (Legacy/Compat mode)
+        const state = this.getAllValues();
+        return encodeValue(state);
+    }
+
 
     /**
      * Get a value from the sync engine.
@@ -695,7 +757,7 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
     // ========================================================================
 
     private get storageKey(): string {
-        return `${this.workspaceId}::${this.authority.peerId}`;
+        return `${this.workspaceId}::${this.authority.peerId} `;
     }
 
     private schedulePersistence(): void {

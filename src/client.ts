@@ -8,6 +8,7 @@ import { WebSocketTransport } from './transport/WebSocketTransport';
 import { Schema } from './schema/SchemaBuilder';
 import { NMeshedMessage } from './types';
 import { ConfigurationError, ConnectionError } from './errors';
+import { Logger } from './utils/Logger';
 
 export interface NMeshedConfig {
     workspaceId: string;
@@ -25,32 +26,53 @@ export interface NMeshedConfig {
     connectionTimeout?: number;
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
+    /** Base delay for reconnection backoff in ms (default: 1000) */
+    initialReconnectDelay?: number;
+    /** Maximum delay between reconnect attempts in ms (default: 10000) */
+    maxReconnectDelay?: number;
+    /** Custom path to the nmeshed_core.wasm file (Node.js only) */
+    wasmPath?: string;
 }
+
+// Environment Constants
+const IS_NODE = typeof process !== 'undefined' && process.versions && !!process.versions.node;
+const IS_BROWSER = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+
 
 /**
  * Derives the relay URL based on environment and configuration.
  * Priority: explicit config > environment variable > localhost detection > production default
  * 
- * This eliminates the need for manual URL construction in demos.
+ * @throws ConfigurationError if the derived URL is invalid
  */
 function deriveRelayUrl(workspaceId: string, config: NMeshedConfig): string {
+    let url: string;
+
     // 1. Explicit configuration takes priority
-    if (config.relayUrl) return config.relayUrl;
-    if (config.serverUrl) return config.serverUrl;
-
-    // 2. Environment variable (Node.js)
-    if (typeof process !== 'undefined' && process.env?.NMESHED_RELAY_URL) {
-        return process.env.NMESHED_RELAY_URL;
+    if (config.relayUrl) {
+        url = config.relayUrl;
+    } else if (config.serverUrl) {
+        url = config.serverUrl;
+    } else if (IS_NODE && process.env?.NMESHED_RELAY_URL) {
+        // 2. Environment variable (Node.js)
+        url = process.env.NMESHED_RELAY_URL;
+    } else if (IS_BROWSER && window.location?.hostname === 'localhost') {
+        // 3. Localhost detection (Browser dev mode)
+        const encodedId = encodeURIComponent(workspaceId);
+        url = `ws://127.0.0.1:9000/ws?workspace_id=${encodedId}`;
+    } else {
+        // 4. Production default
+        url = 'wss://api.nmeshed.com';
     }
 
-    // 3. Localhost detection (Browser dev mode)
-    if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
-        return `ws://localhost:8080/v1/sync/${encodeURIComponent(workspaceId)}`;
+    // Defensive: Validate URL format (ensure it starts with ws:// or wss://)
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+        throw new ConfigurationError(`Invalid relay URL: "${url}". Must start with ws:// or wss://`);
     }
 
-    // 4. Production default
-    return 'wss://relay.nmeshed.io';
+    return url;
 }
+
 
 /**
  * NMeshedClient: The Zen Gateway to Real-Time Sync.
@@ -78,12 +100,14 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     public readonly transport: Transport;
     public readonly bootPromise: Promise<void>;
     public readonly config: NMeshedConfig;
+    private logger: Logger;
     private isDestroyed = false;
+    private _latestState: Record<string, any> | null = null;
 
     /**
      * Creates a client instance pre-configured for local development.
      * 
-     * - Auto-connects to localhost:8080 (or derived relay URL)
+     * - Auto-connects to localhost:9000 (or derived relay URL)
      * - Uses a dummy 'dev-token' for authentication
      * - Enables debug mode by default
      */
@@ -101,17 +125,20 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
         if (!config.workspaceId) throw new ConfigurationError('workspaceId is required');
 
+        this.logger = new Logger('NMeshedClient', config.debug);
+
         // Zen: Relaxed auth for Dev Mode / Localhost
         // If we detect localhost or debug mode, we allow missing credentials by filling a dummy one
-        const isLocalhost = typeof window !== 'undefined' && window.location?.hostname === 'localhost';
+        const isLocalhost = IS_BROWSER && window.location?.hostname === 'localhost';
         if (!config.token && !config.apiKey && !config.auth) {
             if (config.debug || isLocalhost) {
-                if (config.debug) console.log('[NMeshedClient] Dev Mode: using dummy "dev-token"');
+                if (config.debug) this.logger.info('Dev Mode: using dummy "dev-token"');
                 config.token = 'dev-token';
             } else {
-                throw new ConfigurationError('Either auth, token, or apiKey must be provided');
+                throw new ConfigurationError('Authentication required. Provide an auth adapter, token, or apiKey.');
             }
         }
+
 
         if (config.maxQueueSize !== undefined && config.maxQueueSize < 0) throw new ConfigurationError('maxQueueSize must be >= 0');
         if (config.maxReconnectAttempts !== undefined && config.maxReconnectAttempts < 0) throw new ConfigurationError('maxReconnectAttempts must be >= 0');
@@ -126,8 +153,17 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.workspaceId = config.workspaceId;
         this.userId = config.userId || `u-${Math.random().toString(36).substring(2, 9)}`;
 
-        this.engine = new SyncEngine(config.workspaceId, this.userId, 'crdt', config.maxQueueSize || 1000, config.debug);
+        this.engine = new SyncEngine(
+            config.workspaceId,
+            this.userId,
+            'crdt',
+            config.maxQueueSize || 1000,
+            config.debug,
+            config.wasmPath
+        );
+
         this.bootPromise = this.engine.boot();
+
 
         // Zen Identity: Wrap string tokens in StaticAuthProvider
         let auth = config.auth;
@@ -140,8 +176,10 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
         // Zen: Auto-derive relay URL from environment
         const relayUrl = deriveRelayUrl(config.workspaceId, config);
+        this.config.relayUrl = relayUrl;
 
         this.transport = new WebSocketTransport(relayUrl, {
+
             workspaceId: config.workspaceId,
             peerId: this.userId,
             tokenProvider, // Pass the provider
@@ -151,7 +189,9 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
             heartbeatMaxMissed: config.heartbeatMaxMissed,
             connectionTimeout: config.connectionTimeout,
             autoReconnect: config.autoReconnect,
-            maxReconnectAttempts: config.maxReconnectAttempts
+            maxReconnectAttempts: config.maxReconnectAttempts,
+            initialReconnectDelay: config.initialReconnectDelay,
+            maxReconnectDelay: config.maxReconnectDelay
         });
 
         this.setupBindings();
@@ -161,29 +201,13 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         this.transport.on('message', (bytes) => this.engine.applyRawMessage(bytes));
         // Backward compatibility for legacy transports
         this.transport.on('sync' as any, (bytes: Uint8Array) => this.engine.applyRawMessage(bytes));
-        this.engine.on('init', (rawPayload: any) => {
-            let payload = rawPayload;
-            if (rawPayload instanceof Uint8Array) {
-                try {
-                    const json = new TextDecoder().decode(rawPayload);
-                    payload = JSON.parse(json);
-                } catch (e) {
-                    // Not JSON? Might be pure binary init in future.
-                    // For now, if it fails, we can't extract meshId/peers.
-                    return;
-                }
-            }
+        this.engine.on('ready', (state: any) => {
+            // Latching: Store the truth.
+            this._latestState = state;
 
-            // Update Mesh ID if provided
-            if (payload.meshId) {
-                this.engine.authority.meshId = payload.meshId;
-            }
-            // Update Peers if provided
-            if (payload.peers && Array.isArray(payload.peers)) {
-                for (const peer of payload.peers) {
-                    if (peer.userId) this.engine.authority.addPeer(peer.userId);
-                }
-            }
+            // Re-emit as 'message' with type 'init' and full state for legacy/generic listeners
+            this.emit('message', { type: 'init', data: state } as any);
+            this.emit('ready' as any, state);
         });
         this.transport.on('status', (s) => {
             if (s === 'CONNECTED') {
@@ -247,7 +271,7 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         if (this.transport.getStatus() !== 'CONNECTED') return;
         const pending = this.engine.getPendingOps();
         if (pending.length > 0) {
-            console.log(`[NMeshedClient] Flushing ${pending.length} pending ops (NOT clearing until ACK).`);
+            this.logger.debug(`Flushing ${pending.length} pending ops (NOT clearing until ACK).`);
             pending.forEach(op => this.transport.broadcast(op));
             // NOTE: We no longer shift the queue here. Ops remain in the queue
             // until they are confirmed by the server (via handleRemoteOp which
@@ -265,15 +289,48 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
 
         if (!this.connectPromise) {
             this.connectPromise = (async () => {
+                let hydrationTimer: ReturnType<typeof setTimeout> | null = null;
+                let hydrationError: Error | null = null;
+
                 try {
                     await this.engine.boot();
+
+                    // Zen: The "Tethered Guard" Pattern
+                    // Create hydration promise and immediately tether it with .catch()
+                    // This prevents "orphaned screams" when tests cleanup before hydration settles.
+                    const hydrationGuard = new Promise<void>((resolve, reject) => {
+                        const timeoutMs = this.config.connectionTimeout || 10000;
+                        hydrationTimer = setTimeout(() => {
+                            reject(new ConnectionError('Hydration Timeout'));
+                        }, timeoutMs);
+                        this.engine.once('ready', () => {
+                            if (hydrationTimer) clearTimeout(hydrationTimer);
+                            hydrationTimer = null;
+                            resolve();
+                        });
+                    }).catch((err) => {
+                        // SILENCE THE ORPHAN: Capture error, don't re-throw
+                        hydrationError = err;
+                    });
+
                     const heads = this.engine.getHeads();
                     await this.transport.connect(heads);
+
+                    // Wait for hydration (may resolve or set hydrationError)
+                    await hydrationGuard;
+
+                    // If hydration failed, throw the captured error
+                    if (hydrationError) throw hydrationError;
                 } catch (err: any) {
+                    // Clear hydration timer to prevent orphaned callbacks
+                    if (hydrationTimer) clearTimeout(hydrationTimer);
                     this.connectPromise = null;
                     throw new ConnectionError(err.message || 'Connection failed');
                 }
             })();
+
+            // Tether the connectPromise to silence orphaned rejections
+            this.connectPromise.catch(() => { /* Silenced - caller handles via await */ });
         }
 
         return this.connectPromise;
@@ -326,11 +383,15 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
     }
 
     public set(key: string, value: any, schema?: Schema<any>): void {
-        if (this.config.debug) {
-            console.log(`[NMeshedClient] ${this.userId} set(${key}):`, value);
+        this.logger.debug(`${this.userId} set(${key}):`, value);
+        const delta = this.engine.set(key, value, schema);
+
+        const status = this.getStatus();
+        if (status === 'READY') {
+            this.transport.broadcast(delta);
+        } else {
+            console.warn(`[NMeshedClient] set() called but status is ${status}. Delta dropped/queued?`, delta.length);
         }
-        this.engine.set(key, value, schema);
-        this.flushQueue();
     }
 
     public get<T = unknown>(key: string): T {
@@ -435,6 +496,39 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         return super.on('ephemeral', handler);
     }
 
+    /**
+     * Zen Pattern: Latching Signal for Readiness.
+     * Executes the callback immediately if the client is already ready/hydrated.
+     * Otherwise, waits for the 'ready' event.
+     */
+    public onReady(handler: (state: Record<string, any>) => void): () => void {
+        if (typeof handler !== 'function') throw new Error('Handler must be a function');
+
+        // If we already have the state, fire immediately (Latching)
+        if (this._latestState) {
+            try {
+                handler(this._latestState);
+            } catch (e) {
+                console.error('[NMeshedClient] Error in onReady immediate callback:', e);
+            }
+        }
+
+        // Always subscribe for future updates (re-hydration / re-connect)
+        const wrapper = (state: Record<string, any>) => {
+            // Avoid double-calling if we just called it immediately?
+            // Actually, if 'ready' fires AGAIN (re-sync), we want to call it.
+            // But 'ready' event sets _latestState just before emitting.
+            // So if we subscribe here, we will get the NEXT event.
+            // But if we are subscribing, we might get the event we just processed?
+            // No, EventEmitter emits to registered listeners. If we register now, we catch future events.
+            // If we just fired immediately, we don't want to fire again for the *same* event context.
+            // But since 'ready' is emitted by SyncEngine, if it happens again, it's a new state.
+            handler(state);
+        };
+
+        return this.on('ready' as any, wrapper);
+    }
+
     public onQueueChange(handler: (size: number) => void) {
         const h = () => {
             try {
@@ -465,6 +559,14 @@ export class NMeshedClient extends EventEmitter<NMeshedEvents> {
         if (event === 'peerJoin') return this.onPeerJoin(h);
         if (event === 'peerDisconnect') return this.onPeerDisconnect(h);
         return super.on(event as any, h);
+    }
+
+    /**
+     * Get the current binary snapshot from the core engine.
+     * Useful for manual backups or server-side initialization simulation.
+     */
+    public getBinarySnapshot(): Uint8Array | null {
+        return this.engine.getBinarySnapshot();
     }
 
     public async getPresence(): Promise<any[]> {

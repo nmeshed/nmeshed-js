@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { NMeshedClient } from '../client';
-import { CallbackAuthProvider } from '../auth/AuthProvider';
-import { useNmeshedStatus } from './context';
+import { CallbackAuthProvider, AuthProvider } from '../auth/AuthProvider';
 import { usePeers } from './usePeers';
 import type { ConnectionStatus, PresenceUser } from '../types';
 import { useNmeshed } from './useNmeshed';
@@ -27,7 +26,14 @@ export interface SyncSessionOptions {
     token?: string;
 
     /**
+     * Auth provider adapter (e.g., clerkAuth, auth0Auth, supabaseAuth)
+     * Takes precedence over getToken if both specified
+     */
+    auth?: AuthProvider;
+
+    /**
      * Dynamic token provider (e.g., for clerk.session.getToken())
+     * @deprecated Use auth adapter instead: auth: clerkAuth({ getToken })
      */
     getToken?: () => Promise<string | null>;
 
@@ -105,11 +111,14 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
     // Local error state since useNmeshed uses callback pattern
     const [localError, setLocalError] = useState<Error | null>(null);
 
+    // Derive auth provider: explicit auth > getToken callback > undefined
+    const authProvider = options.auth ?? (options.getToken ? new CallbackAuthProvider(options.getToken) : undefined);
+
     // Flatten options into NMeshedConfig
     const result = useNmeshed({
         workspaceId: options.workspaceId,
         token: options.token || options.apiKey,
-        auth: options.getToken ? new CallbackAuthProvider(options.getToken) : undefined,
+        auth: authProvider,
         userId: options.userId,
         debug: options.debug,
         transport: options.transport || 'server',
@@ -119,11 +128,10 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
 
     const client = result.client;
 
-    // Zen: Compostion
-    const { status, error: connError } = useNmeshedStatus();
+    const status = result.status;
     const isReady = status === 'CONNECTED' || status === 'READY';
     const latency = 0; // TODO: Expose latency via context or hook if needed
-    const peerIds = usePeers();
+    const peerIds = usePeers(client);
 
     // Map string IDs to PresenceUser for backward compatibility
     // In a future version, we might fetch rich presence, but for now we assume online.
@@ -139,6 +147,6 @@ export function useSyncSession(options: SyncSessionOptions): SyncSessionResult {
         isReady,
         peers,
         latency,
-        error: localError || connError
+        error: localError
     };
 }

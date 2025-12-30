@@ -123,7 +123,7 @@ For complex apps where the client needs to be accessed deeply in the tree.
 
 ```tsx
 // 1. Wrap Root
-<NMeshedProvider config={{ workspaceId: 'room', apiKey: '...' }}>
+<NMeshedProvider workspaceId="room" apiKey="...">
   <Dashboard />
 </NMeshedProvider>
 

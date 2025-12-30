@@ -53,7 +53,18 @@ export interface NMeshedProviderProps {
     /**
      * Optional callback for status changes.
      */
+    /**
+     * Optional callback for status changes.
+     */
     onStatusChange?: (status: ConnectionStatus) => void;
+
+    // --- Zen Convenience Props (Alternative to `config` object) ---
+    /** @deprecated Use this or `config`. Auto-configures for this workspace. */
+    workspaceId?: string;
+    /** @deprecated Use this or `config`. Auto-generated random user if not provided. */
+    userId?: string;
+    /** @deprecated Use this or `config`. Defaults to 'nm_local_dev' if not provided for simpler demos. */
+    apiKey?: string;
 }
 
 /**
@@ -93,12 +104,28 @@ export function NMeshedProvider({
     autoConnect = true,
     onError,
     onStatusChange,
+    // Zen Props
+    workspaceId,
+    userId,
+    apiKey,
 }: NMeshedProviderProps) {
     // Reactively manage client instance based on config
     const [clientInstance, setClientInstance] = useState<NMeshedClient>(() => {
         if (externalClient) return externalClient;
-        if (!config) throw new Error("NMeshedProvider: Either 'client' or 'config' must be provided.");
-        return new NMeshedClient(config);
+
+        // Zen: Construct config from flat props if 'config' is missing
+        const finalConfig = config || {
+            workspaceId: workspaceId!,
+            userId: userId || 'user-' + Math.random().toString(36).slice(2, 7), // Auto-anon
+            apiKey: apiKey || 'nm_local_dev', // Auto-local
+            token: undefined,
+        };
+
+        if (!finalConfig.workspaceId && !config) {
+            throw new Error("NMeshedProvider: 'workspaceId' (or 'config') is required.");
+        }
+
+        return new NMeshedClient(finalConfig);
     });
 
     // Detect config changes and recreate client (Hot-Swap)
@@ -108,21 +135,35 @@ export function NMeshedProvider({
             return;
         }
 
-        if (config) {
-            // Identity check: Only recreate if workspaceId or token changes
-            const current = clientInstance.config;
-            if (config.workspaceId !== current.workspaceId ||
-                (config.token && config.token !== current.token) ||
-                (config.apiKey && config.apiKey !== current.apiKey)) {
+        // Zen: Resolve effective config
+        const nextConfig = config || {
+            workspaceId: workspaceId!,
+            userId: userId || 'user-' + Math.random().toString(36).slice(2, 7),
+            apiKey: apiKey || 'nm_local_dev',
+            token: undefined,
+        };
 
-                // Disconnect old client before switching
-                clientInstance.disconnect();
+        if (!nextConfig.workspaceId) return; // Wait for required props
 
-                const newClient = new NMeshedClient(config);
-                setClientInstance(newClient);
-            }
+        const current = clientInstance.config;
+
+        // Deep comparison of relevant fields
+        if (nextConfig.workspaceId !== current.workspaceId ||
+            nextConfig.userId !== current.userId ||
+            nextConfig.apiKey !== current.apiKey ||
+            nextConfig.token !== current.token) {
+
+            // Disconnect old client before switching
+            clientInstance.disconnect();
+
+            const newClient = new NMeshedClient(nextConfig);
+            setClientInstance(newClient);
         }
-    }, [config?.workspaceId, config?.token, config?.apiKey, externalClient]); // Deep dependency check
+    }, [
+        config?.workspaceId, config?.token, config?.apiKey, config?.userId,
+        workspaceId, userId, apiKey,
+        externalClient
+    ]);
 
     const client = clientInstance;
     const [status, setStatus] = useState<ConnectionStatus>(client.getStatus());

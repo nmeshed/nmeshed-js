@@ -36,6 +36,11 @@
             "import": "./dist/binary/index.mjs",
             "require": "./dist/binary/index.js"
         },
+        "./edge": {
+            "types": "./dist/edge/index.d.ts",
+            "import": "./dist/edge/index.mjs",
+            "require": "./dist/edge/index.js"
+        },
         "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
     },
     "files": [

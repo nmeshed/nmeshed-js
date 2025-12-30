@@ -75,4 +75,46 @@ describe('useCollection', () => {
 
         expect(mockCollection.delete).toHaveBeenCalledWith('id1');
     });
+
+    it('asArray returns items as array', () => {
+        const testMap = new Map([
+            ['items:1', { id: '1', name: 'A' }],
+            ['items:2', { id: '2', name: 'B' }],
+        ]);
+        const mockCollection = mockClient.getCollection();
+        (mockCollection.getAll as any).mockReturnValue(testMap);
+
+        const { result } = renderHook(() => useCollection('items', ItemSchema));
+
+        const arr = result.current.asArray();
+        expect(arr).toHaveLength(2);
+        expect(arr).toEqual([{ id: '1', name: 'A' }, { id: '2', name: 'B' }]);
+    });
+
+    it('get returns item by id with prefix handling', () => {
+        const testMap = new Map([
+            ['items:1', { id: '1', name: 'A' }],
+        ]);
+        const mockCollection = mockClient.getCollection();
+        (mockCollection.getAll as any).mockReturnValue(testMap);
+
+        // Test with trailing colon prefix
+        const { result: result1 } = renderHook(() => useCollection('items:', ItemSchema));
+        expect(result1.current.get('1')).toEqual({ id: '1', name: 'A' });
+
+        // Test without trailing colon prefix
+        const { result: result2 } = renderHook(() => useCollection('items', ItemSchema));
+        expect(result2.current.get('1')).toEqual({ id: '1', name: 'A' });
+    });
+
+    it('clear calls collection.clear', () => {
+        const mockCollection = mockClient.getCollection();
+        const { result } = renderHook(() => useCollection('items', ItemSchema));
+
+        act(() => {
+            result.current.clear();
+        });
+
+        expect(mockCollection.clear).toHaveBeenCalled();
+    });
 });

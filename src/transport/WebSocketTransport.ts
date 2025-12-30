@@ -12,6 +12,10 @@ export interface WebSocketTransportConfig {
     connectionTimeout?: number;
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
+    /** Base delay for reconnection backoff in ms (default: 1000) */
+    initialReconnectDelay?: number;
+    /** Maximum delay between reconnect attempts in ms (default: 10000) */
+    maxReconnectDelay?: number;
 }
 
 export class WebSocketTransport extends EventEmitter<TransportEvents> implements Transport {
@@ -35,7 +39,9 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
         connectionTimeout: 30000,
         autoReconnect: true,
         maxReconnectAttempts: 5,
-        tokenProvider: undefined
+        tokenProvider: undefined,
+        initialReconnectDelay: 1000,
+        maxReconnectDelay: 10000
     };
 
     constructor(private readonly url: string, config: Partial<WebSocketTransportConfig>) {
@@ -139,11 +145,22 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
     }
 
     public broadcast(payload: Uint8Array): void {
+        // console.log(`[WebSocketTransport] Broadcasting ${payload.length} bytes. Status: ${this.status}`);
         this.transmit(payload);
     }
 
     public sendEphemeral(payload: Uint8Array, _to?: string): void {
-        this.transmit(payload);
+        // Wrap in WirePacket (MsgType::Signal = 0x04)
+        // [MsgType(1)] [Len(4)] [Payload]
+        const len = payload.length;
+        const packet = new Uint8Array(1 + 4 + len);
+        const view = new DataView(packet.buffer);
+
+        view.setUint8(0, 0x04); // MsgType::Signal
+        view.setUint32(1, len, true); // Little Endian
+        packet.set(payload, 5);
+
+        this.transmit(packet);
     }
 
     private transmit(data: string | Uint8Array | ArrayBuffer): void {
@@ -186,19 +203,97 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             this.emit('message', new Uint8Array(data));
         } else if (data instanceof Uint8Array) {
             // Already Uint8Array
-            this.emit('message', data);
+            this.handleBinaryMessage(data);
         } else if (ArrayBuffer.isView(data)) {
             // TypedArray or DataView
-            this.emit('message', new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+            this.handleBinaryMessage(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
         } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
             // Node.js Buffer (common in ws library)
-            this.emit('message', new Uint8Array(data));
+            this.handleBinaryMessage(new Uint8Array(data));
         } else if (data && typeof data === 'object' && (data as any).byteLength !== undefined) {
             // Duck-typed ArrayBuffer-like object
-            this.emit('message', new Uint8Array(data as any));
+            this.handleBinaryMessage(new Uint8Array(data as any));
         } else {
             console.warn('[WebSocketTransport] Received unknown data type:', typeof data, (data as any)?.constructor?.name);
         }
+    }
+
+    private handleBinaryMessage(data: Uint8Array): void {
+        if (data.length < 5) return;
+
+        const msgType = data[0];
+        // 0x01 = Op, 0x02 = Sync, 0x03 = Presence, 0x04 = Signal
+
+        if (msgType === 0x03) { // Presence
+            const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+            const payloadLen = view.getUint32(1, true); // Little Endian
+
+            if (data.length < 5 + payloadLen) {
+                console.warn('[WebSocketTransport] Truncated Presence packet');
+                return;
+            }
+
+            // Parse Presence Payload
+            // [WorkspaceUuid (16)] [UserIdLen (4)] [UserId (?)] [Status (1)]
+            let offset = 5;
+            // Skip Workspace UUID (16 bytes)
+            offset += 16;
+
+            if (offset + 4 > data.length) return;
+            const userIdLen = view.getUint32(offset, true);
+            offset += 4;
+
+            if (offset + userIdLen + 1 > data.length) return;
+            const userIdBytes = data.subarray(offset, offset + userIdLen);
+            const userId = new TextDecoder().decode(userIdBytes);
+            offset += userIdLen;
+
+            const status = data[offset]; // 0=Join, 1=Leave
+
+            if (status === 0) {
+                this.emit('peerJoin', userId);
+            } else if (status === 1) {
+                this.emit('peerDisconnect', userId);
+            }
+            return;
+        } else if (msgType === 0x04) { // Signal (Ephemeral)
+            const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+            const payloadLen = view.getUint32(1, true);
+
+            if (data.length < 5 + payloadLen) {
+                console.warn('[WebSocketTransport] Truncated Signal packet');
+                return;
+            }
+
+            // Parse Signal Payload (S->C)
+            // [SenderIdLen (4)] [SenderId] [ValueLen (4)] [Value]
+            let offset = 5;
+            if (offset + 4 > data.length) return;
+
+            const senderIdLen = view.getUint32(offset, true);
+            offset += 4;
+
+            if (offset + senderIdLen > data.length) return;
+            const senderIdBytes = data.subarray(offset, offset + senderIdLen);
+            const senderId = new TextDecoder().decode(senderIdBytes);
+            offset += senderIdLen;
+
+            if (offset + 4 > data.length) return;
+            const valueLen = view.getUint32(offset, true);
+            offset += 4;
+
+            if (offset + valueLen > data.length) return;
+            const value = data.subarray(offset, offset + valueLen);
+
+            // Emit ephemeral event
+            this.emit('ephemeral', value, senderId);
+            return;
+        }
+
+        // For Ops (0x01) and Sync (0x02), we emit as generic 'message'
+        // The SyncEngine handles parsing Ops/Sync via WASM or internal logic.
+        // We do strictly pass generic messages to the engine.
+        this.emit('message', data);
     }
 
 
@@ -226,7 +321,9 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> implements
             this.status = 'IDLE';
             this.setStatus('RECONNECTING');
             this.reconnectAttempts++;
-            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
+            const baseDelay = this.config.initialReconnectDelay ?? 1000;
+            const maxDelay = this.config.maxReconnectDelay ?? 10000;
+            const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
             setTimeout(() => {
                 if (!this.isIntentionallyClosed && this.status === 'RECONNECTING') {
                     this.connect().catch(() => { });

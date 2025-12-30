@@ -43,6 +43,7 @@ export { NMeshedHUD } from './NMeshedHUD';
 
 // Context
 export { NMeshedProvider, useNmeshedContext, useNmeshedStatus } from './context';
+export { useNMeshedClient, useOptionalNMeshedClient } from './useNMeshedClient';
 export { MockNMeshedProvider, createMockClient } from './testing';
 
 // UI Layer Constants

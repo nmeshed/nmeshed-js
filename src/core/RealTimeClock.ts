@@ -51,7 +51,9 @@ export class RealTimeClock extends EventEmitter<RTCEvents> {
      */
     public stop() {
         if (this.timer) {
-            cancelAnimationFrame(this.timer);
+            if (typeof cancelAnimationFrame !== 'undefined') {
+                cancelAnimationFrame(this.timer);
+            }
             clearTimeout(this.timer);
             this.timer = null;
         }

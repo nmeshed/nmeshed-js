@@ -144,13 +144,9 @@ export class MockRelayServer {
     public handleConnect(client: MockWebSocket) {
         this.clients.add(client);
 
-        // 1. Send BINARY Init (using Init helper)
-        const initData = {
-            type: 'init',
-            meshId: 'test-mesh',
-            peers: Array.from(this.clients).map(_ => ({ userId: 'peer' }))
-        };
-        const initPacket = createWireInit(new TextEncoder().encode(JSON.stringify(initData)));
+        // 1. Send BINARY Init with empty payload (WASM expects valid Automerge binary, not JSON)
+        // An empty payload tells the SyncEngine to start with empty state
+        const initPacket = createWireInit(new Uint8Array(0));
         client.simulateRawBinaryMessage(initPacket);
 
         // 2. Replay existing state as Op packets
@@ -403,6 +399,10 @@ export class MockNMeshedClient extends EventEmitter<{
 
     constructor(public config?: any) {
         super();
+    }
+
+    public get workspaceId(): string {
+        return this.config?.workspaceId || 'mock-ws';
     }
 
     public async connect() {
