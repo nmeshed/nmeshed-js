@@ -4,6 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncEngine } from '../src/engine';
+import { encodeValue } from '../src/protocol';
 
 describe('SyncEngine', () => {
     let engine: SyncEngine;
@@ -69,7 +70,7 @@ describe('SyncEngine', () => {
 
     describe('applyRemote', () => {
         it('should apply remote operations', () => {
-            const payload = new TextEncoder().encode(JSON.stringify('remote-value'));
+            const payload = encodeValue('remote-value');
             engine.applyRemote('key', payload, 'other-peer');
             expect(engine.get('key')).toBe('remote-value');
         });
@@ -78,7 +79,7 @@ describe('SyncEngine', () => {
             const handler = vi.fn();
             engine.on('op', handler);
 
-            const payload = new TextEncoder().encode(JSON.stringify('value'));
+            const payload = encodeValue('value');
             engine.applyRemote('key', payload, 'peer-123');
 
             expect(handler).toHaveBeenCalledWith('key', 'value', false);
@@ -86,7 +87,7 @@ describe('SyncEngine', () => {
 
         it('should handle complex remote values', () => {
             const value = { tasks: [{ id: 1 }] };
-            const payload = new TextEncoder().encode(JSON.stringify(value));
+            const payload = encodeValue(value);
             engine.applyRemote('board', payload, 'peer');
             expect(engine.get('board')).toEqual(value);
         });
@@ -95,7 +96,7 @@ describe('SyncEngine', () => {
     describe('loadSnapshot', () => {
         it('should load snapshot data', () => {
             const snapshot = { key1: 'value1', key2: 42 };
-            const data = new TextEncoder().encode(JSON.stringify(snapshot));
+            const data = encodeValue(snapshot);
             engine.loadSnapshot(data);
 
             expect(engine.get('key1')).toBe('value1');
@@ -107,7 +108,7 @@ describe('SyncEngine', () => {
             engine.on('op', handler);
 
             const snapshot = { a: 1, b: 2, c: 3 };
-            const data = new TextEncoder().encode(JSON.stringify(snapshot));
+            const data = encodeValue(snapshot);
             engine.loadSnapshot(data);
 
             expect(handler).toHaveBeenCalledTimes(3);
