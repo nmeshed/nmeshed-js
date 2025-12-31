@@ -16,7 +16,7 @@ import type { WireOp } from './types';
 // Message Types (matching server protocol)
 // =============================================================================
 
-export const enum MsgType {
+export enum MsgType {
     Unknown = 0,
     Op = 1,
     Sync = 2,
@@ -64,6 +64,23 @@ export function encodeOp(key: string, payload: Uint8Array): Uint8Array {
     builder.startObject(3); // WirePacket has 3 main fields we use
     builder.addFieldInt8(WP_MSG_TYPE, MsgType.Op, 0);
     builder.addFieldOffset(WP_OP, opOffset, 0);
+    const packet = builder.endObject();
+
+    builder.finish(packet);
+    return builder.asUint8Array().slice();
+}
+
+/** Encode an initialization message (snapshot) */
+export function encodeInit(snapshot: Uint8Array): Uint8Array {
+    const builder = new flatbuffers.Builder(1024);
+
+    // 1. Create Payload Vector
+    const payloadOffset = builder.createByteVector(snapshot);
+
+    // 2. Build WirePacket Table
+    builder.startObject(3);
+    builder.addFieldInt8(WP_MSG_TYPE, MsgType.Init, 0);
+    builder.addFieldOffset(WP_PAYLOAD, payloadOffset, 0);
     const packet = builder.endObject();
 
     builder.finish(packet);

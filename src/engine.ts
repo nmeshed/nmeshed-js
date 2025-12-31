@@ -119,29 +119,30 @@ export class SyncEngine extends EventEmitter {
     /** Load initial state from snapshot */
     loadSnapshot(data: Uint8Array): void {
         // Zen Principle: The State Machine knows its capabilities.
-        // We do not "try" and fail; we inspect and decide.
 
         // 1. If we have the Core (WASM), we delegate immediately.
-        // The Core is the Source of Truth for binary merges.
         if (this.core) {
             this.core.loadSnapshot(data);
             return;
         }
 
-        // 2. "Light Mode" (No WASM): We can only digest JSON.
-        // We sniff the first non-whitespace byte to detect intent.
-        if (this.isJson(data)) {
+        // 2. "Light Mode": Try to decode as a JS Object (MsgPack/JSON)
+        // Since we moved to MsgPack, there is no magic byte to sniff easily for "JSON vs Binary".
+        // Use an optimistic approach.
+        try {
             const snapshot = decodeValue<Record<string, unknown>>(data);
-            for (const [key, value] of Object.entries(snapshot)) {
-                this.state.set(key, value);
-                this.emit('op', key, value, false);
+            if (snapshot && typeof snapshot === 'object') {
+                for (const [key, value] of Object.entries(snapshot)) {
+                    this.state.set(key, value);
+                    this.emit('op', key, value, false);
+                }
+                this.log(`Loaded snapshot (${Object.keys(snapshot).length} keys)`);
             }
-            this.log(`Loaded JSON snapshot (${Object.keys(snapshot).length} keys)`);
-        } else {
-            // 3. Binary Snapshot in Light Mode.
-            // Action through Inaction: We start fresh. 
-            // The protocol allows us to join empty and receive subsequent updates.
-            this.log('Binary Snapshot received in Light Mode. Starting fresh (this is normal).');
+        } catch (e) {
+            // 3. Binary/Opaque Snapshot?
+            // If decode fails, we assume it's a binary blob correctly meant for WASM (which we lack).
+            // Action through Inaction: We start fresh.
+            this.log('Could not decode snapshot in Light Mode (likely binary/WASM only). Starting fresh.');
         }
     }
 

@@ -135,3 +135,36 @@ export function useConnectionStatus(): ConnectionStatus {
     const { status } = useNMeshed();
     return status;
 }
+
+/** 
+ * Hook to access a Schema-Driven Store 
+ * (The "Ferrari" DX)
+ * 
+ * Usage: const { tasks } = useStore('board');
+ */
+export function useStore<T = any>(key: string): T {
+    const { client, isReady } = useNMeshed();
+
+    // Create a local state force-update trigger for reactivity
+    // Since the Proxy handles data, we just need to re-render when 'op' fires for this key
+    const [, forceUpdate] = useState({});
+
+    useEffect(() => {
+        if (!client) return;
+        return client.on('op', (opKey) => {
+            // Granular re-render: only if THIS store changed
+            if (opKey === key) {
+                forceUpdate({});
+            }
+        });
+    }, [client, key]);
+
+    // Return the Proxy if ready, otherwise empty object (or null? let's safe-default)
+    // We memoize the proxy creation to avoid thrashing
+    const store = useMemo(() => {
+        if (!client) return {} as T;
+        return client.store(key);
+    }, [client, key]);
+
+    return store as T;
+}

@@ -9,6 +9,18 @@
 // Configuration
 // =============================================================================
 
+import { ZodType, ZodTypeDef } from 'zod';
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/**
+ * A Zod-compatible schema definition.
+ * We use any ZodType to allow maximum flexibility (objects, arrays, primitives).
+ */
+export type Schema = ZodType<any, ZodTypeDef, any>;
+
 /** Configuration for NMeshed client */
 export interface NMeshedConfig {
     /** Workspace/room identifier */
@@ -23,6 +35,11 @@ export interface NMeshedConfig {
     userId?: string;
     /** Enable debug logging */
     debug?: boolean;
+    /** 
+     * Registered schemas for strict typing and CRDT inference.
+     * Keys here map to store names (e.g. client.store('board')).
+     */
+    schemas?: Record<string, Schema>;
 }
 
 // =============================================================================

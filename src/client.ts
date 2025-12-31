@@ -5,10 +5,12 @@
  * This is the only file users need to understand.
  */
 
+import { z } from 'zod';
 import type { NMeshedConfig, ConnectionStatus, ClientEvents, EventHandler, INMeshedClient } from './types';
 import { SyncEngine } from './engine';
 import { WebSocketTransport } from './transport';
-import { encodeOp, decodeMessage, MsgType } from './protocol';
+import { encodeOp, decodeMessage, MsgType, encodeValue } from './protocol';
+import { createProxy } from './StoreProxy';
 
 // =============================================================================
 // NMeshed Client
@@ -58,23 +60,12 @@ export class NMeshedClient implements INMeshedClient {
 
     /** Set a key-value pair */
     set<T = unknown>(key: string, value: T): void {
-        const payload = this.engine.set(key, value);
-
-        // Send to network
-        if (this.transport.isConnected()) {
-            const wireData = encodeOp(key, payload);
-            this.transport.send(wireData);
-        }
+        this.engine.set(key, value);
     }
 
     /** Delete a key */
     delete(key: string): void {
-        const payload = this.engine.delete(key);
-
-        if (this.transport.isConnected()) {
-            const wireData = encodeOp(key, payload);
-            this.transport.send(wireData);
-        }
+        this.engine.delete(key);
     }
 
     /** Subscribe to events */
@@ -122,6 +113,22 @@ export class NMeshedClient implements INMeshedClient {
     }
 
     // ---------------------------------------------------------------------------
+    // Schema-Driven API (The "Ferrari" Engine)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Get a schematic store proxy.
+     * returns a Proxy wrapper that intercepts mutations for CRDT sync.
+     */
+    store<T = any>(key: string): T {
+        return createProxy(
+            this.engine,
+            key,
+            this.config.schemas?.[key] || z.any()
+        ) as T;
+    }
+
+    // ---------------------------------------------------------------------------
     // Private
     // ---------------------------------------------------------------------------
 
@@ -150,6 +157,17 @@ export class NMeshedClient implements INMeshedClient {
             this.engine.setStatus('reconnecting');
         });
         this.unsubscribers.push(unsubClose);
+
+        // Auto-Broadcast: Listen to local ops and send them
+        const unsubOp = this.engine.on('op', (key, value, isLocal) => {
+            // console.log('[Client] Op event:', key, isLocal, this.transport.isConnected());
+            if (isLocal && this.transport.isConnected()) {
+                const payload = encodeValue(value);
+                const wireData = encodeOp(key, payload);
+                this.transport.send(wireData);
+            }
+        });
+        this.unsubscribers.push(unsubOp);
     }
 
     private handleMessage(data: Uint8Array): void {

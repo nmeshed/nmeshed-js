@@ -16,3 +16,4 @@ export {
 } from './collections';
 
 export { useSyncedSchema } from './schema';
+export { useStore } from './hooks';
