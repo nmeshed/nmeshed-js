@@ -1,120 +1,53 @@
 {
-    "name": "nmeshed",
-    "version": "0.1.4",
-    "description": "nMeshed - Real-time sync infrastructure for multiplayer apps. Mesh n users together.",
-    "main": "dist/index.js",
-    "module": "dist/index.mjs",
-    "types": "dist/index.d.ts",
-    "exports": {
-        ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.mjs",
-            "require": "./dist/index.js"
-        },
-        "./react": {
-            "types": "./dist/react/index.d.ts",
-            "import": "./dist/react/index.mjs",
-            "require": "./dist/react/index.js"
-        },
-        "./mesh": {
-            "types": "./dist/mesh/index.d.ts",
-            "import": "./dist/mesh/index.mjs",
-            "require": "./dist/mesh/index.js"
-        },
-        "./game": {
-            "types": "./dist/game/index.d.ts",
-            "import": "./dist/game/index.mjs",
-            "require": "./dist/game/index.js"
-        },
-        "./sync": {
-            "types": "./dist/sync/index.d.ts",
-            "import": "./dist/sync/index.mjs",
-            "require": "./dist/sync/index.js"
-        },
-        "./binary": {
-            "types": "./dist/binary/index.d.ts",
-            "import": "./dist/binary/index.mjs",
-            "require": "./dist/binary/index.js"
-        },
-        "./edge": {
-            "types": "./dist/edge/index.d.ts",
-            "import": "./dist/edge/index.mjs",
-            "require": "./dist/edge/index.js"
-        },
-        "./wasm/nmeshed_core.js": "./src/wasm/nmeshed_core.js"
+  "name": "nmeshed",
+  "version": "0.2.0",
+  "description": "Zen SDK for real-time state synchronization. Zero perceived latency through absolute clarity.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
     },
-    "files": [
-        "dist",
-        "src/wasm",
-        "README.md"
-    ],
-    "scripts": {
-        "build": "tsup && cp src/wasm/nmeshed_core_bg.wasm dist/",
-        "dev": "tsup --watch",
-        "test": "vitest",
-        "test:run": "vitest run",
-        "benchmark": "npx tsx benchmarks/benchmark_client.ts",
-        "lint": "eslint src --ext .ts,.tsx",
-        "typecheck": "tsc --noEmit",
-        "docs:generate": "typedoc",
-        "prepublishOnly": "npm run build"
-    },
-    "keywords": [
-        "nmeshed",
-        "realtime",
-        "sync",
-        "crdt",
-        "collaborative",
-        "multiplayer",
-        "websocket",
-        "react",
-        "game",
-        "state-sync"
-    ],
-    "author": "nMeshed",
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/nmeshed/nmeshed.git",
-        "directory": "sdks/javascript"
-    },
-    "homepage": "https://nmeshed.com",
-    "bugs": {
-        "url": "https://github.com/nmeshed/nmeshed/issues"
-    },
-    "peerDependencies": {
-        "react": ">=17.0.0"
-    },
-    "peerDependenciesMeta": {
-        "react": {
-            "optional": true
-        }
-    },
-    "devDependencies": {
-        "@testing-library/jest-dom": "^6.9.1",
-        "@testing-library/react": "^15.0.7",
-        "@types/node": "^20.10.0",
-        "@types/react": "^18.3.27",
-        "@typescript-eslint/eslint-plugin": "^8.50.0",
-        "@typescript-eslint/parser": "^8.50.0",
-        "@vitest/coverage-v8": "^4.0.16",
-        "eslint": "^8.55.0",
-        "eslint-plugin-react-hooks": "^7.0.1",
-        "fake-indexeddb": "^6.2.5",
-        "jsdom": "^24.1.3",
-        "react": "^18.2.0",
-        "react-dom": "^18.3.1",
-        "tsup": "^8.0.0",
-        "typedoc": "^0.28.15",
-        "typedoc-plugin-markdown": "^4.9.0",
-        "typescript": "^5.3.0",
-        "vitest": "^4.0.15"
-    },
-    "dependencies": {
-        "@types/ws": "^8.18.1",
-        "flatbuffers": "^25.9.23",
-        "ws": "^8.18.3",
-        "yaml": "^2.8.2",
-        "zod": "^3.23.8"
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.mjs",
+      "require": "./dist/react/index.js"
     }
+  },
+  "files": [
+    "dist",
+    "src/wasm"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "zod": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.2.7",
+    "@vitest/coverage-v8": "^4.0.16",
+    "happy-dom": "^20.0.11",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.0",
+    "zod": "^3.22.4"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.3",
+    "flatbuffers": "^25.9.23"
+  }
 }

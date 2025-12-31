@@ -1,310 +1,137 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+/**
+ * NMeshed v2 - React Integration
+ * 
+ * Singular Entry: One Provider, one Hook, zero cognitive load.
+ */
+
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import type { NMeshedConfig, ConnectionStatus, ClientEvents, EventHandler } from '../types';
 import { NMeshedClient } from '../client';
-import type { NMeshedConfig, ConnectionStatus } from '../types';
 
-/**
- * Context value shape with connection state exposure.
- */
+// =============================================================================
+// Context
+// =============================================================================
+
 interface NMeshedContextValue {
-    client: NMeshedClient;
+    client: NMeshedClient | null;
     status: ConnectionStatus;
-    error: Error | null;
+    isReady: boolean;
 }
 
-/**
- * Context for sharing an nMeshed client across components.
- */
-export const NMeshedContext = createContext<NMeshedContextValue | null>(null);
+const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 
-/**
- * Props for NMeshedProvider.
- */
-export interface NMeshedProviderProps {
-    /**
-     * Configuration for the nMeshed client.
-     * Required if `client` is not provided.
-     */
-    config?: NMeshedConfig;
+// =============================================================================
+// Provider
+// =============================================================================
 
-    /**
-     * Existing nMeshed client instance.
-     * If provided, `config` is ignored.
-     */
+interface NMeshedProviderProps extends Partial<NMeshedConfig> {
     client?: NMeshedClient;
-
-    /**
-     * Child components that will have access to the client.
-     * ...
-     */
-    children: ReactNode;
-
-    /**
-     * Whether to automatically connect on mount.
-     * @default true
-     */
-    autoConnect?: boolean;
-
-    /**
-     * Optional callback for connection errors.
-     * Called in addition to setting the error state.
-     */
-    onError?: (error: Error) => void;
-
-    /**
-     * Optional callback for status changes.
-     */
-    onStatusChange?: (status: ConnectionStatus) => void;
-
-
-    // --- Zen Convenience Props (Alternative to `config` object) ---
-    /** @deprecated Use this or `config`. Auto-configures for this workspace. */
-    workspaceId?: string;
-    /** @deprecated Use this or `config`. Auto-generated random user if not provided. */
-    userId?: string;
-    /** @deprecated Use this or `config`. Defaults to 'nm_local_dev' if not provided for simpler demos. */
-    apiKey?: string;
+    children: React.ReactNode;
 }
 
-/**
- * Provider component that creates and manages an nMeshed client.
- *
- * Wrap your app (or a portion of it) with this provider to share
- * a single client instance across multiple components.
- *
- * ## Connection State Exposure
- * Unlike silent failures, this provider exposes connection state
- * and errors to consumers via context. Use `useNmeshedStatus()` to
- * access connection health in child components.
- *
- * @example
- * ```tsx
- * import { NMeshedProvider } from 'nmeshed/react';
- *
- * function App() {
- *   return (
- *     <NMeshedProvider
- *       config={{
- *         workspaceId: 'my-workspace',
- *         token: 'jwt-token'
- *       }}
- *       onError={(err) => console.error('Connection failed:', err)}
- *     >
- *       <MyCollaborativeApp />
- *     </NMeshedProvider>
- *   );
- * }
- * ```
- */
-export function NMeshedProvider({
-    config,
-    client: externalClient,
-    children,
-    autoConnect = true,
-    onError,
-    onStatusChange,
-    // Zen Props
-    workspaceId,
-    userId,
-    apiKey,
-}: NMeshedProviderProps) {
-    // Reactively manage client instance based on config
-    const [clientInstance, setClientInstance] = useState<NMeshedClient>(() => {
-        if (externalClient) return externalClient;
+export function NMeshedProvider({ children, client: externalClient, ...config }: NMeshedProviderProps): React.ReactElement {
+    const [internalClient, setInternalClient] = useState<NMeshedClient | null>(null);
+    const [status, setStatus] = useState<ConnectionStatus>('disconnected');
 
-        // Zen: Construct config from flat props if 'config' is missing
-        const finalConfig = config || {
-            workspaceId: workspaceId!,
-            userId: userId || 'user-' + Math.random().toString(36).slice(2, 7), // Auto-anon
-            apiKey: apiKey || 'nm_local_dev', // Auto-local
-            token: undefined,
-        };
+    // Mux: Use external client if provided, otherwise internal (Managed Mode)
+    const activeClient = externalClient || internalClient;
 
-        if (!finalConfig.workspaceId && !config) {
-            throw new Error("NMeshedProvider: 'workspaceId' (or 'config') is required.");
-        }
-
-        return new NMeshedClient(finalConfig);
-    });
-
-    // Detect config changes and recreate client (Hot-Swap)
+    // Managed Mode Lifecycle
     useEffect(() => {
         if (externalClient) {
-            setClientInstance(externalClient);
+            // "AAA Mode": User manages the client. We just listen.
+            // This decouples network life from UI death.
+            setStatus(externalClient.getStatus());
+            return externalClient.on('status', setStatus);
+        }
+
+        // "Zen Mode": We manage everything for you.
+        // Validate config first
+        if (!config.workspaceId || (!config.token && !config.apiKey)) {
+            // Config likely still loading, do nothing
             return;
         }
 
-        // Zen: Resolve effective config
-        const nextConfig = config || {
-            workspaceId: workspaceId!,
-            userId: userId || 'user-' + Math.random().toString(36).slice(2, 7),
-            apiKey: apiKey || 'nm_local_dev',
-            token: undefined,
+        const newClient = new NMeshedClient(config as NMeshedConfig);
+        setInternalClient(newClient);
+        setStatus(newClient.getStatus());
+
+        const unsubStatus = newClient.on('status', setStatus);
+
+        return () => {
+            unsubStatus();
+            newClient.disconnect();
         };
+        // Dependency on config ensures we only re-create if *intent* changes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [externalClient, config.workspaceId, config.token, config.apiKey]);
 
-        if (!nextConfig.workspaceId) return; // Wait for required props
+    const value = useMemo<NMeshedContextValue>(() => ({
+        client: activeClient,
+        status,
+        isReady: status === 'ready',
+    }), [activeClient, status]);
 
-        const current = clientInstance.config;
+    return React.createElement(NMeshedContext.Provider, { value }, children);
+}
 
-        // Deep comparison of relevant fields
-        if (nextConfig.workspaceId !== current.workspaceId ||
-            nextConfig.userId !== current.userId ||
-            nextConfig.apiKey !== current.apiKey ||
-            nextConfig.token !== current.token) {
+// =============================================================================
+// Hooks
+// =============================================================================
 
-            // Disconnect old client before switching
-            clientInstance.disconnect();
+/** Hook to access the NMeshed context */
+export function useNMeshed(): NMeshedContextValue {
+    const context = useContext(NMeshedContext);
+    if (!context) {
+        throw new Error('[NMeshed] useNMeshed must be used within NMeshedProvider');
+    }
+    return context;
+}
 
-            const newClient = new NMeshedClient(nextConfig);
-            setClientInstance(newClient);
-        }
-    }, [
-        config?.workspaceId, config?.token, config?.apiKey, config?.userId,
-        workspaceId, userId, apiKey,
-        externalClient
-    ]);
+/** Hook for a single synced value */
+export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T) => void] {
+    const { client, isReady } = useNMeshed();
+    const [value, setValue] = useState<T>(() => client?.get<T>(key) ?? defaultValue);
 
-    const client = clientInstance;
-    const [status, setStatus] = useState<ConnectionStatus>(client.getStatus());
-    const [error, setError] = useState<Error | null>(null);
-
-    // Subscribe to status changes
+    // Subscribe to changes
     useEffect(() => {
         if (!client) return;
 
-        // Sync initial status
-        setStatus(client.getStatus());
-
-        const unsubscribe = client.onStatusChange((newStatus) => {
-            setStatus(newStatus);
-            onStatusChange?.(newStatus); // notify parent
-
-            // Clear error on successful connection
-            if (newStatus === 'CONNECTED') {
-                setError(null);
+        const unsub = client.on('op', (opKey, opValue) => {
+            if (opKey === key) {
+                setValue(opValue as T);
             }
         });
 
-        return unsubscribe;
-    }, [client]); // Re-subscribe when client instance changes
+        // Initial value
+        setValue(client.get<T>(key) ?? defaultValue);
 
-    // Handle auto-connect with proper error surfacing
+        return unsub;
+    }, [client, key, defaultValue]);
+
+    // Setter
+    const setRemoteValue = useCallback((newValue: T) => {
+        if (client) {
+            client.set(key, newValue);
+        }
+        setValue(newValue);
+    }, [client, key]);
+
+    return [value, setRemoteValue];
+}
+
+/** Hook to subscribe to all changes */
+export function useOnChange(callback: (key: string, value: unknown) => void): void {
+    const { client } = useNMeshed();
+
     useEffect(() => {
-        if (!client || !autoConnect) return;
-
-        // Prevent auto-connect if already connected/connecting
-        const s = client.getStatus();
-        if (s === 'CONNECTED' || s === 'CONNECTING' || s === 'RECONNECTING') return;
-
-        const performConnect = async () => {
-            try {
-                await client.connect();
-            } catch (err) {
-                const connectionError = err instanceof Error
-                    ? err
-                    : new Error(String(err));
-
-                console.error('[nMeshed] Auto-connect failed:', connectionError);
-                setError(connectionError);
-                onError?.(connectionError);
-            }
-        };
-
-        performConnect();
-
-        return () => {
-            // Optional: Disconnect on unmount? 
-            // Usually desired for a Provider, but check use-cases.
-            client.disconnect();
-        };
-    }, [autoConnect, client]); // Config changes -> New Client -> Auto Connect
-
-    const contextValue: NMeshedContextValue = {
-        client,
-        status,
-        error,
-    };
-
-    return (
-        <NMeshedContext.Provider value={contextValue}>
-            {children}
-        </NMeshedContext.Provider>
-    );
+        if (!client) return;
+        return client.on('op', (key, value) => callback(key, value));
+    }, [client, callback]);
 }
 
-/**
- * Hook to access the nMeshed client from context.
- *
- * Must be used within an NMeshedProvider.
- *
- * @returns The nMeshed client instance
- * @throws {Error} If used outside of NMeshedProvider
- *
- * @example
- * ```tsx
- * function MyComponent() {
- *   const client = useNmeshedContext();
- *
- *   const handleClick = () => {
- *     client.set('clicked', true);
- *   };
- *
- *   return <button onClick={handleClick}>Click me</button>;
- * }
- * ```
- */
-export function useNmeshedContext(): NMeshedClient {
-    const context = useContext(NMeshedContext);
-
-    if (!context) {
-        throw new Error(
-            'useNmeshedContext must be used within an NMeshedProvider. ' +
-            'Wrap your component tree with <NMeshedProvider>.'
-        );
-    }
-
-    return context.client;
-}
-
-/**
- * Hook to access connection status and error state.
- *
- * Use this to show connection UI (spinner, error message, etc.)
- * or to conditionally render based on connection health.
- *
- * @returns Object with status and error
- *
- * @example
- * ```tsx
- * function ConnectionIndicator() {
- *   const { status, error } = useNmeshedStatus();
- *
- *   if (status === 'CONNECTING') return <Spinner />;
- *   if (status === 'ERROR') return <ErrorBanner message={error?.message} />;
- *   if (status === 'CONNECTED') return <GreenDot />;
- *   return null;
- * }
- * ```
- */
-export function useNmeshedStatus(): { status: ConnectionStatus; error: Error | null } {
-    const context = useContext(NMeshedContext);
-
-    if (!context) {
-        throw new Error(
-            'useNmeshedStatus must be used within an NMeshedProvider. ' +
-            'Wrap your component tree with <NMeshedProvider>.'
-        );
-    }
-
-    return {
-        status: context.status,
-        error: context.error,
-    };
-}
-
-/**
- * Hook to access the nMeshed context optionally.
- * Returns null if not within a provider.
- */
-export function useOptionalNmeshedContext(): NMeshedContextValue | null {
-    return useContext(NMeshedContext);
+/** Hook for connection status */
+export function useConnectionStatus(): ConnectionStatus {
+    const { status } = useNMeshed();
+    return status;
 }

@@ -3,22 +3,20 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
     test: {
         globals: true,
-        environment: 'jsdom',
-        include: ['src/**/*.test.{ts,tsx}'],
-        setupFiles: ['./src/react/test-setup.ts'],
-        testTimeout: 30000,
+        environment: 'node',
+        include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
         coverage: {
             provider: 'v8',
-            reporter: ['text', 'json', 'html'],
-            exclude: [
-                'node_modules/',
-                'dist/',
-                '**/*.test.{ts,tsx}',
-                '**/test-setup.ts',
-                'src/schema/nmeshed/**',
-                'src/wasm/**',
-                'src/test-utils/**',
-            ],
+            reporter: ['text', 'json-summary'],
+            include: ['src/**/*.ts', 'src/**/*.tsx'],
+            exclude: ['src/wasm/**', 'src/index.ts', 'src/types.ts', 'src/react/index.ts'],
+            thresholds: {
+                perFile: true,
+                lines: 91,
+                branches: 75,
+                functions: 91,
+                statements: 91,
+            },
         },
     },
 });

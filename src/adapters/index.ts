@@ -1,0 +1,1 @@
+export { useSupabaseAdapter } from './supabase';

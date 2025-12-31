@@ -5,32 +5,22 @@
         "moduleResolution": "bundler",
         "lib": [
             "ES2020",
-            "DOM",
-            "DOM.Iterable"
+            "DOM"
         ],
+        "jsx": "react",
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true,
         "declaration": true,
-        "declarationMap": true,
-        "sourceMap": true,
-        "outDir": "./dist",
-        "rootDir": "./src",
-        "jsx": "react-jsx",
-        "noUnusedLocals": true,
-        "noUnusedParameters": true,
-        "noImplicitReturns": true,
-        "noFallthroughCasesInSwitch": true,
-        "resolveJsonModule": true,
-        "isolatedModules": true
+        "outDir": "dist",
+        "rootDir": "src"
     },
     "include": [
-        "src/**/*"
+        "src"
     ],
     "exclude": [
         "node_modules",
         "dist",
-        "**/*.test.ts"
+        "tests"
     ]
 }

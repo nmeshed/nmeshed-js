@@ -1,183 +1,154 @@
-import { z } from 'zod';
-import { AuthProvider } from './auth/AuthProvider';
-
 /**
- * Configuration options for the nMeshed client.
+ * NMeshed v2 - Type Definitions
+ * 
+ * The Single Truth: All types in one place.
+ * If you need to understand the data model, look here.
  */
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/** Configuration for NMeshed client */
 export interface NMeshedConfig {
+    /** Workspace/room identifier */
     workspaceId: string;
-    auth?: AuthProvider;
+    /** JWT token for authentication */
     token?: string;
+    /** API key (alternative to token) */
     apiKey?: string;
-    syncMode?: 'crdt' | 'crdt_performance' | 'crdt_strict' | 'lww';
-    userId?: string;
+    /** Server URL (defaults to wss://api.nmeshed.com) */
     serverUrl?: string;
-    relayUrl?: string; // Preferred over serverUrl
-    autoReconnect?: boolean;
-    maxReconnectAttempts?: number;
-    reconnectBaseDelay?: number;
-    maxReconnectDelay?: number;
-    connectionTimeout?: number;
-    heartbeatInterval?: number;
-    heartbeatMaxMissed?: number;
-    maxQueueSize?: number;
+    /** User ID (optional, derived from token if not provided) */
+    userId?: string;
+    /** Enable debug logging */
     debug?: boolean;
-    transport?: 'server';
-    replicationFactor?: number;
-    schemas?: Record<string, import('./schema/SchemaBuilder').Schema<any>>;
 }
 
-/**
- * Internal resolved configuration with all defaults applied.
- */
-export type ResolvedConfig = Required<NMeshedConfig>;
+// =============================================================================
+// Connection State
+// =============================================================================
 
-export const ConfigSchema = z.object({
-    workspaceId: z.string().min(1, 'workspaceId is required'),
-    token: z.string().optional(),
-    apiKey: z.string().optional(),
-    syncMode: z.enum(['crdt', 'crdt_performance', 'crdt_strict', 'lww']).optional().default('crdt'),
-    userId: z.string().optional(),
-    serverUrl: z.string().optional(),
-    autoReconnect: z.boolean().optional().default(true),
-    maxReconnectAttempts: z.number().int().min(0).optional().default(10),
-    reconnectBaseDelay: z.number().int().min(0).optional().default(1000),
-    maxReconnectDelay: z.number().int().min(0).optional().default(30000),
-    connectionTimeout: z.number().int().min(0).optional().default(10000),
-    heartbeatInterval: z.number().int().min(0).optional().default(30000),
-    heartbeatMaxMissed: z.number().int().min(1).optional().default(3),
-    maxQueueSize: z.number().int().min(0).optional().default(1000),
-    debug: z.boolean().optional().default(false),
-    transport: z.enum(['server']).optional().default('server'),
-    replicationFactor: z.number().int().min(1).optional().default(20)
-});
-
-export const DEFAULT_CONFIG: Partial<ResolvedConfig> = {
-    syncMode: 'crdt',
-    autoReconnect: true,
-    maxReconnectAttempts: 10,
-    reconnectBaseDelay: 1000,
-    maxReconnectDelay: 30000,
-    connectionTimeout: 10000,
-    heartbeatInterval: 30000,
-    heartbeatMaxMissed: 3,
-    maxQueueSize: 1000,
-    debug: false,
-    transport: 'server',
-    replicationFactor: 20
-};
-
-/**
- * Connection status of the nMeshed client.
- * 
- * Lifecycle: IDLE → CONNECTING → CONNECTED → SYNCING → READY
- * 
- * - SYNCING: WebSocket connected, awaiting initial state snapshot
- * - READY: Initial sync complete, all operations allowed
- */
+/** Connection status states */
 export type ConnectionStatus =
-    | 'IDLE'
-    | 'CONNECTING'
-    | 'CONNECTED'
-    | 'SYNCING'
-    | 'READY'
-    | 'DISCONNECTED'
-    | 'RECONNECTING'
-    | 'ERROR';
+    | 'disconnected'
+    | 'connecting'
+    | 'connected'
+    | 'syncing'
+    | 'ready'
+    | 'reconnecting'
+    | 'error';
 
-/**
- * An operation payload sent to or received from the server.
- */
+/** Connection state with metadata */
+export interface ConnectionState {
+    status: ConnectionStatus;
+    error?: Error;
+    retryCount: number;
+    lastConnectedAt?: number;
+}
+
+// =============================================================================
+// CRDT Operations
+// =============================================================================
+
+/** A key-value operation */
 export interface Operation {
     key: string;
     value: unknown;
     timestamp: number;
-    isOptimistic?: boolean;
+    peerId: string;
 }
 
-/**
- * Initial state message received on connection.
- */
-export interface InitMessage {
-    type: 'init';
-    data: Record<string, unknown>;
+/** Serialized operation for wire transfer */
+export interface WireOp {
+    key: string;
+    payload: Uint8Array;
+    timestamp: number;
 }
 
-/**
- * Operation message for state updates.
- */
-export interface OperationMessage {
-    type: 'op';
-    payload: Operation;
+// =============================================================================
+// Events
+// =============================================================================
+
+/** Event types emitted by the client */
+export interface ClientEvents {
+    /** Fired when a key's value changes (local or remote) */
+    op: (key: string, value: unknown, isLocal: boolean) => void;
+    /** Fired when connection status changes */
+    status: (status: ConnectionStatus) => void;
+    /** Fired on error */
+    error: (error: Error) => void;
+    /** Fired when a peer joins */
+    peerJoin: (peerId: string) => void;
+    /** Fired when a peer leaves */
+    peerLeave: (peerId: string) => void;
+    /** Fired when initial sync completes */
+    ready: () => void;
 }
 
-/**
- * A user in the presence list.
- */
-export interface PresenceUser {
-    userId: string;
-    status: 'online' | 'idle' | 'offline';
-    last_seen?: string;
-    metadata?: Record<string, unknown>;
-    color?: string;
-    latency?: number;
+/** Type-safe event emitter interface */
+export type EventHandler<T extends keyof ClientEvents> = ClientEvents[T];
+
+// =============================================================================
+// WASM Core Interface
+// =============================================================================
+
+/** Interface for the WASM CRDT core */
+export interface CRDTCore {
+    /** Apply a local operation, returns delta to broadcast */
+    applyLocalOp(key: string, value: Uint8Array): Uint8Array;
+    /** Merge a remote delta */
+    mergeRemoteDelta(delta: Uint8Array): string | null;
+    /** Get value for key */
+    getValue(key: string): unknown | undefined;
+    /** Get all values */
+    getAllValues(): Record<string, unknown>;
+    /** Get binary snapshot for sync */
+    getBinarySnapshot(): Uint8Array;
+    /** Load snapshot */
+    loadSnapshot(data: Uint8Array): void;
+    /** Iterate over all keys */
+    forEach(callback: (value: unknown, key: string) => void): void;
 }
 
-/**
- * Presence update message (single user event).
- */
-export interface PresenceMessage {
-    type: 'presence';
-    payload: PresenceUser;
+// =============================================================================
+// Transport Interface
+// =============================================================================
+
+/** Interface for network transport */
+export interface Transport {
+    /** Connect to server */
+    connect(): Promise<void>;
+    /** Disconnect from server */
+    disconnect(): void;
+    /** Send binary message */
+    send(data: Uint8Array): void;
+    /** Register message handler */
+    onMessage(handler: (data: Uint8Array) => void): () => void;
+    /** Register close handler */
+    onClose(handler: () => void): () => void;
+    /** Check if connected */
+    isConnected(): boolean;
 }
 
-/**
- * Ephemeral message (broadcast-only, not persisted).
- */
-export interface EphemeralMessage {
-    type: 'ephemeral';
-    payload: unknown;
-    from?: string;
+// =============================================================================
+// Public API Types
+// =============================================================================
+
+/** The public NMeshed client interface */
+export interface INMeshedClient {
+    /** Get a value by key */
+    get<T = unknown>(key: string): T | undefined;
+    /** Set a key-value pair */
+    set<T = unknown>(key: string, value: T): void;
+    /** Delete a key */
+    delete(key: string): void;
+    /** Subscribe to events */
+    on<K extends keyof ClientEvents>(event: K, handler: EventHandler<K>): () => void;
+    /** Get current connection status */
+    getStatus(): ConnectionStatus;
+    /** Get client's peer ID */
+    getPeerId(): string;
+    /** Disconnect and cleanup */
+    disconnect(): void;
 }
-
-/**
- * Union of all possible messages from the server.
- */
-export type NMeshedMessage = InitMessage | OperationMessage | PresenceMessage | EphemeralMessage;
-
-/**
- * Handler function for incoming messages.
- */
-export type MessageHandler = (message: NMeshedMessage) => void;
-
-/**
- * Handler function for connection status changes.
- */
-export type StatusHandler = (status: ConnectionStatus) => void;
-
-/**
- * Handler function for ephemeral broadcast messages.
- */
-export type EphemeralHandler = (payload: unknown, from?: string) => void;
-
-/**
- * Handler function for presence updates.
- */
-export type PresenceHandler = (user: PresenceMessage['payload']) => void;
-
-// ============================================
-//           CHAOS & DIAGNOSTICS
-// ============================================
-
-/**
- * Configuration for network simulation (Chaos Mode).
- */
-export interface ChaosOptions {
-    latency?: number;
-    jitter?: number;
-    packetLoss?: number;
-}
-/**
- * Unsubscribe function returned by event listeners.
- */
-export type Unsubscribe = () => void;
