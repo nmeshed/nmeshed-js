@@ -8,6 +8,7 @@
 
 import { NMeshedClient } from '../src/client';
 import { SyncEngine } from '../src/engine';
+import { InMemoryAdapter } from '../src/adapters/InMemoryAdapter';
 
 // Mock transport that does nothing
 class NoopTransport {
@@ -44,14 +45,25 @@ class MockWasmCore {
     loadSnapshot(_data: Uint8Array) { }
 }
 
+// ... (existing imports)
+
 function createBenchClient() {
-    const engine = new SyncEngine();
+    // Benchmark often doesn't need persistence overhead in "pure logic" test, 
+    // but now engine mandates storage. We use InMemoryAdapter.
+    // If we want to measure logic overhead *without* storage, we could mock a NoopStorage.
+    // But InMemoryAdapter is fast enough and representative of Node usage.
+
+    // Actually, client creates engine. We are overriding it here.
+    // SyncEngine(peerId, storage, debug)
+    const engine = new SyncEngine('bench', new InMemoryAdapter(), false);
     (engine as any).core = new MockWasmCore();
 
     const client = new NMeshedClient({
         workspaceId: 'bench',
         serverUrl: 'ws://localhost:9000',
-        token: 'test'
+        token: 'test',
+        // Pass In-Memory Explicitly to avoid auto-detect issues in test env
+        storage: new InMemoryAdapter()
     });
 
     (client as any).engine = engine;

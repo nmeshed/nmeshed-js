@@ -8,7 +8,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { encode } from '@msgpack/msgpack';
 import { NMeshedClient } from '../src/client';
-import { MsgType, encodeOp, encodeInit } from '../src/protocol';
+import { MsgType, encodeOp, encodeInit, encodePong, decodeMessage, encodeValue } from '../src/protocol';
+import { InMemoryAdapter } from '../src/adapters/InMemoryAdapter';
+import { IStorage } from '../src/types';
+import { WebSocketTransport } from '../src/transport';
 
 // Store last created WebSocket instance for message simulation
 let lastWebSocket: MockWebSocket | null = null;
@@ -52,7 +55,12 @@ class MockWebSocket {
     }
 }
 
-vi.stubGlobal('WebSocket', MockWebSocket);
+// Force overwrite of global WebSocket
+Object.defineProperty(global, 'WebSocket', {
+    value: MockWebSocket,
+    writable: true,
+    configurable: true
+});
 
 describe('NMeshedClient', () => {
     beforeEach(() => {
@@ -66,20 +74,77 @@ describe('NMeshedClient', () => {
     });
 
     describe('constructor', () => {
-        it('should create client with valid config', () => {
+        it('should create client with valid config', async () => {
             const client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
-            vi.advanceTimersByTime(100);
+            await vi.advanceTimersByTimeAsync(100);
             expect(client).toBeDefined();
             client.disconnect();
+        });
+
+        it('should request persistence if configured', async () => {
+            const persistMock = vi.fn().mockResolvedValue(true);
+            vi.stubGlobal('navigator', {
+                storage: {
+                    persist: persistMock
+                }
+            });
+
+            new NMeshedClient({
+                workspaceId: 'ws_test',
+                apiKey: 'key',
+                persist: true
+            });
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(persistMock).toHaveBeenCalled();
+            vi.unstubAllGlobals();
+        });
+
+        it('should handle persistence refusual', async () => {
+            const persistMock = vi.fn().mockResolvedValue(false);
+            vi.stubGlobal('navigator', {
+                storage: {
+                    persist: persistMock
+                }
+            });
+
+            new NMeshedClient({
+                workspaceId: 'ws_test',
+                apiKey: 'key',
+                persist: true
+            });
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(persistMock).toHaveBeenCalled();
+            vi.unstubAllGlobals();
+        });
+
+        it('should handle persistence error', async () => {
+            const persistMock = vi.fn().mockRejectedValue(new Error('Nope'));
+            vi.stubGlobal('navigator', {
+                storage: {
+                    persist: persistMock
+                }
+            });
+
+            new NMeshedClient({
+                workspaceId: 'ws_test',
+                apiKey: 'key',
+                persist: true
+            });
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(persistMock).toHaveBeenCalled();
+            vi.unstubAllGlobals();
         });
     });
 
     describe('get/set', () => {
         let client: NMeshedClient;
 
-        beforeEach(() => {
+        beforeEach(async () => {
             client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
-            vi.advanceTimersByTime(100);
+            await vi.advanceTimersByTimeAsync(100);
         });
 
         afterEach(() => {
@@ -108,9 +173,9 @@ describe('NMeshedClient', () => {
     describe('events', () => {
         let client: NMeshedClient;
 
-        beforeEach(() => {
+        beforeEach(async () => {
             client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
-            vi.advanceTimersByTime(100);
+            await vi.advanceTimersByTimeAsync(100);
         });
 
         afterEach(() => {
@@ -145,7 +210,8 @@ describe('NMeshedClient', () => {
             await vi.advanceTimersByTimeAsync(100);
 
             // Ensure we are connected before simulating Init
-            expect(client.getStatus()).toBe('connected');
+            // After onOpen, status transitions connected -> syncing
+            expect(client.getStatus()).toBe('syncing');
 
             const promise = client.awaitReady();
 
@@ -162,12 +228,48 @@ describe('NMeshedClient', () => {
         });
     });
 
+    describe('heartbeat', () => {
+        let client: NMeshedClient;
+
+        beforeEach(async () => {
+            client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
+            await vi.advanceTimersByTimeAsync(100);
+        });
+
+        afterEach(() => {
+            client.disconnect();
+        });
+
+        it('should send pings when connected', async () => {
+            // Wait for ping interval (Default 30s)
+            await vi.advanceTimersByTimeAsync(30000);
+
+            expect(lastWebSocket?.send).toHaveBeenCalled();
+            const lastCallArgs = (lastWebSocket?.send as any).mock.lastCall[0];
+            const decoded = decodeMessage(new Uint8Array(lastCallArgs));
+            expect(decoded?.type).toBe(MsgType.Ping);
+        });
+
+        it('should handle pong messages and update clock', () => {
+            const engineSpy = vi.spyOn((client as any).engine, 'setClockOffset');
+            const now = Date.now();
+            const serverTime = now + 5000;
+
+            // Simulate Pong with timestamp
+            const pong = encodePong(serverTime);
+            lastWebSocket?.simulateMessage(pong);
+
+            // Expect offset ~ 5000
+            expect(engineSpy).toHaveBeenCalledWith(expect.closeTo(5000, 100));
+        });
+    });
+
     describe('handleMessage', () => {
         let client: NMeshedClient;
 
-        beforeEach(() => {
+        beforeEach(async () => {
             client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
-            vi.advanceTimersByTime(100);
+            await vi.advanceTimersByTimeAsync(100);
         });
 
         afterEach(() => {
@@ -198,7 +300,7 @@ describe('NMeshedClient', () => {
     describe('store() API', () => {
         let client: NMeshedClient;
 
-        beforeEach(() => {
+        beforeEach(async () => {
             client = new NMeshedClient({
                 workspaceId: 'test',
                 token: 'token',
@@ -206,7 +308,7 @@ describe('NMeshedClient', () => {
                     todos: z.array(z.string())
                 }
             });
-            vi.advanceTimersByTime(100);
+            await vi.advanceTimersByTimeAsync(100);
         });
 
         afterEach(() => {
@@ -227,4 +329,129 @@ describe('NMeshedClient', () => {
             // but call presence proves wiring success.
         });
     });
+
+    describe('coverage', () => {
+        let client: NMeshedClient;
+
+        afterEach(() => {
+            client?.disconnect();
+        });
+
+        it('should throw if workspaceId is missing', () => {
+            expect(() => new NMeshedClient({ token: 'token' } as any)).toThrow('workspaceId is required');
+        });
+
+        it('should throw if token/apiKey is missing', () => {
+            expect(() => new NMeshedClient({ workspaceId: 'ws' } as any)).toThrow('token or apiKey is required');
+        });
+
+        it('should accept custom storage', async () => {
+            const customStorage = new InMemoryAdapter();
+            const spy = vi.spyOn(customStorage, 'init');
+            client = new NMeshedClient({ workspaceId: 'ws', token: 'token', storage: customStorage });
+            await vi.advanceTimersByTimeAsync(100);
+            expect(spy).toHaveBeenCalled();
+        });
+
+        it('should load initialSnapshot', async () => {
+            const snapshot = { hydrated: true };
+            const encoded = encodeValue(snapshot);
+            // Protocol: Init payload is snapshot
+
+            client = new NMeshedClient({
+                workspaceId: 'ws',
+                token: 'token',
+                initialSnapshot: encoded
+            });
+            // It loads synchronously in constructor
+            expect(client.get('hydrated')).toBe(true);
+            expect(client.getStatus()).toBe('ready');
+        });
+
+        it('should expose public API', async () => {
+            client = new NMeshedClient({ workspaceId: 'ws', token: 'token' });
+            await vi.advanceTimersByTimeAsync(100);
+
+            expect(client.getPeerId()).toMatch(/^peer_/);
+            expect(typeof client.getAllValues()).toBe('object');
+
+            client.set('loop', 1);
+            const cb = vi.fn();
+            client.forEach(cb);
+            expect(cb).toHaveBeenCalled();
+        });
+        it('should default to IndexedDBAdapter if indexedDB is present', async () => {
+            // Mock indexedDB global
+            vi.stubGlobal('indexedDB', {});
+            const client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
+            await vi.advanceTimersByTimeAsync(100);
+            expect(client['storage'].constructor.name).toBe('IndexedDBAdapter');
+            vi.unstubAllGlobals();
+        });
+
+        it('should handle init failure (storage.init throws) by falling back to connect', async () => {
+            const badStorage: IStorage = {
+                init: vi.fn().mockRejectedValue(new Error('Init fail')),
+                get: vi.fn(),
+                set: vi.fn(),
+                delete: vi.fn(),
+                scanPrefix: vi.fn(),
+                clear: vi.fn(),
+                clearAll: vi.fn(),
+                close: vi.fn()
+            };
+
+            const logSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+            const client = new NMeshedClient({
+                workspaceId: 'test',
+                token: 'token',
+                storage: badStorage,
+                debug: true
+            });
+
+            await vi.advanceTimersByTimeAsync(100);
+
+            expect(client.getStatus()).toBe('syncing');
+            expect(logSpy).toHaveBeenCalledWith('[NMeshed Client]', 'Storage initialization failed', expect.any(Error));
+            logSpy.mockRestore();
+        });
+
+        it('should flush pending ops on connect', async () => {
+            const storage = new InMemoryAdapter();
+            const payload = encodeValue('val');
+            await storage.set('queue::1000::offline', payload);
+
+            // Mock WebSocketTransport send to verify flush
+            // Since transport is private, we spy on prototype or use the global mock if possible.
+            // But existing tests use `lastWebSocket`.
+            // Ideally we spy on prototype.
+            const sendSpy = vi.spyOn(WebSocketTransport.prototype, 'send');
+
+            const client = new NMeshedClient({ workspaceId: 'test', token: 'token', storage });
+
+            await vi.advanceTimersByTimeAsync(100);
+            // Connects -> onOpen -> flushPendingOps
+
+            expect(sendSpy).toHaveBeenCalled();
+            sendSpy.mockRestore();
+            client.disconnect();
+        });
+
+        it('should disconnect on ping timeout', async () => {
+            const client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
+            await vi.advanceTimersByTimeAsync(100);
+
+            const disconnectSpy = vi.spyOn(WebSocketTransport.prototype, 'disconnect');
+
+            // Advance 30s (Ping sent)
+            await vi.advanceTimersByTimeAsync(30000);
+
+            // Advance 5s (Timeout)
+            await vi.advanceTimersByTimeAsync(5100);
+
+            expect(disconnectSpy).toHaveBeenCalled();
+            disconnectSpy.mockRestore();
+        });
+    });
 });
+

@@ -238,12 +238,11 @@ describe('WebSocketTransport', () => {
             // Simulate unexpected close
             (transport as any).ws?.onclose?.();
 
-            // Should attempt reconnect after delay
-            vi.advanceTimersByTime(1100);
+            // Should attempt reconnect after delay (1000ms base +/- jitter ~1200ms max)
+            vi.advanceTimersByTime(1500);
 
-            // Transport should try to reconnect - it may have already succeeded with our mock
-            // The important thing is the transport didn't crash
-            expect(transport.isConnected()).toBeDefined();
+            // Transport should try to reconnect and succeed
+            expect(transport.isConnected()).toBe(true);
         });
     });
 });

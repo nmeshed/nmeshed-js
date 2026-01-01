@@ -12,7 +12,9 @@ import type { Transport, NMeshedConfig } from './types';
 // =============================================================================
 
 const DEFAULT_SERVER_URL = 'wss://api.nmeshed.com';
-const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000];
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_MAX_MS = 30000;
+const BACKOFF_JITTER = 0.2; // +/- 20%
 
 // =============================================================================
 // WebSocket Transport
@@ -23,6 +25,7 @@ export class WebSocketTransport implements Transport {
     private url: string;
     private token: string;
     private messageHandlers: Set<(data: Uint8Array) => void> = new Set();
+    private openHandlers: Set<() => void> = new Set();
     private closeHandlers: Set<() => void> = new Set();
     private reconnectAttempt = 0;
     private shouldReconnect = true;
@@ -54,6 +57,7 @@ export class WebSocketTransport implements Transport {
                 this.ws.onopen = () => {
                     this.reconnectAttempt = 0;
                     this.log('Connected');
+                    this.openHandlers.forEach((handler) => handler());
                     resolve();
                 };
 
@@ -95,6 +99,11 @@ export class WebSocketTransport implements Transport {
         return () => this.messageHandlers.delete(handler);
     }
 
+    onOpen(handler: () => void): () => void {
+        this.openHandlers.add(handler);
+        return () => this.openHandlers.delete(handler);
+    }
+
     onClose(handler: () => void): () => void {
         this.closeHandlers.add(handler);
         return () => this.closeHandlers.delete(handler);
@@ -111,7 +120,17 @@ export class WebSocketTransport implements Transport {
     private attemptReconnect(): void {
         if (!this.shouldReconnect) return;
 
-        const delay = RECONNECT_DELAYS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+        // Exponential Backoff: base * 1.5^attempts
+        let delay = Math.min(
+            BACKOFF_MAX_MS,
+            BACKOFF_BASE_MS * Math.pow(1.5, this.reconnectAttempt)
+        );
+
+        // Add Jitter: delay * (1 +/- jitter)
+        // e.g. if jitter is 0.2, multiply by random between 0.8 and 1.2
+        const jitterFactor = 1 + (Math.random() * 2 - 1) * BACKOFF_JITTER;
+        delay = Math.floor(delay * jitterFactor);
+
         this.reconnectAttempt++;
 
         this.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);

@@ -4,21 +4,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { NMeshedProvider, useConnectionStatus, useNMeshed, useSyncedValue, useOnChange } from '../../src/react/context';
-import { NMeshedClient } from '../../src/client';
-import { createMockClient } from '../test-utils';
+import { MockNMeshedClient } from '../mocks/MockNMeshedClient';
 import React from 'react';
 
-// Initialize mock client with typed factory
-const mockClient = createMockClient();
-
-vi.mock('../../src/client', () => {
-    return {
-        NMeshedClient: vi.fn(function () { return mockClient; }),
-    };
-});
+// Initialize mock client
+const mockClient = new MockNMeshedClient();
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <NMeshedProvider workspaceId="test-ws" token="test-token" debug={false}>
+    <NMeshedProvider
+        workspaceId="test-ws"
+        token="test-token"
+        debug={false}
+        client={mockClient as any}
+    >
         {children}
     </NMeshedProvider>
 );

@@ -40,6 +40,20 @@ export interface NMeshedConfig {
      * Keys here map to store names (e.g. client.store('board')).
      */
     schemas?: Record<string, Schema>;
+    /**
+     * Custom storage adapter.
+     * If not provided, defaults to IndexedDB in browser and InMemory in Node.
+     */
+    storage?: IStorage;
+    /**
+     * Enable persistent storage request (navigator.storage.persist).
+     * Defaults to true.
+     */
+    persist?: boolean;
+    /**
+     * Initial binary snapshot for hydration (RSC/SSR).
+     */
+    initialSnapshot?: Uint8Array;
 }
 
 // =============================================================================
@@ -101,6 +115,8 @@ export interface ClientEvents {
     peerLeave: (peerId: string) => void;
     /** Fired when initial sync completes */
     ready: () => void;
+    /** Fired when a CAS operation needs to be sent to server */
+    cas: (wireData: Uint8Array) => void;
 }
 
 /** Type-safe event emitter interface */
@@ -142,6 +158,8 @@ export interface Transport {
     send(data: Uint8Array): void;
     /** Register message handler */
     onMessage(handler: (data: Uint8Array) => void): () => void;
+    /** Register open handler */
+    onOpen(handler: () => void): () => void;
     /** Register close handler */
     onClose(handler: () => void): () => void;
     /** Check if connected */
@@ -160,6 +178,11 @@ export interface INMeshedClient {
     set<T = unknown>(key: string, value: T): void;
     /** Delete a key */
     delete(key: string): void;
+    /** 
+     * Atomic Compare-And-Swap 
+     * Returns true if successful (value matched expected), false otherwise.
+     */
+    cas<T = unknown>(key: string, expected: T | null, newValue: T): Promise<boolean>;
     /** Subscribe to events */
     on<K extends keyof ClientEvents>(event: K, handler: EventHandler<K>): () => void;
     /** Get current connection status */
@@ -167,5 +190,34 @@ export interface INMeshedClient {
     /** Get client's peer ID */
     getPeerId(): string;
     /** Disconnect and cleanup */
+    /** Disconnect and cleanup */
     disconnect(): void;
+    /** Wait for ready state */
+    awaitReady(): Promise<void>;
+    /** Get a schematic store proxy */
+    store<T = any>(key: string): T;
+}
+
+// =============================================================================
+// Storage Interface
+// =============================================================================
+
+/** Interface for persistence adapters (IndexedDB, SQLite, InMemory) */
+export interface IStorage {
+    /** Initialize storage */
+    init(): Promise<void>;
+    /** Get value by key */
+    get(key: string): Promise<Uint8Array | undefined>;
+    /** Set value for key */
+    set(key: string, value: Uint8Array): Promise<void>;
+    /** Delete key */
+    delete(key: string): Promise<void>;
+    /** Scan keys with prefix */
+    scanPrefix(prefix: string): Promise<Array<[string, Uint8Array]>>;
+    /** Clear specific key manually (alias for delete) */
+    clear(key: string): Promise<void>;
+    /** Clear all data */
+    clearAll(): Promise<void>;
+    /** Close storage */
+    close(): Promise<void>;
 }

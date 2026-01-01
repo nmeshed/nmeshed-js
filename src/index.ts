@@ -20,3 +20,9 @@ export { SyncEngine } from './engine';
 
 // Transport (for custom implementations)
 export { WebSocketTransport } from './transport';
+
+// React hooks
+export * from './react/index';
+
+// RSC utilities
+export * from './rsc';

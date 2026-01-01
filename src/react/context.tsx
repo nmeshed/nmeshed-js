@@ -89,7 +89,7 @@ export function useNMeshed(): NMeshedContextValue {
 }
 
 /** Hook for a single synced value */
-export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T) => void] {
+export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T | ((prev: T) => T)) => void] {
     const { client, isReady } = useNMeshed();
     const [value, setValue] = useState<T>(() => client?.get<T>(key) ?? defaultValue);
 
@@ -109,8 +109,21 @@ export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T) 
         return unsub;
     }, [client, key, defaultValue]);
 
+    // Track latest value in ref for stable setter
+    const valueRef = React.useRef(value);
+    useEffect(() => { valueRef.current = value; }, [value]);
+
     // Setter
-    const setRemoteValue = useCallback((newValue: T) => {
+    const setRemoteValue = useCallback((newValueOrFn: T | ((prev: T) => T)) => {
+        const current = valueRef.current;
+        let newValue: T;
+
+        if (typeof newValueOrFn === 'function') {
+            newValue = (newValueOrFn as ((prev: T) => T))(current);
+        } else {
+            newValue = newValueOrFn;
+        }
+
         if (client) {
             client.set(key, newValue);
         }
@@ -136,35 +149,4 @@ export function useConnectionStatus(): ConnectionStatus {
     return status;
 }
 
-/** 
- * Hook to access a Schema-Driven Store 
- * (The "Ferrari" DX)
- * 
- * Usage: const { tasks } = useStore('board');
- */
-export function useStore<T = any>(key: string): T {
-    const { client, isReady } = useNMeshed();
 
-    // Create a local state force-update trigger for reactivity
-    // Since the Proxy handles data, we just need to re-render when 'op' fires for this key
-    const [, forceUpdate] = useState({});
-
-    useEffect(() => {
-        if (!client) return;
-        return client.on('op', (opKey) => {
-            // Granular re-render: only if THIS store changed
-            if (opKey === key) {
-                forceUpdate({});
-            }
-        });
-    }, [client, key]);
-
-    // Return the Proxy if ready, otherwise empty object (or null? let's safe-default)
-    // We memoize the proxy creation to avoid thrashing
-    const store = useMemo(() => {
-        if (!client) return {} as T;
-        return client.store(key);
-    }, [client, key]);
-
-    return store as T;
-}

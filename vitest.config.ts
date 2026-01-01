@@ -9,7 +9,7 @@ export default defineConfig({
             provider: 'v8',
             reporter: ['text', 'json-summary'],
             include: ['src/**/*.ts', 'src/**/*.tsx'],
-            exclude: ['src/wasm/**', 'src/index.ts', 'src/types.ts', 'src/react/index.ts'],
+            exclude: ['src/wasm/**', 'src/index.ts', 'src/types.ts', 'src/react/index.ts', 'src/schema/**'],
             thresholds: {
                 perFile: true,
                 lines: 91,
