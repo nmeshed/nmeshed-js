@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNMeshed } from './context';
-import type { ZodType, ZodTypeDef } from 'zod';
+import type { ZodType, ZodTypeDef, SafeParseSuccess, SafeParseError } from 'zod';
+import { useSyncedDict } from './collections';
 
 /**
- * Hook with runtime schema validation.
+ * Hook with runtime schema validation (Primitives).
  * Safely typed and runtime-checked using Zod.
+ * Uses client.get/set (Key-Value Store).
  * 
  * @param key The sync key
  * @param schema Zod schema
@@ -23,17 +25,17 @@ export function useSyncedSchema<Output, Def extends ZodTypeDef, Input>(
         if (result.success) {
             return result.data;
         }
-        console.warn(`[NMeshed] Schema validation failed for key "${key}":`, result.error);
+        // console.warn(`[NMeshed] Schema validation failed for key "${key}":`, result.error);
         return null;
     }, [schema, key]);
 
     // Initialize state
     const [state, setState] = useState<{ value: Output; valid: boolean }>(() => {
         const raw = client?.get(key);
-        const valid = validate(raw);
-        return valid !== null
-            ? { value: valid, valid: true }
-            : { value: defaultValue, valid: !!raw }; // If raw exists but invalid, valid=false
+        const validated = validate(raw);
+        return validated !== null
+            ? { value: validated, valid: true }
+            : { value: defaultValue, valid: false };
     });
 
     useEffect(() => {
@@ -45,9 +47,6 @@ export function useSyncedSchema<Output, Def extends ZodTypeDef, Input>(
                 if (valid !== null) {
                     setState({ value: valid, valid: true });
                 } else {
-                    // Invalid update received - keep old value or allow it? 
-                    // "Safe" mode: ignore invalid updates to UI
-                    // But we might want error state.
                     console.error(`[NMeshed] Received invalid data for ${key}`);
                 }
             }
@@ -67,12 +66,55 @@ export function useSyncedSchema<Output, Def extends ZodTypeDef, Input>(
 
     const setValue = useCallback((newValue: Output) => {
         if (client) {
-            // Validate before send? Optional, but good practice.
-            // We trust the local code for now.
             client.set(key, newValue);
         }
         setState({ value: newValue, valid: true });
     }, [client, key]);
 
     return [state.value, setValue, state.valid];
+}
+
+/**
+ * useSyncedStore
+ * 
+ * High-level hook that synchronizes a dictionary/object and validates it against a Zod schema.
+ * Replaces the pattern of manual schema validation in components.
+ * Uses useSyncedDict (Document Store).
+ * 
+ * @param key The nMeshed collection key
+ * @param schema Zod schema for the entire object
+ * @param defaultValue Optional default value to use if validation fails or data is missing
+ */
+export function useSyncedStore<T>(
+    key: string,
+    schema: ZodType<T>,
+    defaultValue?: T
+) {
+    const [raw, setRaw] = useSyncedDict<any>(key);
+
+    const result = useMemo(() => {
+        // If raw is undefined/null, we might return default or wait.
+        if (raw === undefined || raw === null) {
+            return { success: true, data: defaultValue } as SafeParseSuccess<T>;
+        }
+        return schema.safeParse(raw);
+    }, [raw, schema, defaultValue]);
+
+    const setValue = useCallback((newValue: T | ((prev: T) => T)) => {
+        setRaw((prev: any) => {
+            if (typeof newValue === 'function') {
+                // We trust the previous value is valid T (as Proxy)
+                return (newValue as (p: T) => T)(prev);
+            }
+            return newValue;
+        });
+    }, [setRaw]);
+
+    return {
+        data: (result.success ? result.data : defaultValue) as T | undefined,
+        error: result.success ? null : (result as SafeParseError<T>).error,
+        isLoading: raw === undefined,
+        isValid: result.success,
+        setValue
+    };
 }

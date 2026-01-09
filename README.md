@@ -143,6 +143,39 @@ export function KanbanBoard() {
 
 ---
 
+## Best Practices
+
+### The "Facade Pattern" (Recommended)
+
+Don't use `useStore` directly in your UI components. Instead, wrap it in a custom hook that exposes domain-specific actions. This separates your **business logic** from the **synchronization infrastructure**.
+
+**Bad (Tightly Coupled):**
+```tsx
+// Component.tsx
+const board = useStore('board');
+return <button onClick={() => board.tasks.push(newTask)}>Add</button>;
+```
+
+**Good (Clean Architecture):**
+```tsx
+// hooks/useBoard.ts
+export function useBoard() {
+  const board = useStore('board');
+  
+  const addTask = (content: string) => {
+    board.tasks.push({ id: crypto.randomUUID(), content });
+  };
+
+  return { tasks: board.tasks, addTask };
+}
+
+// Component.tsx
+const { addTask } = useBoard();
+return <button onClick={() => addTask('New Task')}>Add</button>;
+```
+
+---
+
 ## Connection Status
 
 Monitor the WebSocket connection state:

@@ -127,7 +127,7 @@ describe('useSyncedChat', () => {
 
         // Simulate remote update by setting directly on client
         act(() => {
-            client.set('chat:sync-test:msg-1', {
+            client.set('chat.sync-test.msg-1', {
                 id: 'msg-1',
                 role: 'user',
                 content: 'Remote message',

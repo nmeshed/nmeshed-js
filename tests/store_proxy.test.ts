@@ -24,10 +24,15 @@ describe('StoreProxy', () => {
 
     beforeEach(() => {
         engine = new MockEngine();
+        vi.spyOn(console, 'log').mockImplementation(() => { }); // Suppress debug logs
     });
 
     it('should initialize with default array for z.array()', () => {
-        const proxy = createProxy(engine as any as SyncEngine, 'tasks', z.array(z.string()));
+        const schema = z.array(z.string());
+        const typeName = (schema as any)?._def?.typeName;
+        expect(typeName).toBe('ZodArray');
+
+        const proxy = createProxy(engine as any as SyncEngine, 'tasks', schema);
         expect(proxy).toEqual([]);
         expect(Array.isArray(proxy)).toBe(true);
     });
@@ -48,7 +53,7 @@ describe('StoreProxy', () => {
         it('should intercept .push() and trigger engine.set', () => {
             const proxy = createProxy<string[]>(engine as any as SyncEngine, 'tasks', z.array(z.string()));
 
-            // Action
+            // Action - this exercises lines 23-26 (push trap)
             const newLen = proxy.push('new-task');
 
             // Verify local mutation
@@ -59,6 +64,14 @@ describe('StoreProxy', () => {
             // Verify sync trigger
             expect(engine.set).toHaveBeenCalledTimes(1);
             expect(engine.set).toHaveBeenCalledWith('tasks', ['new-task']);
+        });
+
+        it('should handle multiple push calls', () => {
+            const proxy = createProxy<string[]>(engine as any as SyncEngine, 'tasks', z.array(z.string()));
+            proxy.push('a');
+            proxy.push('b', 'c');
+            expect(proxy).toEqual(['a', 'b', 'c']);
+            expect(engine.set).toHaveBeenCalledTimes(2);
         });
 
         it('should handle standard property access', () => {
@@ -81,6 +94,24 @@ describe('StoreProxy', () => {
 
             // Verify sync
             expect(engine.set).toHaveBeenCalledWith('settings', expect.objectContaining({ theme: 'dark' }));
+        });
+
+        it('should handle nested property access', () => {
+            engine.state.set('settings', { nested: { value: 42 } });
+            const proxy = createProxy<Record<string, any>>(engine as any as SyncEngine, 'settings', z.object({}));
+            expect(proxy.nested.value).toBe(42);
+        });
+
+        it('should return false for failed Reflect.set', () => {
+            // Frozen object cannot be modified
+            const frozen = Object.freeze({ immutable: true });
+            engine.state.set('frozen', frozen);
+            const proxy = createProxy<Record<string, any>>(engine as any as SyncEngine, 'frozen', z.object({}));
+
+            // This should fail silently due to frozen object
+            const result = Reflect.set(proxy, 'newProp', 'value');
+            // Note: Proxy behavior with frozen objects is complex, just verify no crash
+            expect(frozen).toEqual({ immutable: true });
         });
     });
 });

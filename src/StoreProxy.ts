@@ -1,13 +1,20 @@
-import { ZodTypeAny, ZodArray } from 'zod';
+import { ZodTypeAny } from 'zod';
 import { SyncEngine } from './engine';
 
 /** 
  * Note: Factories > Classes for ephemeral proxies.
  */
 export function createProxy<T extends object>(engine: SyncEngine, key: string, schema: ZodTypeAny): T {
-    // Infer default: Arrays default to [], Objects to {}, others to undefined (let engine handle it)
-    const def = schema instanceof ZodArray ? [] : {};
-    const target = engine.get<T>(key) || def as T;
+    // Get existing value or use schema-appropriate default
+    const existing = engine.get<T>(key);
+    // Use Zod's internal typeName for reliable detection across module boundaries
+    const typeName = (schema as any)?._def?.typeName;
+    const isArraySchema = typeName === 'ZodArray';
+
+    // DEBUG 
+    console.log('[StoreProxy] key:', key, 'typeName:', typeName, 'isArraySchema:', isArraySchema, 'existing:', existing);
+
+    const target = existing ?? (isArraySchema ? [] : {}) as T;
 
     return new Proxy(target, {
         get: (obj, prop) => (Array.isArray(obj) && prop === 'push')

@@ -1,8 +1,23 @@
 /**
- * NMeshed v2 - Protocol Layer
+ * @module Protocol
+ * @description
+ * The Protocol Layer manages the serialization and deserialization of messages between Client and Server.
  * 
- * The Essence of Data: Bytes are precious.
- * This module wraps Flatbuffers serialization with a clean interface.
+ * ## Design Philosophy
+ * - **Compactness**: We use Flatbuffers (Zero-Copy) for the envelope and MsgPack for the payload.
+ * - **Efficiency**: Parsing headers does not require decoding the entire payload.
+ * 
+ * ## Message Structure (WirePacket)
+ * 
+ * ```
+ * +-------------------+
+ * | MsgType (1 Byte)  |
+ * +-------------------+
+ * | ... Fields ...    |
+ * +-------------------+
+ * | Payload (MsgPack) |
+ * +-------------------+
+ * ```
  */
 
 import { Builder, ByteBuffer } from 'flatbuffers';
@@ -34,9 +49,14 @@ const WP_OP = 1;
 const WP_PAYLOAD = 2;
 const WP_TIMESTAMP = 3; // New field for server time (Float64 for JS compatibility)
 
-// Op Table
+// Op Table (matches protocol.fbs order)
+const OP_WORKSPACE_ID = 0;
 const OP_KEY = 1;
+const OP_TIMESTAMP = 2; // timestamp:long is field 2
 const OP_VALUE = 3;
+const OP_ACTOR_ID = 4;
+const OP_SEQ = 5;
+const OP_IS_DELETE = 6;
 
 // Init/Snapshot Table
 const WP_SNAPSHOT = 7;
@@ -56,12 +76,22 @@ const WP_CAS = 8;
 // Value Encoding (MsgPack)
 // =============================================================================
 
-/** Encode a value as MsgPack bytes (Zero-Copy, Compact) */
+/** 
+ * Encode a value as MsgPack bytes.
+ * 
+ * @param value - The JavaScript value to encode.
+ * @returns Uint8Array suitable for network transmission.
+ */
 export function encodeValue(value: unknown): Uint8Array {
     return encode(value);
 }
 
-/** Decode a MsgPack value from bytes */
+/** 
+ * Decode a MsgPack value from bytes.
+ * 
+ * @param data - The raw bytes.
+ * @returns The decoded JavaScript value.
+ */
 export function decodeValue<T = unknown>(data: Uint8Array): T {
     return decode(data) as T;
 }
@@ -70,6 +100,14 @@ export function decodeValue<T = unknown>(data: Uint8Array): T {
 // CAS Helper
 // -----------------------------------------------------------------------------
 
+/**
+ * Encodes a Compare-And-Swap operation into a Flatbuffer WirePacket.
+ * 
+ * @param key - The key to operate on.
+ * @param expected - The expected existing value (encoded) or null.
+ * @param newValue - The new value (encoded).
+ * @param actorId - The ID of the client performing the operation.
+ */
 export function encodeCAS(
     key: string,
     expected: Uint8Array | null,
@@ -114,8 +152,14 @@ export function encodeCAS(
 // Encoder
 // =============================================================================
 
-/** Encode an operation for wire transfer */
-export function encodeOp(key: string, payload: Uint8Array): Uint8Array {
+/** 
+ * Encode a standard Operation (Set/Delete).
+ * 
+ * @param key - The key.
+ * @param payload - The encoded value.
+ * @param timestamp - Optional timestamp (if re-broadcasting).
+ */
+export function encodeOp(key: string, payload: Uint8Array, timestamp?: number): Uint8Array {
     const builder = new Builder(256);
 
     // 1. Create Op Table Strings/Vectors
@@ -126,6 +170,12 @@ export function encodeOp(key: string, payload: Uint8Array): Uint8Array {
     builder.startObject(7); // Op has 7 fields max
     builder.addFieldOffset(OP_KEY, keyOffset, 0);
     builder.addFieldOffset(OP_VALUE, valueOffset, 0);
+    if (timestamp && timestamp > 0) {
+        // Use generic addInt64 logic or simulated Int64 for Flatbuffers in JS
+        // Use BigInt for timestamp (modern JS/Flatbuffers)
+        const ts = BigInt(timestamp);
+        builder.addFieldInt64(OP_TIMESTAMP, ts, BigInt(0));
+    }
     const opOffset = builder.endObject();
 
     // 3. Build WirePacket Table
@@ -138,7 +188,9 @@ export function encodeOp(key: string, payload: Uint8Array): Uint8Array {
     return builder.asUint8Array().slice();
 }
 
-/** Encode an initialization message (snapshot) with optional server time */
+/** 
+ * Encode an Init/Snapshot message.
+ */
 export function encodeInit(snapshot: Uint8Array, serverTime = 0): Uint8Array {
     const builder = new Builder(1024);
 
@@ -185,12 +237,12 @@ export function encodePong(serverTime: number): Uint8Array {
     return builder.asUint8Array().slice();
 }
 
-/** Encode a state snapshot (helper) */
+/** Encode a state snapshot map helper */
 export function encodeSnapshot(state: Record<string, unknown>): Uint8Array {
     return encodeValue(state);
 }
 
-/** Decode a state snapshot (helper) */
+/** Decode a state snapshot map helper */
 export function decodeSnapshot(data: Uint8Array): Record<string, unknown> {
     return decodeValue<Record<string, unknown>>(data);
 }
@@ -207,7 +259,12 @@ export interface DecodedMessage {
     timestamp?: number; // Server time or Op timestamp
 }
 
-/** Decode a wire message */
+/** 
+ * Decodes a raw byte array into a structured message.
+ * 
+ * @param data - The raw bytes from the WebSocket.
+ * @returns The decoded message or null if invalid.
+ */
 export function decodeMessage(data: Uint8Array): DecodedMessage | null {
     try {
         const buf = new ByteBuffer(data);
@@ -228,7 +285,17 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
             if (!opOffset) return null;
             const key = readFieldString(buf, opOffset, OP_KEY);
             const payload = readFieldBytes(buf, opOffset, OP_VALUE);
-            return { ...baseMsg, key: key || '', payload: payload || new Uint8Array() };
+            // Read timestamp from OP table (Int64)
+            const opTs = readFieldInt64(buf, opOffset, OP_TIMESTAMP, BigInt(0));
+            // Convert back to number for JS compatibility (safe for next few thousand years)
+            const finalTs = Number(opTs) || timestamp;  // Fallback to server sync time if 0
+
+            return {
+                ...baseMsg,
+                key: key || '',
+                payload: payload || new Uint8Array(),
+                timestamp: finalTs
+            };
         } else if (msgType === MsgType.Init) {
             const snapOffset = readFieldTable(buf, rootOffset, WP_SNAPSHOT);
             if (snapOffset) {
@@ -308,4 +375,11 @@ function readFieldBytes(buf: ByteBuffer, tablePos: number, fieldIndex: number): 
     const len = buf.readInt32(vectorOffset);
     const start = vectorOffset + 4;
     return buf.bytes().slice(start, start + len);
+}
+
+function readFieldInt64(buf: ByteBuffer, tablePos: number, fieldIndex: number, defaultValue: bigint): bigint {
+    const vtable = tablePos - buf.readInt32(tablePos);
+    const offset = buf.readInt16(vtable + 4 + fieldIndex * 2);
+    if (offset === 0) return defaultValue;
+    return buf.readInt64(tablePos + offset);
 }

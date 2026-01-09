@@ -94,6 +94,80 @@ describe('SyncEngine', () => {
             engine.applyRemote('board', payload, 'peer');
             expect(engine.get('board')).toEqual(value);
         });
+
+        // LWW Timestamp Ordering Tests
+        it('should IGNORE remote op with older timestamp', () => {
+            engine.set('key', 'local-value'); // Has explicit timestamp
+            // Get the timestamp we just set
+            const entry = (engine as any).state.get('key');
+            const localTs = entry.timestamp;
+
+            const oldPayload = encodeValue('stale-value');
+            engine.applyRemote('key', oldPayload, 'peer-old', localTs - 100);
+
+            // Should still be local value
+            expect(engine.get('key')).toBe('local-value');
+        });
+
+        it('should OVERWRITE local value with newer remote timestamp', () => {
+            engine.set('key', 'local-value');
+            const entry = (engine as any).state.get('key');
+            const localTs = entry.timestamp;
+
+            const newPayload = encodeValue('new-remote-value');
+            engine.applyRemote('key', newPayload, 'peer-new', localTs + 100);
+
+            expect(engine.get('key')).toBe('new-remote-value');
+        });
+
+        it('should use PeerId tiebreaker for SAME timestamp', () => {
+            // peer-A vs peer-B. 'peer-B' > 'peer-A' lexicographically.
+            // So peer-B should win if it's already there and we try to write peer-A
+            const ts = 1000;
+            const valA = encodeValue('val-A');
+            const valB = encodeValue('val-B');
+
+            // 1. Initial write by Peer B
+            engine.applyRemote('key', valB, 'peer-B', ts);
+            expect(engine.get('key')).toBe('val-B');
+
+            // 2. Incoming write by Peer A (same timestamp)
+            // 'peer-B' > 'peer-A', so existing wins. Incoming ignored.
+            engine.applyRemote('key', valA, 'peer-A', ts);
+            expect(engine.get('key')).toBe('val-B'); // Still B
+
+            // 3. But if Peer C writes (same timestamp)
+            // 'peer-C' > 'peer-B', so incoming wins.
+            const valC = encodeValue('val-C');
+            engine.applyRemote('key', valC, 'peer-C', ts);
+            expect(engine.get('key')).toBe('val-C');
+        });
+
+        it('should ACCEPT remote op with valid positive timestamp (catches field index bugs)', () => {
+            // This test catches bugs where timestamps are decoded incorrectly,
+            // resulting in garbage like -6764191668607386000 being rejected
+            const payload = encodeValue({ step: 42, active_agents: 500 });
+            const validTimestamp = 1767950000000; // ~2026 in milliseconds
+
+            engine.applyRemote('metrics', payload, 'agent-py', validTimestamp);
+
+            // Should be accepted (not rejected by LWW)
+            expect(engine.get('metrics')).toEqual({ step: 42, active_agents: 500 });
+        });
+
+        it('should REJECT remote op with obviously invalid negative timestamp', () => {
+            // First set a value with a valid timestamp
+            engine.set('key', 'initial');
+
+            // Try to apply with garbage negative timestamp (like the bug produced)
+            const payload = encodeValue('corrupted-value');
+            const corruptedTimestamp = -6764191668607386000;
+
+            engine.applyRemote('key', payload, 'corrupt-peer', corruptedTimestamp);
+
+            // Should be rejected because existing timestamp (positive) > corrupted (negative)
+            expect(engine.get('key')).toBe('initial');
+        });
     });
 
     describe('loadSnapshot', () => {
@@ -514,6 +588,138 @@ describe('SyncEngine', () => {
             engine.loadSnapshot(data);
             expect(engine.get('alive')).toBe('yes');
             expect(engine.get('dead')).toBeNull();
+        });
+
+        it('should re-apply pending ops after loading snapshot', () => {
+            // Set a value locally (creates pending op)
+            engine.set('localKey', 'localValue');
+
+            // Load a snapshot (simulating server init)
+            const snapshot = { serverKey: 'serverValue' };
+            const data = encodeValue(snapshot);
+            engine.loadSnapshot(data);
+
+            // Both should exist - pending op was re-applied
+            expect(engine.get('serverKey')).toBe('serverValue');
+            expect(engine.get('localKey')).toBe('localValue');
+        });
+
+        it('should handle non-JSON binary snapshot gracefully', () => {
+            // Binary data starting with non-JSON byte
+            const binaryData = new Uint8Array([0xFF, 0x00, 0x01, 0x02]);
+            // Should not throw, just log and continue
+            expect(() => engine.loadSnapshot(binaryData)).not.toThrow();
+        });
+    });
+
+    describe('forEach', () => {
+        it('should iterate over all entries', () => {
+            engine.set('a', 1);
+            engine.set('b', 2);
+            engine.set('c', 3);
+
+            const entries: Array<[string, unknown]> = [];
+            engine.forEach((value, key) => {
+                entries.push([key, value]);
+            });
+
+            expect(entries).toContainEqual(['a', 1]);
+            expect(entries).toContainEqual(['b', 2]);
+            expect(entries).toContainEqual(['c', 3]);
+        });
+    });
+
+    describe('clearPending', () => {
+        it('should clear all pending operations', () => {
+            engine.set('a', 1);
+            engine.set('b', 2);
+
+            expect(engine.getPendingCount()).toBe(2);
+            engine.clearPending();
+            expect(engine.getPendingCount()).toBe(0);
+        });
+    });
+
+    describe('drainPending', () => {
+        it('should return and clear pending operations', () => {
+            engine.set('key1', 'val1');
+            engine.set('key2', 'val2');
+
+            expect(engine.getPendingCount()).toBe(2);
+
+            const drained = engine.drainPending();
+            expect(drained.length).toBe(2);
+            expect(engine.getPendingCount()).toBe(0);
+
+            // Check that drained ops have correct structure
+            expect(drained[0].key).toBe('key1');
+            expect(drained[1].key).toBe('key2');
+        });
+    });
+
+    describe('destroy', () => {
+        it('should clear all state and pending ops', () => {
+            engine.set('key', 'value');
+            expect(engine.get('key')).toBe('value');
+
+            engine.destroy();
+
+            expect(engine.get('key')).toBeUndefined();
+            expect(engine.getPendingCount()).toBe(0);
+        });
+    });
+
+    describe('attachCore', () => {
+        it('should attach WASM core', () => {
+            const mockCore = {
+                apply_local_op: vi.fn(),
+                get_value: vi.fn(),
+            };
+
+            // Should not throw
+            expect(() => engine.attachCore(mockCore as any)).not.toThrow();
+        });
+    });
+
+    describe('storage error handling', () => {
+        it('should handle storage set failure in applyRemote gracefully', async () => {
+            // Create an engine with a failing storage
+            const failingStorage = {
+                get: vi.fn().mockResolvedValue(undefined),
+                set: vi.fn().mockRejectedValue(new Error('Storage failure')),
+                delete: vi.fn().mockResolvedValue(undefined),
+                scanPrefix: vi.fn().mockResolvedValue([]),
+                init: vi.fn().mockResolvedValue(undefined),
+            };
+            const engineWithFailingStorage = new SyncEngine('peer', failingStorage as any, false);
+
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+
+            const payload = encodeValue('value');
+            engineWithFailingStorage.applyRemote('key', payload, 'remote-peer');
+
+            // Wait for async error to occur
+            await new Promise(resolve => setTimeout(resolve, 10));
+
+            // Value should still be applied locally
+            expect(engineWithFailingStorage.get('key')).toBe('value');
+
+            consoleSpy.mockRestore();
+        });
+    });
+
+    describe('isJson detection', () => {
+        it('should handle empty snapshot data', () => {
+            const emptyData = new Uint8Array([]);
+            // Should not throw when loading empty data
+            expect(() => engine.loadSnapshot(emptyData)).not.toThrow();
+        });
+
+        it('should detect JSON array snapshots', () => {
+            // JSON array starts with 0x5B '['
+            const arraySnapshot = encodeValue(['item1', 'item2']);
+            // This tests the array detection path in isJson
+            expect(() => engine.loadSnapshot(arraySnapshot)).not.toThrow();
         });
     });
 });

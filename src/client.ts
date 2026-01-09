@@ -1,8 +1,25 @@
 /**
- * NMeshed v2 - Client
+ * @module Client
+ * @description
+ * The `NMeshedClient` is the primary entry point for the nMeshed SDK.
+ * It strictly manages the lifecycle of the connection, local storage persistence, and the core synchronization engine.
  * 
- * The Zen Garden: Deceptively simple, impossible to use incorrectly.
- * This is the only file users need to understand.
+ * ## Architecture Overview
+ * The Client acts as the Orchestrator. It does not implement CRDT logic itself (that's the {@link SyncEngine}) 
+ * nor does it handle raw sockets (that's the {@link WebSocketTransport}). 
+ * Instead, it wires them together and exposes a clean, "Zen" API to the user.
+ * 
+ * ## Connection Lifecycle
+ * 
+ * ```mermaid
+ * stateDiagram-v2
+ *     [*] --> Initializing
+ *     Initializing --> Connecting: Storage Loaded
+ *     Connecting --> Syncing: WebSocket Open
+ *     Syncing --> Reconnecting: WebSocket Closed (Heartbeat Fail)
+ *     Reconnecting --> Syncing: Reconnect Success
+ *     Reconnecting --> Error: Reconnect Max Retries
+ * ```
  */
 
 import { z } from 'zod';
@@ -18,6 +35,20 @@ import { InMemoryAdapter } from './adapters/InMemoryAdapter';
 // NMeshed Client
 // =============================================================================
 
+/**
+ * The main client class for interacting with the nMeshed service.
+ * 
+ * @example
+ * ```typescript
+ * const client = new NMeshedClient({
+ *     workspaceId: 'ws_123',
+ *     token: 'secret_token'
+ * });
+ * 
+ * await client.awaitReady();
+ * client.set('foo', 'bar');
+ * ```
+ */
 export class NMeshedClient implements INMeshedClient {
     private config: NMeshedConfig;
     private engine: SyncEngine;
@@ -27,6 +58,19 @@ export class NMeshedClient implements INMeshedClient {
     private storage: IStorage;
     private keySubscribers = new Map<string, Set<() => void>>();
 
+    /**
+     * Creates a new instance of the NMeshedClient.
+     * 
+     * @param config - The configuration object.
+     * @throws {Error} If `workspaceId` is missing.
+     * @throws {Error} If neither `token` nor `apiKey` is provided.
+     * 
+     * @example
+     * // FAILURE SCENARIO:
+     * // If execution throws "workspaceId is required", verify your implementation:
+     * // 1. Check if process.env.NEXT_PUBLIC_WORKSPACE_ID is actually defined.
+     * // 2. If using a config object, ensure the key is exactly 'workspaceId', not 'workspace_id'.
+     */
     constructor(config: NMeshedConfig) {
         // Validate config at the gates
         if (!config.workspaceId) {
@@ -40,6 +84,8 @@ export class NMeshedClient implements INMeshedClient {
         this.debug = config.debug || false;
 
         // Initialize Storage
+        // causality: We default to IndexedDB for persistence reliability in browsers,
+        // but fallback to InMemory for tests or Node.js environments to prevent runtime crashes.
         if (config.storage) {
             this.storage = config.storage;
         } else if (typeof indexedDB !== 'undefined') {
@@ -57,28 +103,38 @@ export class NMeshedClient implements INMeshedClient {
 
         // Optimizing Event Dispatch:
         // The Engine emits 'op' for everything. The Client can offer a finer API.
-        // Actually, let's add `subscribeKey` to SyncEngine directly or handle the Map here.
-        // Handling here is safer for refactoring without touching Engine yet.
-        // Wait, the instruction says "Add subscribe method".
-        // Let's implement the Map<Key, Set<Callback>> in Client for now 
-        // as `engine` is imported and might be shared code.
-
+        // We use Map<Key, Set<Callback>> here to allow O(1) lookups for key-specific subscriptions
+        // instead of iterating through a global listener array.
 
         // Wire up transport to engine
         this.wireTransport();
 
         // Hydration (RSC/SSR)
+        // causality: If we have an initial snapshot (e.g. from server-side rendering),
+        // we load it immediately so the UI can render meaningful content before the socket connects.
         if (config.initialSnapshot) {
             this.engine.loadSnapshot(config.initialSnapshot);
             this.engine.setStatus('ready'); // Assume ready if hydrated
         }
 
         // Initialize Persistence & Connection
+        // We fire this asynchronously to allow the constructor to return immediately.
         this.init();
     }
 
+    /**
+     * Asynchronous initialization sequence.
+     * 1. Requests persistent storage permission from the browser.
+     * 2. Initializes the storage adapter (IndexedDB).
+     * 3. Loads local state into memory.
+     * 4. Establishes the WebSocket connection.
+     * 
+     * @private
+     */
     private async init() {
         // 1. Request Persistence (W1-10)
+        // causality: Moden browsers may evict non-persisted IndexedDB data under storage pressure.
+        // We explicitly request persistence to ensure user data survives low-disk-space events.
         if (this.config.persist !== false && typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
             try {
                 const persisted = await navigator.storage.persist();
@@ -99,7 +155,7 @@ export class NMeshedClient implements INMeshedClient {
             this.connect();
         } catch (e) {
             this.log('Storage initialization failed', e);
-            // Fallback: connect anyway
+            // Fallback: connect anyway so the app works even if offline storage is broken
             this.connect();
         }
     }
@@ -108,58 +164,121 @@ export class NMeshedClient implements INMeshedClient {
     // Public API
     // ---------------------------------------------------------------------------
 
-    /** Get a value by key */
+    /**
+     * Retrieves the current value for a given key from the local store.
+     * 
+     * @remarks
+     * This is a synchronous, in-memory lookup. It is Instant (O(1)).
+     * 
+     * @param key - The key to retrieve.
+     * @returns The value associated with the key, or `undefined` if not found.
+     */
     get<T = unknown>(key: string): T | undefined {
         return this.engine.get<T>(key);
     }
 
-    /** Set a key-value pair */
+    /**
+     * Updates the value for a given key.
+     * 
+     * @remarks
+     * This operation is optimistic:
+     * 1. It creates an operation.
+     * 2. Applies it locally immediately (updating the UI).
+     * 3. Queues it for network transmission.
+     * 
+     * @param key - The key to set.
+     * @param value - The value to store. Must be serializable.
+     */
     set<T = unknown>(key: string, value: T): void {
+        this.log(`set(${key}, ${JSON.stringify(value)})`);
         this.engine.set(key, value);
     }
 
-    /** Delete a key */
+    /**
+     * Removes a key and its value from the store.
+     * 
+     * @remarks
+     * Treated as a "tombstone" operation in the CRDT engine to ensure deletion propagates correctly
+     * across distributed peers.
+     * 
+     * @param key - The key to delete.
+     */
     delete(key: string): void {
         this.engine.delete(key);
     }
 
     /** 
-     * Atomic Compare-And-Swap 
-     * Returns true if successful (value matched expected), false otherwise.
-     * If successful, the value is updated to newValue.
+     * Performs an Atomic Compare-And-Swap (CAS) operation.
+     * 
+     * @remarks
+     * Useful for implementing locks, counters, or transactional updates.
+     * This operation is **not** purely local/optimistic. It requires coordination logic.
+     * 
+     * @param key - The target key.
+     * @param expected - The value you expect to currently exist (null if expecting non-existence).
+     * @param newValue - The value to set if the expectation matches.
+     * @returns A Promise resolving to `true` if the swap succeeded, `false` otherwise.
      */
     async cas<T = unknown>(key: string, expected: T | null, newValue: T): Promise<boolean> {
         return this.engine.cas(key, expected, newValue);
     }
 
-    /** Subscribe to events */
+    /**
+     * Subscribes to global client events.
+     * 
+     * @param event - The event name ('ready', 'syncing', 'error', 'op').
+     * @param handler - The callback function.
+     * @returns A function to unsubscribe.
+     */
     on<K extends keyof ClientEvents>(event: K, handler: EventHandler<K>): () => void {
         return this.engine.on(event, handler);
     }
 
-    /** Get current connection status */
+    /**
+     * Returns the current connection status.
+     * 
+     * @returns One of 'initializing' | 'connecting' | 'syncing' | 'offline' | 'reconnecting' | 'error' | 'ready'.
+     */
     getStatus(): ConnectionStatus {
         return this.engine.getStatus();
     }
 
-    /** Get client's peer ID */
+    /**
+     * Returns the unique Peer ID of this client instance.
+     * 
+     * @remarks
+     * Used for conflict resolution (LWW - Last Write Wins) ties.
+     */
     getPeerId(): string {
         return this.engine.getPeerId();
     }
 
-    /** Get all values */
+    /**
+     * Returns a snapshot of all current key-value pairs.
+     */
     getAllValues(): Record<string, unknown> {
         return this.engine.getAllValues();
     }
 
-    /** Iterate over all entries */
+    /**
+     * Iterates over all key-value pairs in the store.
+     * 
+     * @param callback - Function to execute for each entry.
+     */
     forEach(callback: (value: unknown, key: string) => void): void {
         this.engine.forEach(callback);
     }
 
     /** 
-     * Subscribe to changes on a specific key 
-     * This offers O(1) dispatch instead of O(N) event filtering.
+     * Subscribes to changes on a **specific key**.
+     * 
+     * @remarks
+     * Ideally used for binding a specific UI component to a specific data point.
+     * This offers O(1) dispatch efficiency, avoiding the overhead of filtering global 'op' events.
+     * 
+     * @param key - The key to watch.
+     * @param callback - The function to call when the key's value changes.
+     * @returns Unsubscribe function.
      */
     subscribe(key: string, callback: () => void): () => void {
         if (!this.keySubscribers.has(key)) {
@@ -176,7 +295,16 @@ export class NMeshedClient implements INMeshedClient {
         };
     }
 
-    /** Wait for ready state */
+    /**
+     * Waits until the client is in the 'ready' state.
+     * 
+     * @remarks
+     * The 'ready' state implies that local storage has been loaded.
+     * It does *not* necessarily mean we are connected to the server, but it means
+     * the client is safe to read/write against.
+     * 
+     * @returns Promise that resolves when ready.
+     */
     async awaitReady(): Promise<void> {
         if (this.getStatus() === 'ready') return;
 
@@ -188,7 +316,14 @@ export class NMeshedClient implements INMeshedClient {
         });
     }
 
-    /** Disconnect and cleanup */
+    /**
+     * Gracefully disconnects the client.
+     * 
+     * @remarks
+     * 1. Unsubscribes all listeners.
+     * 2. Closes the WebSocket connection.
+     * 3. Destroys the engine instance.
+     */
     disconnect(): void {
         this.unsubscribers.forEach((unsub) => unsub());
         this.transport.disconnect();
@@ -200,8 +335,14 @@ export class NMeshedClient implements INMeshedClient {
     // ---------------------------------------------------------------------------
 
     /**
-     * Get a schematic store proxy.
-     * returns a Proxy wrapper that intercepts mutations for CRDT sync.
+     * Creates a Type-Safe Store Proxy for a specific key.
+     * 
+     * @remarks
+     * Returns a Proxy object that intercepts mutations and automatically synchronizes them.
+     * This allows you to treat remote data as if it were a local mutable object.
+     * 
+     * @param key - The root key to proxy.
+     * @returns A proxy object typed as T.
      */
     store<T = any>(key: string): T {
         return createProxy(
@@ -215,18 +356,29 @@ export class NMeshedClient implements INMeshedClient {
     // Private
     // ---------------------------------------------------------------------------
 
+    /**
+     * Initiates the WebSocket connection sequence.
+     * 
+     * @private
+     */
     private async connect(): Promise<void> {
         this.engine.setStatus('connecting');
 
         try {
             await this.transport.connect();
-            // onOpen handler will set 'connected' -> 'syncing'
+            // Note: The onOpen handler (wired in wireTransport) will transition state 
+            // from 'connected' -> 'syncing'.
         } catch (error) {
             this.engine.setStatus('error');
             this.engine.emit('error', error instanceof Error ? error : new Error(String(error)));
         }
     }
 
+    /**
+     * Sets up event listeners between the Network Transport and the Sync Engine.
+     * 
+     * @private
+     */
     private wireTransport(): void {
         // Handle incoming messages
         const unsubMessage = this.transport.onMessage((data) => {
@@ -250,19 +402,26 @@ export class NMeshedClient implements INMeshedClient {
         });
         this.unsubscribers.push(unsubClose);
 
-        // Auto-Broadcast: Listen to local ops and send them
+        // Auto-Broadcast: Listen to local ops and send them to the server
         const unsubOp = this.engine.on('op', (key, value, isLocal) => {
-            // optimized dispatch
+            // optimized dispatch to specific key subscribers
             const subscribers = this.keySubscribers.get(key);
             if (subscribers) {
                 subscribers.forEach(cb => cb());
             }
 
-            // console.log('[Client] Op event:', key, isLocal, this.transport.isConnected());
-            if (isLocal && this.transport.isConnected()) {
-                const payload = encodeValue(value);
-                const wireData = encodeOp(key, payload);
-                this.transport.send(wireData);
+            // DEBUG: Log op propagation
+            if (isLocal) {
+                const connected = this.transport.isConnected();
+                this.log(`Op: ${key} | Local: ${isLocal} | Connected: ${connected}`);
+
+                if (connected) {
+                    const payload = encodeValue(value);
+                    const wireData = encodeOp(key, payload);
+                    this.transport.send(wireData);
+                } else {
+                    this.log(`Queueing Op (Offline): ${key}`);
+                }
             }
         });
         this.unsubscribers.push(unsubOp);
@@ -284,6 +443,12 @@ export class NMeshedClient implements INMeshedClient {
     private pingInterval: any = null;
     private pongTimeout: any = null;
 
+    /**
+     * Starts the heartbeat mechanism to detect silent connection drops.
+     * Sends a PING every 30s. Expects a PONG within 5s.
+     * 
+     * @private
+     */
     private startHeartbeat() {
         this.stopHeartbeat();
         // Send Ping every 30s
@@ -295,8 +460,8 @@ export class NMeshedClient implements INMeshedClient {
                 // Expect Pong within 5s
                 if (this.pongTimeout) clearTimeout(this.pongTimeout);
                 this.pongTimeout = setTimeout(() => {
-                    this.log('Ping timeout - disconnecting');
-                    this.transport.disconnect();
+                    this.log('Ping timeout - reconnecting');
+                    this.transport.reconnect().catch(e => this.log('Reconnect failed', e));
                 }, 5000);
             }
         }, 30000);
@@ -309,6 +474,11 @@ export class NMeshedClient implements INMeshedClient {
         this.pongTimeout = null;
     }
 
+    /**
+     * Flushes ops that were generated while offline to the server.
+     * 
+     * @private
+     */
     private flushPendingOps(): void {
         const ops = this.engine.drainPending();
         if (ops.length > 0) {
@@ -321,8 +491,13 @@ export class NMeshedClient implements INMeshedClient {
         }
     }
 
+    /**
+     * Routes incoming wire messages to the appropriate logic.
+     * 
+     * @param data - Raw binary message from the websocket.
+     */
     private handleMessage(data: Uint8Array): void {
-        const msg = decodeMessage(data); // New helper
+        const msg = decodeMessage(data);
         if (!msg) return;
 
         // Clock Synchronization
@@ -347,7 +522,8 @@ export class NMeshedClient implements INMeshedClient {
             case MsgType.Op:
                 // Apply remote operation
                 if (msg.key && msg.payload) {
-                    this.engine.applyRemote(msg.key, msg.payload, 'remote');
+                    // Pass timestamp for proper LWW ordering
+                    this.engine.applyRemote(msg.key, msg.payload, 'remote', msg.timestamp);
                 }
                 break;
 

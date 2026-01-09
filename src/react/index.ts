@@ -13,8 +13,11 @@ export {
 export {
     useSyncedMap,
     useSyncedList,
+    useSyncedDict,
 } from './collections';
 
-export { useSyncedSchema } from './schema';
+export { useSyncedSchema, useSyncedStore } from './schema';
 export { useStore, useConnection } from './hooks';
+export { usePresence } from './presence';
+export { useSuspenseStore } from './suspense';
 export { useSyncedChat, useSignalQueue } from '../ai';

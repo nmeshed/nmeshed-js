@@ -9,5 +9,8 @@ export default defineConfig({
     dts: true,
     splitting: false,
     clean: true,
-    external: ['react'],
+    // Peer dependencies - consumer provides these
+    external: ['react', 'zod'],
+    // Bundle internal deps - consumer should never see these
+    noExternal: ['@msgpack/msgpack', 'flatbuffers'],
 });

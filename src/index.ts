@@ -26,3 +26,6 @@ export * from './react/index';
 
 // RSC utilities
 export * from './rsc';
+
+// Testing utilities (for consumer unit tests)
+export { MockNMeshedClient, createMockClient } from './testing';

@@ -154,6 +154,8 @@ export interface Transport {
     connect(): Promise<void>;
     /** Disconnect from server */
     disconnect(): void;
+    /** Force reconnection */
+    reconnect(): Promise<void>;
     /** Send binary message */
     send(data: Uint8Array): void;
     /** Register message handler */

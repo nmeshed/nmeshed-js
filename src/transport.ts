@@ -1,8 +1,19 @@
 /**
- * NMeshed v2 - Transport Layer
+ * @module Transport
+ * @description
+ * The Transport Layer is responsible for maintaining the WebSocket connection.
  * 
- * Non-Resistance: Like water, data never waits.
- * Simple WebSocket transport with automatic reconnection.
+ * ## Reconnection Strategy
+ * We use **Exponential Backoff with Jitter** to prevents thundering herd problems.
+ * 
+ * ```mermaid
+ * graph TD
+ *     A[Connected] -->|Disconnect| B[Wait Base Delay]
+ *     B -->|Retry| C{Success?}
+ *     C -->|Yes| A
+ *     C -->|No| D[Wait * 1.5]
+ *     D -->|Retry| C
+ * ```
  */
 
 import type { Transport, NMeshedConfig } from './types';
@@ -31,6 +42,9 @@ export class WebSocketTransport implements Transport {
     private shouldReconnect = true;
     private debug: boolean;
 
+    /**
+     * @param config - The NMeshed configuration object.
+     */
     constructor(config: NMeshedConfig) {
         this.token = config.token || config.apiKey || '';
         this.debug = config.debug || false;
@@ -46,6 +60,11 @@ export class WebSocketTransport implements Transport {
         this.url = `${baseUrl}/ws?workspace_id=${config.workspaceId}`;
     }
 
+    /**
+     * Establishes the WebSocket connection.
+     * 
+     * @returns Promise resolving when connection is OPEN.
+     */
     async connect(): Promise<void> {
         return new Promise((resolve, reject) => {
             try {
@@ -82,12 +101,28 @@ export class WebSocketTransport implements Transport {
         });
     }
 
+    /**
+     * Intentionally closes the connection and stops reconnection attempts.
+     */
     disconnect(): void {
         this.shouldReconnect = false;
         this.ws?.close();
         this.ws = null;
     }
 
+    /**
+     * Forces a reconnection.
+     */
+    async reconnect(): Promise<void> {
+        this.disconnect();
+        this.shouldReconnect = true;
+        return this.connect();
+    }
+
+    /**
+     * Sends raw bytes to the server.
+     * Silently drops messages if not connected (client should queue them).
+     */
     send(data: Uint8Array): void {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(data);
@@ -109,6 +144,7 @@ export class WebSocketTransport implements Transport {
         return () => this.closeHandlers.delete(handler);
     }
 
+    /** Returns true if the socket is OPEN */
     isConnected(): boolean {
         return this.ws?.readyState === WebSocket.OPEN;
     }
@@ -117,6 +153,9 @@ export class WebSocketTransport implements Transport {
     // Private
     // ---------------------------------------------------------------------------
 
+    /**
+     * Handles automatic reconnection with exponential backoff.
+     */
     private attemptReconnect(): void {
         if (!this.shouldReconnect) return;
 

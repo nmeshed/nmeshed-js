@@ -1,7 +1,12 @@
 /**
- * NMeshed v2 - React Integration
+ * @module ReactContext
+ * @description
+ * This module provides the `NMeshedContext` and `NMeshedProvider`, which are the foundation
+ * for using nMeshed in a React application.
  * 
- * Singular Entry: One Provider, one Hook, zero cognitive load.
+ * ## Usage Modes
+ * 1. **Zen Mode (Managed)**: You pass the configuration (`workspaceId`, `token`) props to the Provider, and it instantiates/manages the Client for you.
+ * 2. **AAA Method (Advanced)**: You instantiate the `NMeshedClient` yourself and pass it via the `client` prop. Useful for dependency injection or sharing the client with non-React code.
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
@@ -15,7 +20,7 @@ import { NMeshedClient } from '../client';
 interface NMeshedContextValue {
     client: NMeshedClient | null;
     status: ConnectionStatus;
-    isReady: boolean;
+    isReady: boolean; // Convenience flag for status === 'ready'
 }
 
 const NMeshedContext = createContext<NMeshedContextValue | null>(null);
@@ -25,11 +30,36 @@ const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 // =============================================================================
 
 interface NMeshedProviderProps extends Partial<NMeshedConfig> {
+    /**
+     * Optional external client instance.
+     * If provided, the Provider will use this client instead of creating one.
+     */
     client?: NMeshedClient;
     children: React.ReactNode;
 }
 
-export function NMeshedProvider({ children, client: externalClient, ...config }: NMeshedProviderProps): React.ReactElement {
+/**
+ * The Root Provider for nMeshed.
+ * 
+ * @example
+ * ```tsx
+ * // Zen Mode (Recommended)
+ * <NMeshedProvider workspaceId="ws_123" token="secret">
+ *   <App />
+ * </NMeshedProvider>
+ * ```
+ * 
+ * @example
+ * // Advanced Mode (Shared Client)
+ * const client = new NMeshedClient({ ... });
+ * <NMeshedProvider client={client}>
+ *   <App />
+ * </NMeshedProvider>
+ * 
+ * @param props - Configuration or Client instance.
+ * @throws {Error} (Indirectly) If validation fails in Client constructor.
+ */
+export function NMeshedProvider({ children, client: externalClient, ...config }: NMeshedProviderProps): React.ReactNode {
     const [internalClient, setInternalClient] = useState<NMeshedClient | null>(null);
     const [status, setStatus] = useState<ConnectionStatus>('disconnected');
 
@@ -49,6 +79,7 @@ export function NMeshedProvider({ children, client: externalClient, ...config }:
         // Validate config first
         if (!config.workspaceId || (!config.token && !config.apiKey)) {
             // Config likely still loading, do nothing
+            // This prevents "Client init failed" errors during hydration/env loading
             return;
         }
 
@@ -72,6 +103,16 @@ export function NMeshedProvider({ children, client: externalClient, ...config }:
         isReady: status === 'ready',
     }), [activeClient, status]);
 
+    // Race Condition Guard:
+    // If we are in "Zen Mode" (internal client), we must NOT render children until 
+    // the client is instantiated. Otherwise hooks will throw "outside provider" or "client null" error.
+    if (!activeClient) {
+        // We render null to suspend the tree.
+        // Ideally, user should handle "loading" based on isReady being false higher up if they use external client,
+        // but for internal client, this 'null' prevents crashes.
+        return null;
+    }
+
     return React.createElement(NMeshedContext.Provider, { value }, children);
 }
 
@@ -79,7 +120,14 @@ export function NMeshedProvider({ children, client: externalClient, ...config }:
 // Hooks
 // =============================================================================
 
-/** Hook to access the NMeshed context */
+/** 
+ * Low-level hook to access the NMeshed context.
+ * 
+ * @remarks
+ * Prefer using `useSyncedStore` or `useConnection` instead of this directly.
+ * 
+ * @throws {Error} If used outside of `<NMeshedProvider>`.
+ */
 export function useNMeshed(): NMeshedContextValue {
     const context = useContext(NMeshedContext);
     if (!context) {
@@ -88,7 +136,17 @@ export function useNMeshed(): NMeshedContextValue {
     return context;
 }
 
-/** Hook for a single synced value */
+/** 
+ * Hook for a single simple value (key-value pair).
+ * 
+ * @remarks
+ * Good for simple toggles, strings, or numbers.
+ * For complex objects with schema validation, use `useSyncedStore`.
+ * 
+ * @param key - The sync key.
+ * @param defaultValue - Fallback value if key doesn't exist.
+ * @returns [value, setValue] tuple.
+ */
 export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T | ((prev: T) => T)) => void] {
     const { client, isReady } = useNMeshed();
     const [value, setValue] = useState<T>(() => client?.get<T>(key) ?? defaultValue);
@@ -103,13 +161,13 @@ export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T |
             }
         });
 
-        // Initial value
+        // Initial value check (after connect)
         setValue(client.get<T>(key) ?? defaultValue);
 
         return unsub;
     }, [client, key, defaultValue]);
 
-    // Track latest value in ref for stable setter
+    // Track latest value in ref for stable setter (Pattern: Fresh Ref)
     const valueRef = React.useRef(value);
     useEffect(() => { valueRef.current = value; }, [value]);
 
@@ -133,7 +191,12 @@ export function useSyncedValue<T>(key: string, defaultValue: T): [T, (value: T |
     return [value, setRemoteValue];
 }
 
-/** Hook to subscribe to all changes */
+/** 
+ * Hook to subscribe to ALL changes globally.
+ * 
+ * @remarks
+ * Use sparingly. Useful for logs, debuggers, or "activity streams".
+ */
 export function useOnChange(callback: (key: string, value: unknown) => void): void {
     const { client } = useNMeshed();
 
@@ -143,10 +206,10 @@ export function useOnChange(callback: (key: string, value: unknown) => void): vo
     }, [client, callback]);
 }
 
-/** Hook for connection status */
+/** 
+ * Hook to access specific connection status string.
+ */
 export function useConnectionStatus(): ConnectionStatus {
     const { status } = useNMeshed();
     return status;
 }
-
-

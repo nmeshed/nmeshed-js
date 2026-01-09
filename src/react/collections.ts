@@ -3,7 +3,7 @@ import { useNMeshed } from './context';
 
 /**
  * Hook for a collection of values sharing a common prefix.
- * Example: useSyncedMap('cursors') -> manages keys like 'cursors:abc', 'cursors:123'
+ * Example: useSyncedMap('cursors') -> manages keys like 'cursors.abc', 'cursors.123'
  * 
  * @param prefix The key prefix (e.g. 'cursors')
  * @returns [map, setItem, removeItem]
@@ -22,7 +22,7 @@ export function useSyncedMap<T>(prefix: string): [
         // Initial load: scan all keys matching prefix
         const initial: Record<string, T> = {};
         const all = client.getAllValues();
-        const prefixWithSep = `${prefix}:`;
+        const prefixWithSep = `${prefix}.`;
 
         Object.entries(all).forEach(([k, v]) => {
             if (k.startsWith(prefixWithSep)) {
@@ -57,13 +57,13 @@ export function useSyncedMap<T>(prefix: string): [
 
     const setItem = useCallback((subKey: string, value: T) => {
         if (client) {
-            client.set(`${prefix}:${subKey}`, value);
+            client.set(`${prefix}.${subKey}`, value);
         }
     }, [client, prefix]);
 
     const removeItem = useCallback((subKey: string) => {
         if (client) {
-            client.delete(`${prefix}:${subKey}`);
+            client.delete(`${prefix}.${subKey}`);
         }
     }, [client, prefix]);
 
@@ -72,7 +72,7 @@ export function useSyncedMap<T>(prefix: string): [
 
 /**
  * Hook for a list of values.
- * Under the hood, this uses random UUIDs as keys: `prefix:uuid`
+ * Under the hood, this uses random UUIDs as keys: `prefix.uuid`
  */
 export function useSyncedList<T>(prefix: string): [
     T[],
@@ -92,4 +92,103 @@ export function useSyncedList<T>(prefix: string): [
     }, [setItem]);
 
     return [list, push, removeItem];
+}
+
+/**
+ * Hook for a dictionary where each top-level key is synced separately.
+ * Ideal for "global state" objects like a Game State or Dashboard Config.
+ */
+export function useSyncedDict<T extends Record<string, any>>(prefix: string): [
+    T,
+    (value: T | ((prev: T) => T)) => void
+] {
+    const { client } = useNMeshed();
+    const [data, setData] = useState<T>({} as T);
+
+    useEffect(() => {
+        if (!client) {
+            console.error('[useSyncedDict] Client not ready - hook called outside NMeshedProvider?');
+            return;
+        }
+
+        const prefixWithSep = prefix ? `${prefix}.` : '';
+
+        // Function to load current state from engine
+        const syncFromEngine = () => {
+            const all = client.getAllValues();
+            const newData: Record<string, any> = {};
+            Object.entries(all).forEach(([k, v]) => {
+                if (prefix) {
+                    if (k.startsWith(prefixWithSep)) {
+                        const subKey = k.slice(prefixWithSep.length);
+                        newData[subKey] = v;
+                    }
+                } else {
+                    newData[k] = v;
+                }
+            });
+            setData(newData as T);
+        };
+
+        // Initial sync (may be empty if Init not yet received)
+        syncFromEngine();
+
+        // Re-sync when client becomes ready (Init snapshot loaded)
+        const unsubReady = client.on('ready', () => {
+            syncFromEngine();
+        });
+
+        // Subscribe to ops for real-time updates
+        const unsubOp = client.on('op', (key, value) => {
+            if (prefix) {
+                if (key.startsWith(prefixWithSep)) {
+                    const subKey = key.slice(prefixWithSep.length);
+                    setData(prev => {
+                        if (prev[subKey] === value) return prev;
+                        return { ...prev, [subKey]: value };
+                    });
+                }
+            } else {
+                setData(prev => {
+                    if (prev[key] === value) return prev;
+                    return { ...prev, [key]: value };
+                });
+            }
+        });
+
+        return () => {
+            unsubReady();
+            unsubOp();
+        };
+    }, [client, prefix]);
+
+    const setDict = useCallback((newValueOrFn: T | ((prev: T) => T)) => {
+        if (!client) return;
+
+        setData(prev => {
+            const next = typeof newValueOrFn === 'function'
+                ? (newValueOrFn as (p: T) => T)(prev)
+                : newValueOrFn;
+
+            // Delta sync: Only set keys that changed
+            Object.entries(next).forEach(([k, v]) => {
+                const fullKey = prefix ? `${prefix}.${k}` : k;
+                if (prev[k] !== v) {
+                    client.set(fullKey, v);
+                }
+            });
+
+            // Handle deletions (keys in prev but not in next)
+            Object.keys(prev).forEach(k => {
+                if (!(k in next)) {
+                    const fullKey = prefix ? `${prefix}.${k}` : k;
+                    client.delete(fullKey);
+                }
+            });
+
+            return next;
+        });
+    }, [client, prefix]);
+
+    return [data, setDict];
 }

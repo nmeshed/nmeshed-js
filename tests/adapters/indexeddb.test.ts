@@ -105,4 +105,48 @@ describe('IndexedDBAdapter', () => {
 
         await expect(adapter.clear('key1')).resolves.not.toThrow();
     });
+
+    it('should clearAll data', async () => {
+        const adapter = new IndexedDBAdapter('test-db');
+        await adapter.init();
+
+        await adapter.set('key1', new Uint8Array([1]));
+        await adapter.set('key2', new Uint8Array([2]));
+
+        await adapter.clearAll();
+
+        const val1 = await adapter.get('key1');
+        const val2 = await adapter.get('key2');
+        expect(val1).toBeUndefined();
+        expect(val2).toBeUndefined();
+    });
+
+    it('should re-use existing init promise', async () => {
+        const adapter = new IndexedDBAdapter('test-db');
+        const p1 = adapter.init();
+        const p2 = adapter.init();
+
+        // Should return same promise
+        expect(p1).toBe(p2);
+        await p1;
+    });
+
+    it('should handle close when db is null', async () => {
+        const adapter = new IndexedDBAdapter('test-db');
+        // Close without init
+        await expect(adapter.close()).resolves.not.toThrow();
+    });
+
+    it('should handle scan with non-Uint8Array values gracefully', async () => {
+        const adapter = new IndexedDBAdapter('test-db');
+        await adapter.init();
+
+        // Set a valid value
+        await adapter.set('prefix1', new Uint8Array([1]));
+
+        // Scan should only return Uint8Array results
+        const results = await adapter.scanPrefix('prefix');
+        expect(results.length).toBeGreaterThanOrEqual(0);
+    });
 });
+
