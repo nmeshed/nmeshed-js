@@ -37,6 +37,7 @@ export enum MsgType {
     Ping = 5,
     Pong = 6,
     CompareAndSwap = 7,
+    Encrypted = 8,
 }
 
 // =============================================================================
@@ -57,6 +58,7 @@ const OP_VALUE = 3;
 const OP_ACTOR_ID = 4;
 const OP_SEQ = 5;
 const OP_IS_DELETE = 6;
+const OP_IS_ENCRYPTED = 7;
 
 // Init/Snapshot Table
 const WP_SNAPSHOT = 7;
@@ -71,6 +73,7 @@ const CAS_ACTOR = 3;
 const CAS_TIMESTAMP = 4;
 
 const WP_CAS = 8;
+const WP_ENCRYPTED = 9;
 
 // =============================================================================
 // Value Encoding (MsgPack)
@@ -158,8 +161,9 @@ export function encodeCAS(
  * @param key - The key.
  * @param payload - The encoded value.
  * @param timestamp - Optional timestamp (if re-broadcasting).
+ * @param isEncrypted - Whether the payload is encrypted.
  */
-export function encodeOp(key: string, payload: Uint8Array, timestamp?: number): Uint8Array {
+export function encodeOp(key: string, payload: Uint8Array, timestamp?: number, isEncrypted = false): Uint8Array {
     const builder = new Builder(256);
 
     // 1. Create Op Table Strings/Vectors
@@ -167,7 +171,7 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: number): 
     const valueOffset = builder.createByteVector(payload);
 
     // 2. Build Op Table
-    builder.startObject(7); // Op has 7 fields max
+    builder.startObject(8); // Op has 8 fields max
     builder.addFieldOffset(OP_KEY, keyOffset, 0);
     builder.addFieldOffset(OP_VALUE, valueOffset, 0);
     if (timestamp && timestamp > 0) {
@@ -175,6 +179,9 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: number): 
         // Use BigInt for timestamp (modern JS/Flatbuffers)
         const ts = BigInt(timestamp);
         builder.addFieldInt64(OP_TIMESTAMP, ts, BigInt(0));
+    }
+    if (isEncrypted) {
+        builder.addFieldInt8(OP_IS_ENCRYPTED, 1, 0);
     }
     const opOffset = builder.endObject();
 
@@ -247,6 +254,25 @@ export function decodeSnapshot(data: Uint8Array): Record<string, unknown> {
     return decodeValue<Record<string, unknown>>(data);
 }
 
+/**
+ * Encode an Opaque Encrypted Blob (Liability Shield).
+ * 
+ * @param payload - The pre-encrypted bytes.
+ */
+export function encodeEncrypted(payload: Uint8Array): Uint8Array {
+    const builder = new Builder(payload.length + 32);
+    const dataOffset = builder.createByteVector(payload);
+
+    builder.startObject(10);
+    builder.addFieldInt8(WP_MSG_TYPE, MsgType.Encrypted, 0);
+    builder.addFieldOffset(WP_ENCRYPTED, dataOffset, 0);
+    builder.addFieldFloat64(WP_TIMESTAMP, Date.now(), 0);
+    const packet = builder.endObject();
+
+    builder.finish(packet);
+    return builder.asUint8Array().slice();
+}
+
 // =============================================================================
 // Decoder
 // =============================================================================
@@ -257,6 +283,7 @@ export interface DecodedMessage {
     payload?: Uint8Array;
     expectedValue?: Uint8Array | null; // For CAS
     timestamp?: number; // Server time or Op timestamp
+    isEncrypted?: boolean;
 }
 
 /** 
@@ -290,11 +317,14 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
             // Convert back to number for JS compatibility (safe for next few thousand years)
             const finalTs = Number(opTs) || timestamp;  // Fallback to server sync time if 0
 
+            const isEncrypted = readFieldInt8(buf, opOffset, OP_IS_ENCRYPTED, 0) === 1;
+
             return {
                 ...baseMsg,
                 key: key || '',
                 payload: payload || new Uint8Array(),
-                timestamp: finalTs
+                timestamp: finalTs,
+                isEncrypted
             };
         } else if (msgType === MsgType.Init) {
             const snapOffset = readFieldTable(buf, rootOffset, WP_SNAPSHOT);
@@ -320,6 +350,12 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
                 key: key || '',
                 payload: newValue || new Uint8Array(),
                 expectedValue: expected
+            };
+        } else if (msgType === MsgType.Encrypted) {
+            const payload = readFieldBytes(buf, rootOffset, WP_ENCRYPTED);
+            return {
+                ...baseMsg,
+                payload: payload || new Uint8Array()
             };
         }
 

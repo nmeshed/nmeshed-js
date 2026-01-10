@@ -25,7 +25,36 @@
  */
 
 import type { CRDTCore, Operation, ConnectionStatus, ClientEvents, EventHandler, IStorage } from './types';
+import type { EncryptionAdapter } from './encryption';
 import { encodeValue, decodeValue, MsgType, encodeCAS } from './protocol';
+
+/**
+ * Deep equality check for CAS operations.
+ * Unlike JSON.stringify, this is order-independent for object keys.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a == null || b == null) return a === b;
+    if (typeof a !== typeof b) return false;
+
+    if (typeof a !== 'object') return a === b;
+
+    // Arrays
+    if (Array.isArray(a)) {
+        if (!Array.isArray(b) || a.length !== b.length) return false;
+        return a.every((item, i) => deepEqual(item, b[i]));
+    }
+
+    // Objects - order-independent comparison
+    const keysA = Object.keys(a as object);
+    const keysB = Object.keys(b as object);
+    if (keysA.length !== keysB.length) return false;
+
+    return keysA.every(key =>
+        key in (b as object) &&
+        deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
+    );
+}
 
 // =============================================================================
 // Event Emitter
@@ -93,6 +122,7 @@ export class SyncEngine extends EventEmitter {
     private debug: boolean;
     private storage: IStorage;
     private clockOffset = 0; // Difference between server and local time
+    private encryption?: EncryptionAdapter;
 
     // ...
 
@@ -111,11 +141,12 @@ export class SyncEngine extends EventEmitter {
     // WASM core (optional - for CRDT merge logic)
     private core: CRDTCore | null = null;
 
-    constructor(peerId: string, storage: IStorage, debug = false) {
+    constructor(peerId: string, storage: IStorage, debug = false, encryption?: EncryptionAdapter) {
         super();
         this.peerId = peerId;
         this.storage = storage;
         this.debug = debug;
+        this.encryption = encryption;
     }
 
     // ---------------------------------------------------------------------------
@@ -142,7 +173,7 @@ export class SyncEngine extends EventEmitter {
      * @param value - The value to store.
      * @returns The encoded payload (Uint8Array) ready for wire transmission.
      */
-    set<T = unknown>(key: string, value: T): Uint8Array {
+    async set<T = unknown>(key: string, value: T): Promise<Uint8Array> {
         const timestamp = this.getTimestamp();
 
         // Apply locally immediately (optimistic) - store with timestamp
@@ -152,7 +183,11 @@ export class SyncEngine extends EventEmitter {
         this.emit('op', key, value, true);
 
         // Create wire payload
-        const payload = encodeValue(value);
+        // E2EE: If encryption is enabled, encrypt the payload
+        let payload = encodeValue(value);
+        if (this.encryption) {
+            payload = await this.encryption.encrypt(payload);
+        }
 
         // Queue for network send
         const op: Operation = { key, value, timestamp, peerId: this.peerId };
@@ -183,40 +218,38 @@ export class SyncEngine extends EventEmitter {
      * 
      * @param key - Key to remove.
      */
-    delete(key: string): Uint8Array {
+    async delete(key: string): Promise<Uint8Array> {
         // Tombstone deletion (standard for CRDTs)
         return this.set(key, null);
     }
 
     /**
      * Applies a remote operation from another peer.
-     * 
-     * @remarks
-     * **Conflict Resolution Strategy (LWW):**
-     * - If local timestamp > remote timestamp: **IGNORE** (Local wins).
-     * - If remote timestamp > local timestamp: **APPLY** (Remote wins).
-     * - If timestamps are equal: **TIEBREAKER** using peerId comparison.
-     * 
-     * @param key - The key to update.
-     * @param payload - The encoded value.
-     * @param peerId - The ID of the peer who made the change.
-     * @param timestamp - The timestamp when the change happened (server time).
+     * ...
      */
-    applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: number): void {
-        const value = decodeValue(payload);
+    async applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: number): Promise<void> {
+        // E2EE: Decrypt if needed
+        let finalPayload = payload;
+        if (this.encryption) {
+            try {
+                finalPayload = await this.encryption.decrypt(payload);
+            } catch (e) {
+                console.error(`[NMeshed] Decryption failed for remote op ${key}`, e);
+                return; // Drop invalid data
+            }
+        }
+
+        const value = decodeValue(finalPayload);
         const incomingTs = timestamp ?? Date.now();
 
         // Proper LWW merge: only accept if incoming timestamp is newer
         const existing = this.state.get(key);
         if (existing) {
-            // Compare timestamps
             if (existing.timestamp > incomingTs) {
-                this.log(`LWW: Rejected stale op for ${key} (existing: ${existing.timestamp}, incoming: ${incomingTs})`);
-                return; // Incoming is stale - ignore
+                this.log(`LWW: Rejected stale op for ${key}`);
+                return;
             }
-            // Tiebreaker: if same timestamp, use peerId lexicographic order
             if (existing.timestamp === incomingTs && existing.peerId >= peerId) {
-                this.log(`LWW: Ignored tie for ${key} (peerId tiebreaker)`);
                 return;
             }
         }
@@ -224,7 +257,10 @@ export class SyncEngine extends EventEmitter {
         // Apply newer value
         this.state.set(key, { value, timestamp: incomingTs, peerId });
 
-        // Persist
+        // Persist (store ENCRYPTED payload if usage implies generic persistence of what was received)
+        // Wait: The storage expects the serialized format. If we received encrypted bytes, we should store encrypted bytes.
+        // The persistence logic uses `payload`. `payload` is the raw incoming bytes.
+        // If we have encryption, `payload` IS encrypted. So we store it as is. Correct.
         this.storage.set(key, payload).catch(e => {
             console.error('[NMeshed] Persistence remote failed', e);
         });
@@ -256,7 +292,7 @@ export class SyncEngine extends EventEmitter {
             if (current !== undefined && current !== null) return false;
         } else {
             // Deep equality check is expensive. For primitives/simple objects, JSONstringify is "Zen Enough" for now.
-            if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
+            if (!deepEqual(current, expected)) return false;
         }
 
         // 2. Apply Optimistically - store with timestamp
@@ -308,33 +344,40 @@ export class SyncEngine extends EventEmitter {
             }
 
             try {
-                const value = decodeValue(payload);
-                // When loading from storage, we don't have original timestamp
-                // Use 0 as sentinel - any fresh write will be newer
+                let finalPayload = payload;
+                if (this.encryption) {
+                    finalPayload = await this.encryption.decrypt(payload);
+                }
+                const value = decodeValue(finalPayload);
                 this.state.set(key, { value, timestamp: 0, peerId: '' });
             } catch (e) {
                 this.log(`Failed to decode stored key ${key}`, e);
             }
         }
 
-        // Reconstruct Pending Ops (Sorted by Timestamp in Key)
-        // Key format: queue::TIMESTAMP::KEY
+        // Reconstruct Pending Ops
         queueItems.sort((a, b) => a.key.localeCompare(b.key));
 
         for (const item of queueItems) {
             try {
-                const parts = item.key.split('::'); // ['queue', 'timestamp', 'key']
+                const parts = item.key.split('::');
                 if (parts.length < 3) continue;
 
                 const timestamp = parseInt(parts[1], 10);
-                const realKey = parts.slice(2).join('::'); // Join back in case key has ::
-                const value = decodeValue(item.payload);
+                const realKey = parts.slice(2).join('::');
+
+                let finalPayload = item.payload;
+                if (this.encryption) {
+                    finalPayload = await this.encryption.decrypt(item.payload);
+                }
+
+                const value = decodeValue(finalPayload);
 
                 this.pendingOps.push({
                     key: realKey,
                     value,
                     timestamp,
-                    peerId: this.peerId // We assume we wrote it
+                    peerId: this.peerId
                 });
             } catch (e) {
                 this.log('Failed to rehydrate pending op', e);
@@ -352,56 +395,91 @@ export class SyncEngine extends EventEmitter {
      * If WASM core is not present, we assume the snapshot is a MsgPack map of Key->Value.
      * We discard local state (except pending ops) and replace it with the snapshot.
      */
-    loadSnapshot(data: Uint8Array): void {
-        // Zen Principle: The State Machine knows its capabilities.
-
-        // 1. If we have the Core (WASM), we delegate immediately.
-        if (this.core) {
-            this.core.loadSnapshot(data);
-            return;
-        }
-
-        // 2. "Light Mode": Try to decode as a JS Object (MsgPack/JSON)
+    /** 
+     * Loads a full state snapshot from the server.
+     * 
+     * @remarks
+     * **"Light Mode" Logic:**
+     * If WASM core is not present, we assume the snapshot is a MsgPack map of Key->Value.
+     * We discard local state (except pending ops) and replace it with the snapshot.
+     * 
+     * **E2EE Handling**:
+     * If encryption is enabled, the values in the snapshot are assumed to be Encrypted Blobs (Uint8Array).
+     * We decrypt them before updating the in-memory state, but we store the **raw ciphertext** 
+     * in the persistent storage to maintain consistency (storage always holds what the server has).
+     */
+    async loadSnapshot(data: Uint8Array): Promise<void> {
         try {
+            // Decodes to Map<Key, Value>
+            // If E2EE is ON, 'Value' is expected to be an Encrypted Blob (Uint8Array).
             const snapshot = decodeValue<Record<string, unknown>>(data);
+
             if (snapshot && typeof snapshot === 'object') {
-                // Clear storage but PRESERVE Queue
-                // Inefficient but safe: Clear all, then re-save queue.
-                this.storage.clearAll().then(() => {
-                    // 1. Persist Snapshot Data
-                    for (const [key, value] of Object.entries(snapshot)) {
-                        const payload = encodeValue(value);
-                        this.storage.set(key, payload);
-                    }
-                    // 2. Persist Pending Queue (Restore it)
-                    for (const op of this.pendingOps) {
-                        const pendingKey = `${PENDING_PREFIX}${op.timestamp}::${op.key}`;
-                        const payload = encodeValue(op.value);
-                        this.storage.set(pendingKey, payload);
-                    }
-                });
+                // Clear storage to match server state (Authoritative Sync)
+                await this.storage.clearAll();
 
-                // Update Memory State
-                this.state.clear();
+                // 1. Process Snapshot
+                const entries: [string, any][] = [];
 
-                // Apply Snapshot - use timestamp 0 (server snapshot is baseline)
-                for (const [key, value] of Object.entries(snapshot)) {
-                    this.state.set(key, { value, timestamp: 0, peerId: '' });
-                    this.emit('op', key, value, false);
+                for (const [key, rawValue] of Object.entries(snapshot)) {
+                    if (this.encryption) {
+                        try {
+                            // In E2EE mode, rawValue MUST be a Uint8Array (Ciphertext)
+                            const ciphertext = rawValue as Uint8Array;
+                            const clearText = await this.encryption.decrypt(ciphertext);
+                            const val = decodeValue(clearText);
+
+                            // Memory: Store Decrypted Value
+                            entries.push([key, val]);
+
+                            // Disk: Store Encrypted Ciphertext
+                            // We bypass encodeValue if it's already a binary blob to avoid double-wrapping
+                            if (rawValue instanceof Uint8Array) {
+                                await this.storage.set(key, rawValue);
+                            } else {
+                                await this.storage.set(key, encodeValue(rawValue));
+                            }
+
+                        } catch (e) {
+                            console.error(`[NMeshed] Failed to decrypt snapshot key ${key}`, e);
+                        }
+                    } else {
+                        // Plain Text Mode
+                        entries.push([key, rawValue]);
+                        await this.storage.set(key, encodeValue(rawValue));
+                    }
                 }
 
-                // Re-Apply Pending Ops (Optimistic Overlay)
-                // We trust our local changes are newer/relevant until acked/rejected
+                // 2. Persist Pending Queue (Restore it)
+                for (const op of this.pendingOps) {
+                    const pendingKey = `${PENDING_PREFIX}${op.timestamp}::${op.key}`;
+
+                    // Pending Ops in memory are decrypted/clean.
+                    // We must encrypt them before persisting to the queue.
+                    let p = encodeValue(op.value);
+                    if (this.encryption) {
+                        p = await this.encryption.encrypt(p);
+                    }
+                    await this.storage.set(pendingKey, p);
+                }
+
+                // Update In-Memory State (Atomic Swap)
+                this.state.clear();
+                for (const [key, val] of entries) {
+                    this.state.set(key, { value: val, timestamp: 0, peerId: '' });
+                    this.emit('op', key, val, false);
+                }
+
+                // Re-Apply Pending Ops (Optimistic Updates on top of Snapshot)
                 for (const op of this.pendingOps) {
                     this.state.set(op.key, { value: op.value, timestamp: op.timestamp, peerId: this.peerId });
                     this.emit('op', op.key, op.value, true);
                 }
 
-                this.log(`Loaded snapshot (${Object.keys(snapshot).length} keys) + re-applied ${this.pendingOps.length} pending ops`);
+                this.log(`Loaded snapshot (${entries.length} items) | E2EE: ${!!this.encryption}`);
             }
         } catch (e) {
-            // 3. Binary/Opaque Snapshot?
-            this.log('Could not decode snapshot in Light Mode (likely binary/WASM only). Starting fresh.');
+            this.log('Could not decode snapshot', e);
         }
     }
 

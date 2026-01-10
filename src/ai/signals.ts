@@ -10,6 +10,15 @@
  * ## Distributed Locking
  * We use `client.cas` (Compare-And-Swap) to ensure that even if 5 agents try to claim a task simultaneously,
  * **exactly one** will succeed.
+ * 
+ * ## Lifecycle
+ * ```mermaid
+ * stateDiagram-v2
+ *     [*] --> Pending: Add Signal
+ *     Pending --> Claimed: Agent CAS Success
+ *     Claimed --> Completed: Agent Finish
+ *     Claimed --> Failed: Agent Error
+ * ```
  */
 
 import { useCallback } from 'react';
@@ -18,6 +27,9 @@ import { useNMeshed } from '../react/context';
 
 export type SignalStatus = 'pending' | 'claimed' | 'completed' | 'failed';
 
+/**
+ * Represents a discrete unit of work distributed across the mesh.
+ */
 export interface Signal<T = any> {
     id: string;
     type: string;
@@ -31,9 +43,14 @@ export interface Signal<T = any> {
 }
 
 export interface SignalQueueHook<T> {
+    /** Map of all signals by ID */
     signals: Record<string, Signal<T>>;
+    /** Ordered array of signals (for logging/UI) */
+    queue: Signal<T>[];
     /**
      * Adds a new task to the queue.
+     * @param type - The semantic type of work (e.g. "generate-image")
+     * @param payload - The data required for the task
      * @returns The generated Signal ID.
      */
     add: (type: string, payload: T) => string;
@@ -124,7 +141,10 @@ export function useSignalQueue<T = any>(queueId: string): SignalQueueHook<T> {
 
     }, [signals, client, peerId, queueId, setSignal]);
 
-    return { signals, add, process };
+    // Derived: Sort by time for log
+    const queue = Object.values(signals).sort((a, b) => a.createdAt - b.createdAt);
+
+    return { signals, queue, add, process };
 }
 
 /**

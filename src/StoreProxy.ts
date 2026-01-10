@@ -31,6 +31,12 @@ export function createProxy<T extends object>(engine: SyncEngine, key: string, s
             const success = Reflect.set(obj, prop, value);
             if (success) engine.set(key, obj);
             return success;
+        },
+
+        deleteProperty: (obj, prop) => {
+            const success = Reflect.deleteProperty(obj, prop);
+            if (success) engine.set(key, obj);  // Sync the deletion!
+            return success;
         }
     });
 }

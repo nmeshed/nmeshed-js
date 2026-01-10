@@ -5,6 +5,8 @@
  * If you need to understand the data model, look here.
  */
 
+import type { EncryptionAdapter } from './encryption';
+
 // =============================================================================
 // Configuration
 // =============================================================================
@@ -54,6 +56,11 @@ export interface NMeshedConfig {
      * Initial binary snapshot for hydration (RSC/SSR).
      */
     initialSnapshot?: Uint8Array;
+    /**
+     * End-to-End Encryption Adapter.
+     * If provided, all local and remote values will be encrypted.
+     */
+    encryption?: EncryptionAdapter;
 }
 
 // =============================================================================

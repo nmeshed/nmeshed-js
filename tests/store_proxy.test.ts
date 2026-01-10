@@ -113,5 +113,24 @@ describe('StoreProxy', () => {
             // Note: Proxy behavior with frozen objects is complex, just verify no crash
             expect(frozen).toEqual({ immutable: true });
         });
+
+        it('BUG: should intercept delete and trigger engine.set (sync the removal)', () => {
+            // BUG: StoreProxy doesn't have deleteProperty trap!
+            // This causes usePresence cleanup to only work locally
+            const proxy = createProxy<Record<string, any>>(engine as any as SyncEngine, 'presence', z.object({}));
+
+            // Set a value first
+            proxy.peer1 = { x: 1, y: 2 };
+            expect(engine.set).toHaveBeenCalledTimes(1);
+            engine.set.mockClear();
+
+            // Delete the value
+            delete proxy.peer1;
+
+            // BUG: This should trigger engine.set to sync the deletion
+            // Currently it only mutates locally - other peers never see it!
+            expect(engine.set).toHaveBeenCalledTimes(1);
+            expect(engine.set).toHaveBeenCalledWith('presence', expect.not.objectContaining({ peer1: expect.anything() }));
+        });
     });
 });

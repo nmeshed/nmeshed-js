@@ -1,0 +1,20 @@
+{
+    "$schema": "https://typedoc.org/schema.json",
+    "entryPoints": [
+        "src/index.ts",
+        "src/react/index.ts"
+    ],
+    "out": "../../platform/web/src/content/docs/api/sdk",
+    "plugin": [
+        "typedoc-plugin-markdown"
+    ],
+    "hideBreadcrumbs": true,
+    "hidePageTitle": false,
+    "hideGenerator": true,
+    "name": "nMeshed SDK",
+    "readme": "none",
+    "githubPages": false,
+    "entryFileName": "index.md",
+    "publicPath": "/docs/api/sdk/",
+    "cleanOutputDir": true
+}

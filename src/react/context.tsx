@@ -17,7 +17,7 @@ import { NMeshedClient } from '../client';
 // Context
 // =============================================================================
 
-interface NMeshedContextValue {
+export interface NMeshedContextValue {
     client: NMeshedClient | null;
     status: ConnectionStatus;
     isReady: boolean; // Convenience flag for status === 'ready'
@@ -29,7 +29,7 @@ const NMeshedContext = createContext<NMeshedContextValue | null>(null);
 // Provider
 // =============================================================================
 
-interface NMeshedProviderProps extends Partial<NMeshedConfig> {
+export interface NMeshedProviderProps extends Partial<NMeshedConfig> {
     /**
      * Optional external client instance.
      * If provided, the Provider will use this client instead of creating one.

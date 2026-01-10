@@ -8,6 +8,8 @@ export {
     useSyncedValue,
     useOnChange,
     useConnectionStatus,
+    type NMeshedContextValue,
+    type NMeshedProviderProps,
 } from './context';
 
 export {
@@ -18,6 +20,6 @@ export {
 
 export { useSyncedSchema, useSyncedStore } from './schema';
 export { useStore, useConnection } from './hooks';
-export { usePresence } from './presence';
+export { usePresence, type UsePresenceOptions } from './presence';
 export { useSuspenseStore } from './suspense';
 export { useSyncedChat, useSignalQueue } from '../ai';

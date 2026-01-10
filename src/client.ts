@@ -98,7 +98,7 @@ export class NMeshedClient implements INMeshedClient {
         const peerId = config.userId || this.generatePeerId();
 
         // Initialize engine and transport
-        this.engine = new SyncEngine(peerId, this.storage, this.debug);
+        this.engine = new SyncEngine(peerId, this.storage, this.debug, config.encryption);
         this.transport = new WebSocketTransport(config);
 
         // Optimizing Event Dispatch:
@@ -113,13 +113,19 @@ export class NMeshedClient implements INMeshedClient {
         // causality: If we have an initial snapshot (e.g. from server-side rendering),
         // we load it immediately so the UI can render meaningful content before the socket connects.
         if (config.initialSnapshot) {
-            this.engine.loadSnapshot(config.initialSnapshot);
-            this.engine.setStatus('ready'); // Assume ready if hydrated
+            // loadSnapshot is async, but we need to ensure the snapshot is loaded before proceeding
+            // Use an IIFE to handle the async load
+            (async () => {
+                await this.engine.loadSnapshot(config.initialSnapshot!);
+                this.engine.setStatus('ready'); // Assume ready if hydrated
+            })();
+            // Note: We skip init() when initialSnapshot is provided to avoid status race
+            // The client can connect later if live updates are needed
+        } else {
+            // Initialize Persistence & Connection
+            // We fire this asynchronously to allow the constructor to return immediately.
+            this.init();
         }
-
-        // Initialize Persistence & Connection
-        // We fire this asynchronously to allow the constructor to return immediately.
-        this.init();
     }
 
     /**
@@ -191,7 +197,9 @@ export class NMeshedClient implements INMeshedClient {
      */
     set<T = unknown>(key: string, value: T): void {
         this.log(`set(${key}, ${JSON.stringify(value)})`);
-        this.engine.set(key, value);
+        this.engine.set(key, value).catch(e => {
+            console.error('[NMeshed] Set operation failed', e);
+        });
     }
 
     /**
@@ -204,7 +212,9 @@ export class NMeshedClient implements INMeshedClient {
      * @param key - The key to delete.
      */
     delete(key: string): void {
-        this.engine.delete(key);
+        this.engine.delete(key).catch(e => {
+            console.error('[NMeshed] Delete operation failed', e);
+        });
     }
 
     /** 
@@ -416,9 +426,19 @@ export class NMeshedClient implements INMeshedClient {
                 this.log(`Op: ${key} | Local: ${isLocal} | Connected: ${connected}`);
 
                 if (connected) {
-                    const payload = encodeValue(value);
-                    const wireData = encodeOp(key, payload);
-                    this.transport.send(wireData);
+                    // Send operation to server
+                    // Use async IIFE to handle potential encryption overhead without blocking handling loop
+                    (async () => {
+                        let payload = encodeValue(value);
+                        let isEncrypted = false;
+                        if (this.config.encryption) {
+                            payload = await this.config.encryption.encrypt(payload);
+                            isEncrypted = true;
+                        }
+                        const wireData = encodeOp(key, payload, 0, isEncrypted);
+                        this.transport.send(wireData);
+                    })();
+
                 } else {
                     this.log(`Queueing Op (Offline): ${key}`);
                 }
@@ -479,13 +499,18 @@ export class NMeshedClient implements INMeshedClient {
      * 
      * @private
      */
-    private flushPendingOps(): void {
+    private async flushPendingOps(): Promise<void> {
         const ops = this.engine.drainPending();
         if (ops.length > 0) {
             this.log(`Flushing ${ops.length} pending ops`);
             for (const op of ops) {
-                const payload = encodeValue(op.value);
-                const wireData = encodeOp(op.key, payload);
+                let payload = encodeValue(op.value);
+                let isEncrypted = false;
+                if (this.config.encryption) {
+                    payload = await this.config.encryption.encrypt(payload);
+                    isEncrypted = true;
+                }
+                const wireData = encodeOp(op.key, payload, op.timestamp, isEncrypted);
                 this.transport.send(wireData);
             }
         }
@@ -513,9 +538,12 @@ export class NMeshedClient implements INMeshedClient {
             case MsgType.Init:
                 // Load snapshot and transition to ready
                 if (msg.payload) {
-                    this.engine.loadSnapshot(msg.payload);
-                    this.engine.setStatus('ready');
-                    this.engine.emit('ready');
+                    // loadSnapshot is async - properly await it before setting ready status
+                    (async () => {
+                        await this.engine.loadSnapshot(msg.payload!);
+                        this.engine.setStatus('ready');
+                        this.engine.emit('ready');
+                    })();
                 }
                 break;
 

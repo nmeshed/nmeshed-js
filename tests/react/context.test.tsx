@@ -114,4 +114,35 @@ describe('NMeshed Context', () => {
 
         expect(callback).toHaveBeenCalledWith('any-key', 'val');
     });
+
+    it('BUG: useSyncedValue should not infinite loop when defaultValue is an object', () => {
+        // This test catches a potential infinite re-render bug:
+        // If defaultValue is an object (new reference each render),
+        // including it in useEffect dependencies causes infinite loops.
+
+        let renderCount = 0;
+        let effectCount = 0;
+
+        mockClient.on.mockImplementation((event) => {
+            if (event === 'op') effectCount++;
+            return () => { };
+        });
+
+        const { rerender } = renderHook(() => {
+            renderCount++;
+            // BUG REPRODUCER: Object literal creates new reference each render
+            return useSyncedValue<{ count: number }>('obj-key', { count: 0 });
+        }, { wrapper });
+
+        const afterMountRenderCount = renderCount;
+        const afterMountEffectCount = effectCount;
+
+        // Force a re-render
+        rerender();
+
+        // If there's an infinite loop, renderCount would explode
+        // A stable implementation should only add 1 render
+        expect(renderCount).toBeLessThanOrEqual(afterMountRenderCount + 2);
+        expect(effectCount).toBeLessThanOrEqual(afterMountEffectCount + 1);
+    });
 });

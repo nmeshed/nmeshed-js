@@ -189,7 +189,7 @@ describe('NMeshedClient', () => {
             expect(handler).toHaveBeenCalledWith('key', 'value', true);
         });
 
-        it('should emit status events on status change', () => {
+        it('should emit status events on status change', async () => {
             const handler = vi.fn();
             client.on('status', handler);
 
@@ -198,6 +198,9 @@ describe('NMeshedClient', () => {
             // Real Protocol Encoding!
             const msg = encodeInit(encode(snapshot));
             lastWebSocket?.simulateMessage(msg);
+
+            // loadSnapshot is async - wait for microtask queue
+            await vi.advanceTimersByTimeAsync(1);
 
             expect(handler).toHaveBeenCalled(); // Should transition to 'ready'
             expect(client.getStatus()).toBe('ready');
@@ -276,11 +279,13 @@ describe('NMeshedClient', () => {
             client.disconnect();
         });
 
-        it('should handle Init message', () => {
+        it('should handle Init message', async () => {
             const snapshot = { key1: 'value1' };
             const msg = encodeInit(encode(snapshot));
             lastWebSocket?.simulateMessage(msg);
 
+            // loadSnapshot is now async - wait for microtask queue to process
+            await vi.advanceTimersByTimeAsync(1);
             expect(client.get('key1')).toBe('value1');
         });
 
@@ -363,7 +368,8 @@ describe('NMeshedClient', () => {
                 token: 'token',
                 initialSnapshot: encoded
             });
-            // It loads synchronously in constructor
+            // loadSnapshot is now async - wait for microtask queue to process
+            await vi.advanceTimersByTimeAsync(1);
             expect(client.get('hydrated')).toBe(true);
             expect(client.getStatus()).toBe('ready');
         });

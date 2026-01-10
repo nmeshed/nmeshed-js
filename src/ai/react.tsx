@@ -7,6 +7,8 @@
 
 import { useRef, useEffect } from 'react';
 import { useSyncedMap } from '../react/collections';
+import { useSyncedStore } from '../react/schema';
+export { useSyncedStore, NMeshedProvider } from '../react/index';
 
 // Compatible definition with Vercel AI SDK 'Message'
 export interface Message {

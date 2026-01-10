@@ -2,6 +2,28 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNMeshed } from './context';
 
 /**
+ * Shallow equality check for CRDT values.
+ * Handles primitives, null, undefined, and objects with same-depth comparison.
+ * This prevents unnecessary re-renders when remote ops contain identical values.
+ */
+function shallowEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a == null || b == null) return a === b;
+    if (typeof a !== 'object' || typeof b !== 'object') return a === b;
+
+    // Both are objects - do shallow key/value comparison
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+
+    for (const key of keysA) {
+        if (!(key in (b as Record<string, unknown>))) return false;
+        if ((a as Record<string, unknown>)[key] !== (b as Record<string, unknown>)[key]) return false;
+    }
+    return true;
+}
+
+/**
  * Hook for a collection of values sharing a common prefix.
  * Example: useSyncedMap('cursors') -> manages keys like 'cursors.abc', 'cursors.123'
  * 
@@ -144,13 +166,13 @@ export function useSyncedDict<T extends Record<string, any>>(prefix: string): [
                 if (key.startsWith(prefixWithSep)) {
                     const subKey = key.slice(prefixWithSep.length);
                     setData(prev => {
-                        if (prev[subKey] === value) return prev;
+                        if (shallowEqual(prev[subKey], value)) return prev;
                         return { ...prev, [subKey]: value };
                     });
                 }
             } else {
                 setData(prev => {
-                    if (prev[key] === value) return prev;
+                    if (shallowEqual(prev[key], value)) return prev;
                     return { ...prev, [key]: value };
                 });
             }

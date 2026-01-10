@@ -8,21 +8,26 @@
 export { NMeshedClient } from './client';
 
 // Types (for TypeScript users)
-export type {
+export {
     NMeshedConfig,
     ConnectionStatus,
     ClientEvents,
     INMeshedClient,
+    Operation,
+    EventHandler,
+    CRDTCore,
 } from './types';
 
 // Engine (for advanced usage)
 export { SyncEngine } from './engine';
 
 // Transport (for custom implementations)
-export { WebSocketTransport } from './transport';
-
-// React hooks
-export * from './react/index';
+export * from "./client";
+export * from "./react/collections";
+export * from "./ai/react";
+export * from "./ai/signals";
+export * from "./debug/Inspector";
+export * from "./encryption";
 
 // RSC utilities
 export * from './rsc';
