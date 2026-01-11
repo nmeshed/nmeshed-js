@@ -320,12 +320,12 @@ describe('NMeshedClient', () => {
             client.disconnect();
         });
 
-        it.skip('should return a proxy for registered schema', () => {
+        it('should return a proxy for registered schema', () => {
             const todos = client.store<string[]>('todos');
             expect(Array.isArray(todos)).toBe(true);
         });
 
-        it.skip('should trigger sync on mutation', () => {
+        it('should trigger sync on mutation', () => {
             const todos = client.store<string[]>('todos');
             todos.push('buy milk');
             // This relies on the engine event listener wiring we added
@@ -422,7 +422,7 @@ describe('NMeshedClient', () => {
             logSpy.mockRestore();
         });
 
-        it.skip('should flush pending ops on connect', async () => {
+        it('should flush pending ops on connect', async () => {
             const storage = new InMemoryAdapter();
             const payload = encodeValue('val');
             await storage.set('queue::1000::offline', payload);
@@ -443,7 +443,7 @@ describe('NMeshedClient', () => {
             client.disconnect();
         });
 
-        it.skip('should disconnect on ping timeout', async () => {
+        it('should disconnect on ping timeout', async () => {
             const client = new NMeshedClient({ workspaceId: 'test', token: 'token' });
             await vi.advanceTimersByTimeAsync(100);
 
