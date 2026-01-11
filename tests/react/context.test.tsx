@@ -74,6 +74,32 @@ describe('NMeshed Context', () => {
         expect(result.current[0]).toBe('updated');
     });
 
+    it('useSyncedValue should handle functional updates', () => {
+        mockClient.get.mockReturnValue(10);
+        const { result } = renderHook(() => useSyncedValue<number>('count', 0), { wrapper });
+
+        act(() => {
+            const setter = result.current[1];
+            setter((prev) => prev + 1);
+        });
+
+        expect(mockClient.set).toHaveBeenCalledWith('count', 11);
+        expect(result.current[0]).toBe(11);
+    });
+
+    it('should return early if config is incomplete (Zen Mode)', () => {
+        // No client prop, and incomplete config
+        const { result } = renderHook(() => useNMeshed(), {
+            wrapper: ({ children }) => (
+                <NMeshedProvider workspaceId="" token="">
+                    {children}
+                </NMeshedProvider>
+            )
+        });
+        // Should return null (suspended) because activeClient is null
+        expect(result.current).toBeNull();
+    });
+
     it('useSyncedValue should update on op events', () => {
         let opHandler: any;
         mockClient.on.mockImplementation((event, cb) => {

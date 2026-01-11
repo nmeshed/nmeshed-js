@@ -392,5 +392,41 @@ describe('Collections Hooks', () => {
             // and we haven't doubled the renders for identical ops
             expect(renderCount).toBeLessThanOrEqual(afterMountRenderCount + 1);
         });
+
+        it('should handle useSyncedDict with empty prefix', () => {
+            mockClient.getAllValues.mockReturnValue({
+                'key1': 'val1',
+                'key2': 'val2'
+            });
+
+            let opHandler: any;
+            mockClient.on.mockImplementation((event, cb) => {
+                if (event === 'op') opHandler = cb;
+                return () => { };
+            });
+
+            const { result } = renderHook(() => useSyncedDict<any>(''), { wrapper });
+
+            // Initial load (prefix empty)
+            expect(result.current[0]).toEqual({
+                'key1': 'val1',
+                'key2': 'val2'
+            });
+
+            // Op update (prefix empty)
+            act(() => {
+                if (opHandler) opHandler('key3', 'val3');
+            });
+
+            expect(result.current[0].key3).toBe('val3');
+        });
+
+        it('should log error if useSyncedDict is used outside provider', () => {
+            const spy = vi.spyOn(console, 'error').mockImplementation(() => { });
+            expect(() => {
+                renderHook(() => useSyncedDict<any>('test'));
+            }).toThrow();
+            spy.mockRestore();
+        });
     });
 });

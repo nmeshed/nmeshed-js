@@ -163,22 +163,27 @@ export function encodeCAS(
  * @param timestamp - Optional timestamp (if re-broadcasting).
  * @param isEncrypted - Whether the payload is encrypted.
  */
-export function encodeOp(key: string, payload: Uint8Array, timestamp?: number, isEncrypted = false): Uint8Array {
+export function encodeOp(key: string, payload: Uint8Array, timestamp?: number, isEncrypted = false, actorId?: string): Uint8Array {
     const builder = new Builder(256);
 
     // 1. Create Op Table Strings/Vectors
     const keyOffset = builder.createString(key);
     const valueOffset = builder.createByteVector(payload);
+    let actorOffset = 0;
+    if (actorId) {
+        actorOffset = builder.createString(actorId);
+    }
 
     // 2. Build Op Table
     builder.startObject(8); // Op has 8 fields max
     builder.addFieldOffset(OP_KEY, keyOffset, 0);
     builder.addFieldOffset(OP_VALUE, valueOffset, 0);
     if (timestamp && timestamp > 0) {
-        // Use generic addInt64 logic or simulated Int64 for Flatbuffers in JS
-        // Use BigInt for timestamp (modern JS/Flatbuffers)
         const ts = BigInt(timestamp);
         builder.addFieldInt64(OP_TIMESTAMP, ts, BigInt(0));
+    }
+    if (actorId) {
+        builder.addFieldOffset(OP_ACTOR_ID, actorOffset, 0);
     }
     if (isEncrypted) {
         builder.addFieldInt8(OP_IS_ENCRYPTED, 1, 0);
@@ -284,6 +289,7 @@ export interface DecodedMessage {
     expectedValue?: Uint8Array | null; // For CAS
     timestamp?: number; // Server time or Op timestamp
     isEncrypted?: boolean;
+    actorId?: string;
 }
 
 /** 
@@ -318,13 +324,15 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
             const finalTs = Number(opTs) || timestamp;  // Fallback to server sync time if 0
 
             const isEncrypted = readFieldInt8(buf, opOffset, OP_IS_ENCRYPTED, 0) === 1;
+            const actorId = readFieldString(buf, opOffset, OP_ACTOR_ID);
 
             return {
                 ...baseMsg,
                 key: key || '',
                 payload: payload || new Uint8Array(),
                 timestamp: finalTs,
-                isEncrypted
+                isEncrypted,
+                actorId: actorId || undefined
             };
         } else if (msgType === MsgType.Init) {
             const snapOffset = readFieldTable(buf, rootOffset, WP_SNAPSHOT);

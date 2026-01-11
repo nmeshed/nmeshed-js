@@ -159,4 +159,22 @@ describe('End-to-End Encryption', () => {
 
         expect(keyId1).not.toBe(keyId2);
     });
+
+    it('should skip init if already initialized', async () => {
+        const adapter = new AESGCMAdapter('secret');
+        await adapter.init();
+        const key1 = (adapter as any).key;
+        expect(key1).toBeDefined();
+
+        await adapter.init();
+        const key2 = (adapter as any).key;
+        expect(key1).toBe(key2);
+    });
+
+    it('should throw if decrypt is called before init (and init fails) (defensive check)', async () => {
+        const adapter = new AESGCMAdapter('secret');
+        // Sabotage init
+        (adapter as any).init = async () => { };
+        await expect(adapter.decrypt(new Uint8Array(20))).rejects.toThrow('Encryption key not initialized');
+    });
 });

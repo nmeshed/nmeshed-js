@@ -101,11 +101,6 @@ export class NMeshedClient implements INMeshedClient {
         this.engine = new SyncEngine(peerId, this.storage, this.debug, config.encryption);
         this.transport = new WebSocketTransport(config);
 
-        // Optimizing Event Dispatch:
-        // The Engine emits 'op' for everything. The Client can offer a finer API.
-        // We use Map<Key, Set<Callback>> here to allow O(1) lookups for key-specific subscriptions
-        // instead of iterating through a global listener array.
-
         // Wire up transport to engine
         this.wireTransport();
 
@@ -113,19 +108,17 @@ export class NMeshedClient implements INMeshedClient {
         // causality: If we have an initial snapshot (e.g. from server-side rendering),
         // we load it immediately so the UI can render meaningful content before the socket connects.
         if (config.initialSnapshot) {
-            // loadSnapshot is async, but we need to ensure the snapshot is loaded before proceeding
-            // Use an IIFE to handle the async load
-            (async () => {
-                await this.engine.loadSnapshot(config.initialSnapshot!);
-                this.engine.setStatus('ready'); // Assume ready if hydrated
-            })();
-            // Note: We skip init() when initialSnapshot is provided to avoid status race
-            // The client can connect later if live updates are needed
+            this.hydrate(config.initialSnapshot);
         } else {
             // Initialize Persistence & Connection
             // We fire this asynchronously to allow the constructor to return immediately.
             this.init();
         }
+    }
+
+    private async hydrate(snapshot: Uint8Array) {
+        await this.engine.loadSnapshot(snapshot, 1);
+        this.engine.setStatus('ready'); // Assume ready if hydrated
     }
 
     /**
@@ -413,12 +406,18 @@ export class NMeshedClient implements INMeshedClient {
         this.unsubscribers.push(unsubClose);
 
         // Auto-Broadcast: Listen to local ops and send them to the server
-        const unsubOp = this.engine.on('op', (key, value, isLocal) => {
+        const unsubOp = this.engine.on('op', (key, value, isLocal, timestamp, isReplay) => {
             // optimized dispatch to specific key subscribers
             const subscribers = this.keySubscribers.get(key);
             if (subscribers) {
                 subscribers.forEach(cb => cb());
             }
+
+            // Replay Suppression (Bug 5 Fix)
+            // If this op is being re-emitted by loadSnapshot (to update UI/Memory),
+            // it is already in the pendingOps queue. We do NOT need to send it again here,
+            // because flushing the pending queue is handled separately by the connection logic.
+            if (isReplay) return;
 
             // DEBUG: Log op propagation
             if (isLocal) {
@@ -435,7 +434,9 @@ export class NMeshedClient implements INMeshedClient {
                             payload = await this.config.encryption.encrypt(payload);
                             isEncrypted = true;
                         }
-                        const wireData = encodeOp(key, payload, 0, isEncrypted);
+                        // Bug 4 Fix: Use the actual timestamp from the engine!
+                        const ts = timestamp || Date.now();
+                        const wireData = encodeOp(key, payload, ts, isEncrypted, this.engine.getPeerId());
                         this.transport.send(wireData);
                     })();
 
@@ -510,7 +511,7 @@ export class NMeshedClient implements INMeshedClient {
                     payload = await this.config.encryption.encrypt(payload);
                     isEncrypted = true;
                 }
-                const wireData = encodeOp(op.key, payload, op.timestamp, isEncrypted);
+                const wireData = encodeOp(op.key, payload, op.timestamp, isEncrypted, this.engine.getPeerId());
                 this.transport.send(wireData);
             }
         }
@@ -540,7 +541,7 @@ export class NMeshedClient implements INMeshedClient {
                 if (msg.payload) {
                     // loadSnapshot is async - properly await it before setting ready status
                     (async () => {
-                        await this.engine.loadSnapshot(msg.payload!);
+                        await this.engine.loadSnapshot(msg.payload!, msg.timestamp);
                         this.engine.setStatus('ready');
                         this.engine.emit('ready');
                     })();
@@ -550,8 +551,8 @@ export class NMeshedClient implements INMeshedClient {
             case MsgType.Op:
                 // Apply remote operation
                 if (msg.key && msg.payload) {
-                    // Pass timestamp for proper LWW ordering
-                    this.engine.applyRemote(msg.key, msg.payload, 'remote', msg.timestamp);
+                    // Pass timestamp and actorId for proper LWW ordering
+                    this.engine.applyRemote(msg.key, msg.payload, msg.actorId || 'remote', msg.timestamp);
                 }
                 break;
 

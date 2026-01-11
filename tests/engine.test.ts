@@ -741,4 +741,65 @@ describe('SyncEngine', () => {
             expect(() => engine.loadSnapshot(arraySnapshot)).not.toThrow();
         });
     });
+
+    describe('Regression Tests (Aggressive Bug Hunting)', () => {
+        it('should encrypt CAS payload when E2EE is enabled', async () => {
+            const encryption = new (await import('../src/encryption')).AESGCMAdapter();
+            await encryption.init('test-key-32-chars-long-exactly-!!!');
+
+            const e2eeEngine = new SyncEngine('peer-1', new InMemoryAdapter(), false, encryption);
+            const casEvents: any[] = [];
+            e2eeEngine.on('cas' as any, (data: Uint8Array) => casEvents.push(data));
+
+            const initial = { count: 0 };
+            const next = { count: 1 };
+
+            await e2eeEngine.set('counter', initial);
+            casEvents.length = 0;
+
+            await e2eeEngine.cas('counter', initial, next);
+
+            expect(casEvents.length).toBe(1);
+
+            const { decodeMessage, MsgType, decodeValue } = await import('../src/protocol');
+            const msg = decodeMessage(casEvents[0]);
+
+            expect(msg?.type).toBe(MsgType.CompareAndSwap);
+            const payload = msg?.payload;
+            expect(payload).toBeDefined();
+
+            try {
+                const decoded = decodeValue(payload!);
+                if (JSON.stringify(decoded) === JSON.stringify(next)) {
+                    throw new Error('SECURITY LEAK: CAS payload sent in plain text!');
+                }
+            } catch (e: any) {
+                if (e.message === 'SECURITY LEAK: CAS payload sent in plain text!') throw e;
+                // Success: Encryption made it un-decodable as MsgPack
+            }
+        });
+
+        it('should not allow resurrection of old data after loadSnapshot', async () => {
+            const engine = new SyncEngine('peer-1', new InMemoryAdapter(), false);
+
+            // 1. authoritative snapshot from server at t=1000
+            const { encodeValue } = await import('../src/protocol');
+            const snapshot = encodeValue({ 'status': 'OFFLINE' });
+            await engine.loadSnapshot(snapshot, 1000);
+
+            expect(engine.get('status')).toBe('OFFLINE');
+
+            // 2. Receive an OLD remote op with timestamp 500
+            const oldVal = encodeValue('STALE');
+            await engine.applyRemote('status', oldVal, 'peer-remote', 500);
+
+            // Should STILL be OFFLINE because 1000 > 500
+            expect(engine.get('status')).toBe('OFFLINE');
+
+            // 3. Receive a NEW remote op with timestamp 1500
+            const newVal = encodeValue('ONLINE');
+            await engine.applyRemote('status', newVal, 'peer-remote', 1500);
+            expect(engine.get('status')).toBe('ONLINE');
+        });
+    });
 });

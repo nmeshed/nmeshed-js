@@ -111,6 +111,7 @@ interface StateEntry {
     value: unknown;
     timestamp: number;
     peerId: string;
+    lastCiphertext?: Uint8Array;
 }
 
 export class SyncEngine extends EventEmitter {
@@ -176,18 +177,18 @@ export class SyncEngine extends EventEmitter {
     async set<T = unknown>(key: string, value: T): Promise<Uint8Array> {
         const timestamp = this.getTimestamp();
 
-        // Apply locally immediately (optimistic) - store with timestamp
-        this.state.set(key, { value, timestamp, peerId: this.peerId });
-
-        // Emit change event
-        this.emit('op', key, value, true);
-
         // Create wire payload
         // E2EE: If encryption is enabled, encrypt the payload
         let payload = encodeValue(value);
         if (this.encryption) {
             payload = await this.encryption.encrypt(payload);
         }
+
+        // Apply locally immediately (optimistic) - store with timestamp and ciphertext
+        this.state.set(key, { value, timestamp, peerId: this.peerId, lastCiphertext: payload });
+
+        // Emit change event
+        this.emit('op', key, value, true, timestamp);
 
         // Queue for network send
         const op: Operation = { key, value, timestamp, peerId: this.peerId };
@@ -255,7 +256,7 @@ export class SyncEngine extends EventEmitter {
         }
 
         // Apply newer value
-        this.state.set(key, { value, timestamp: incomingTs, peerId });
+        this.state.set(key, { value, timestamp: incomingTs, peerId, lastCiphertext: payload });
 
         // Persist (store ENCRYPTED payload if usage implies generic persistence of what was received)
         // Wait: The storage expects the serialized format. If we received encrypted bytes, we should store encrypted bytes.
@@ -265,7 +266,7 @@ export class SyncEngine extends EventEmitter {
             console.error('[NMeshed] Persistence remote failed', e);
         });
 
-        this.emit('op', key, value, false);
+        this.emit('op', key, value, false, incomingTs);
         this.log(`Remote: ${key} from ${peerId} (ts: ${incomingTs})`);
     }
 
@@ -291,26 +292,36 @@ export class SyncEngine extends EventEmitter {
         if (expected === null) {
             if (current !== undefined && current !== null) return false;
         } else {
-            // Deep equality check is expensive. For primitives/simple objects, JSONstringify is "Zen Enough" for now.
             if (!deepEqual(current, expected)) return false;
         }
 
-        // 2. Apply Optimistically - store with timestamp
-        const timestamp = this.getTimestamp();
-        this.state.set(key, { value: newValue, timestamp, peerId: this.peerId });
-        this.emit('op', key, newValue, true);
-
-        // 3. Send to Network (The Authority)
-        // (timestamp already captured above)
-
-        // Create Payload
-        const newPayload = encodeValue(newValue);
+        // 2. Prepare Payloads
+        const plainNew = encodeValue(newValue);
         let expectedPayload: Uint8Array | null = null;
-        if (expected !== null) {
-            expectedPayload = encodeValue(expected);
+        let newPayload: Uint8Array = plainNew;
+
+        if (this.encryption) {
+            // STRICT E2EE CAS:
+            // To ensure the server's comparison works with randomized IVs,
+            // we MUST send the exact ciphertext we currently have for 'expected'.
+            if (expected !== null) {
+                expectedPayload = entry?.lastCiphertext || null;
+                // Defensive: if we don't have ciphertext for some reason, we can't do safe CAS
+                if (!expectedPayload) return false;
+            }
+            newPayload = await this.encryption.encrypt(plainNew);
+        } else {
+            if (expected !== null) {
+                expectedPayload = encodeValue(expected);
+            }
         }
 
-        // Queue Op
+        // 3. Apply Optimistically - store with timestamp
+        const timestamp = this.getTimestamp();
+        this.state.set(key, { value: newValue, timestamp, peerId: this.peerId, lastCiphertext: newPayload });
+        this.emit('op', key, newValue, true, timestamp);
+
+        // 4. Queue Op for network sync
         const op: Operation = { key, value: newValue, timestamp, peerId: this.peerId };
         this.pendingOps.push(op);
 
@@ -349,7 +360,7 @@ export class SyncEngine extends EventEmitter {
                     finalPayload = await this.encryption.decrypt(payload);
                 }
                 const value = decodeValue(finalPayload);
-                this.state.set(key, { value, timestamp: 0, peerId: '' });
+                this.state.set(key, { value, timestamp: 1, peerId: '', lastCiphertext: payload });
             } catch (e) {
                 this.log(`Failed to decode stored key ${key}`, e);
             }
@@ -408,7 +419,7 @@ export class SyncEngine extends EventEmitter {
      * We decrypt them before updating the in-memory state, but we store the **raw ciphertext** 
      * in the persistent storage to maintain consistency (storage always holds what the server has).
      */
-    async loadSnapshot(data: Uint8Array): Promise<void> {
+    async loadSnapshot(data: Uint8Array, serverTime?: number): Promise<void> {
         try {
             // Decodes to Map<Key, Value>
             // If E2EE is ON, 'Value' is expected to be an Encrypted Blob (Uint8Array).
@@ -465,15 +476,18 @@ export class SyncEngine extends EventEmitter {
 
                 // Update In-Memory State (Atomic Swap)
                 this.state.clear();
+                // We use the serverTime (or fallback) for snapshots to ensure they are authoritative
+                const baseTs = serverTime || 1;
                 for (const [key, val] of entries) {
-                    this.state.set(key, { value: val, timestamp: 0, peerId: '' });
-                    this.emit('op', key, val, false);
+                    this.state.set(key, { value: val, timestamp: baseTs, peerId: '', lastCiphertext: val instanceof Uint8Array ? val : undefined });
+                    this.emit('op', key, val, false, baseTs);
                 }
 
                 // Re-Apply Pending Ops (Optimistic Updates on top of Snapshot)
                 for (const op of this.pendingOps) {
                     this.state.set(op.key, { value: op.value, timestamp: op.timestamp, peerId: this.peerId });
-                    this.emit('op', op.key, op.value, true);
+                    // Mark as replay so client doesn't double-send
+                    this.emit('op', op.key, op.value, true, op.timestamp, true);
                 }
 
                 this.log(`Loaded snapshot (${entries.length} items) | E2EE: ${!!this.encryption}`);
