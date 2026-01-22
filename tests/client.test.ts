@@ -186,7 +186,7 @@ describe('NMeshedClient', () => {
             const handler = vi.fn();
             client.on('op', handler);
             client.set('key', 'value');
-            expect(handler).toHaveBeenCalledWith('key', 'value', true);
+            expect(handler).toHaveBeenCalledWith('key', 'value', true, expect.any(Number));
         });
 
         it('should emit status events on status change', async () => {
@@ -298,7 +298,7 @@ describe('NMeshedClient', () => {
             const msg = encodeOp(key, encode(val)); // Real encoding
             lastWebSocket?.simulateMessage(msg);
 
-            expect(opHandler).toHaveBeenCalledWith('remoteKey', 'remoteValue', false);
+            expect(opHandler).toHaveBeenCalledWith('remoteKey', 'remoteValue', false, expect.any(Number));
         });
     });
 

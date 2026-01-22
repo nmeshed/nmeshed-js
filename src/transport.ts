@@ -58,6 +58,10 @@ export class WebSocketTransport implements Transport {
         const baseUrl = config.serverUrl || defaultUrl;
         // Server expects: /ws?workspace_id=...
         this.url = `${baseUrl}/ws?workspace_id=${config.workspaceId}`;
+
+        if (config.traceparent) {
+            this.url += `&traceparent=${config.traceparent}`;
+        }
     }
 
     /**

@@ -23,3 +23,6 @@ export { useStore, useConnection } from './hooks';
 export { usePresence, type UsePresenceOptions } from './presence';
 export { useSuspenseStore } from './suspense';
 export { useSyncedChat, useSignalQueue } from '../ai';
+
+// Utilities
+export { StateInspector, type StateInspectorProps } from './StateInspector';

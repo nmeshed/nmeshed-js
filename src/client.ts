@@ -99,6 +99,12 @@ export class NMeshedClient implements INMeshedClient {
 
         // Initialize engine and transport
         this.engine = new SyncEngine(peerId, this.storage, this.debug, config.encryption);
+
+        // Generate Trace Parent for Observability (W3C Standard)
+        if (!config.traceparent) {
+            config.traceparent = this.generateTraceParent();
+        }
+
         this.transport = new WebSocketTransport(config);
 
         // Wire up transport to engine
@@ -568,6 +574,12 @@ export class NMeshedClient implements INMeshedClient {
 
     private generatePeerId(): string {
         return `peer_${Math.random().toString(36).substring(2, 11)}`;
+    }
+
+    private generateTraceParent(): string {
+        const traceId = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+        const spanId = Array.from({ length: 16 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+        return `00-${traceId}-${spanId}-01`;
     }
 
     private log(...args: unknown[]): void {

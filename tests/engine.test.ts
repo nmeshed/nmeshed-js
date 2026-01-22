@@ -32,7 +32,7 @@ describe('SyncEngine', () => {
 
             engine.set('key', 'value');
 
-            expect(handler).toHaveBeenCalledWith('key', 'value', true);
+            expect(handler).toHaveBeenCalledWith('key', 'value', true, expect.any(Number));
         });
 
         it('should return Uint8Array payload', async () => {
@@ -61,7 +61,7 @@ describe('SyncEngine', () => {
 
             engine.delete('key');
 
-            expect(handler).toHaveBeenCalledWith('key', null, true);
+            expect(handler).toHaveBeenCalledWith('key', null, true, expect.any(Number));
         });
 
         it('should return Uint8Array payload', async () => {
@@ -85,7 +85,7 @@ describe('SyncEngine', () => {
             const payload = encodeValue('value');
             engine.applyRemote('key', payload, 'peer-123');
 
-            expect(handler).toHaveBeenCalledWith('key', 'value', false);
+            expect(handler).toHaveBeenCalledWith('key', 'value', false, expect.any(Number));
         });
 
         it('should handle complex remote values', () => {

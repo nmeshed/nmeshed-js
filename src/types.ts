@@ -61,6 +61,11 @@ export interface NMeshedConfig {
      * If provided, all local and remote values will be encrypted.
      */
     encryption?: EncryptionAdapter;
+    /**
+     * W3C Trace Context (traceparent) for distributed tracing.
+     * If not provided, one will be generated for the session.
+     */
+    traceparent?: string;
 }
 
 // =============================================================================
