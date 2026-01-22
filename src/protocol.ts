@@ -194,6 +194,10 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: number, i
     builder.startObject(8); // WirePacket has 8 main fields now
     builder.addFieldInt8(WP_MSG_TYPE, MsgType.Op, 0);
     builder.addFieldOffset(WP_OP, opOffset, 0);
+    // Redundancy: Write timestamp to envelope as Float64 to avoid Int64 decoding issues
+    if (timestamp && timestamp > 0) {
+        builder.addFieldFloat64(WP_TIMESTAMP, timestamp, 0);
+    }
     const packet = builder.endObject();
 
     builder.finish(packet);
@@ -351,13 +355,17 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
             const key = readFieldString(buf, casOffset, CAS_KEY);
             const expected = readFieldBytes(buf, casOffset, CAS_EXPECTED);
             const newValue = readFieldBytes(buf, casOffset, CAS_NEW);
+            const casTs = readFieldInt64(buf, casOffset, CAS_TIMESTAMP, BigInt(0));
+            const actorId = readFieldString(buf, casOffset, CAS_ACTOR);
 
             // Note: We map `payload` to `newValue` for generic compatibility
             return {
                 ...baseMsg,
                 key: key || '',
                 payload: newValue || new Uint8Array(),
-                expectedValue: expected
+                expectedValue: expected,
+                timestamp: Number(casTs) || baseMsg.timestamp,
+                actorId: actorId || undefined
             };
         } else if (msgType === MsgType.Encrypted) {
             const payload = readFieldBytes(buf, rootOffset, WP_ENCRYPTED);

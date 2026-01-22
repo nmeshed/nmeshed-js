@@ -155,9 +155,16 @@ export class SyncEngine extends EventEmitter {
     // ---------------------------------------------------------------------------
 
     /** Get a value by key */
+    /** Get a value by key (returns a copy to prevent mutation) */
     get<T = unknown>(key: string): T | undefined {
         const entry = this.state.get(key);
-        return entry?.value as T | undefined;
+        if (!entry) return undefined;
+        // Deep clone to prevent "Reference Trap"
+        try {
+            return JSON.parse(JSON.stringify(entry.value)) as T;
+        } catch {
+            return entry.value as T; // Fallback for non-serializable (shouldn't happen in this system)
+        }
     }
 
     /** 
@@ -243,14 +250,38 @@ export class SyncEngine extends EventEmitter {
         const value = decodeValue(finalPayload);
         const incomingTs = timestamp ?? Date.now();
 
-        // Proper LWW merge: only accept if incoming timestamp is newer
+        // Proper LWW merge with Authority (Ω) Precedence
         const existing = this.state.get(key);
+
+        // 1. Check for Authority (The "Omega" Prefix)
+        // If the remote update comes from an authoritative source (Router/Admin), 
+        // it carries a Causal Veto power.
+        const isRemoteAuthority = peerId.startsWith('Ω_');
+
         if (existing) {
-            if (existing.timestamp > incomingTs) {
-                this.log(`LWW: Rejected stale op for ${key}`);
-                return;
-            }
-            if (existing.timestamp === incomingTs && existing.peerId >= peerId) {
+            // Standard Time Check
+            const remoteIsNewer = incomingTs > existing.timestamp;
+            const isTie = incomingTs === existing.timestamp;
+
+            // Tie-Breaking: Authority always wins ties against non-authority
+            // If both are authority, we fall back to standard logic (or could use ID compare)
+            const remoteWinsTie = isTie && isRemoteAuthority && !existing.peerId.startsWith('Ω_');
+
+            // Standard PeerID tie-break if no authority diff
+            const standardTie = isTie && existing.peerId < peerId;
+
+            // Authority Veto: 
+            // Allow Authority to overwrite local state even if local is "newer" (up to 50ms).
+            // This handles the "Phantom Claim" race where a client optimistically updates 
+            // just before receiving the rejection.
+            const authorityVeto = isRemoteAuthority && (incomingTs > existing.timestamp - 50);
+
+            // Decision Matrix
+            if (remoteIsNewer || remoteWinsTie || standardTie || authorityVeto) {
+                // Accept update
+            } else {
+                // Reject
+                // console.debug(`[LWW REJECT] Key: ${key} | Local ${existing.timestamp} > Remote ${incomingTs} | Auth: ${isRemoteAuthority}`);
                 return;
             }
         }
@@ -319,7 +350,11 @@ export class SyncEngine extends EventEmitter {
         // 3. Apply Optimistically - store with timestamp
         const timestamp = this.getTimestamp();
         this.state.set(key, { value: newValue, timestamp, peerId: this.peerId, lastCiphertext: newPayload });
-        this.emit('op', key, newValue, true, timestamp);
+        // Emit 'op' locally to notify UI/Storage, but flag isCAS=true to prevent doubl-send
+        this.emit('op', key, newValue, true, timestamp, false, true); // isReplay=false, isCAS=true
+
+        // Debug Log
+        // console.log(`[CAS Local] Key: ${key} T1: ${timestamp}`);
 
         // 4. Queue Op for network sync
         const op: Operation = { key, value: newValue, timestamp, peerId: this.peerId };
