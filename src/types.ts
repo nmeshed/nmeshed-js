@@ -100,6 +100,8 @@ export interface Operation {
     value: unknown;
     timestamp: bigint;
     peerId: string;
+    /** Causal dependencies (vector of op hashes) */
+    deps?: string[];
 }
 
 /** Serialized operation for wire transfer */
@@ -107,6 +109,7 @@ export interface WireOp {
     key: string;
     payload: Uint8Array;
     timestamp: bigint;
+    deps?: string[];
 }
 
 // =============================================================================

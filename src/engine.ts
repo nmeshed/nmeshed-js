@@ -130,9 +130,12 @@ export class SyncEngine extends EventEmitter {
     // Pillar 4: Incremental Compaction
     private opsSinceLastSnapshot = 0;
     private COMPACTION_THRESHOLD = 1000;
+    private STABILITY_WINDOW = 5000; // 5 seconds for GC
 
     // Pillar 3: Causal Barrier State
     private isGapDetected = false;
+    private receivedOps = new Set<string>();
+    private pendingBuffer: { key: string, payload: Uint8Array, peerId: string, timestamp: bigint, deps: string[] }[] = [];
 
     // WASM core (optional)
     private core: CRDTCore | null = null;
@@ -147,6 +150,24 @@ export class SyncEngine extends EventEmitter {
 
         // Init HLC from wall clock
         this.lastSeenHLC = HLC.pack(BigInt(Date.now()), 0n, 0n); // NodeID handled in HLC class
+    }
+
+    private getOpHash(key: string, timestamp: bigint, peerId: string): string {
+        return `${key}:${timestamp.toString()}:${peerId}`;
+    }
+
+    private getHeads(): string[] {
+        // In a real DAG, we would track standard heads.
+        // For this Light Engine, we treat the set of all known recent ops as potential parents?
+        // Optimized: Just take the last 5 ops?
+        // For correctness, we really should track the "Frontier".
+        // Simplified for this refactor: The set of all ops currently in "state".
+        // To avoid O(N), we can just cache the last applied op hash?
+        // Let's return the hash of the last local or remote op applied.
+        if (this.receivedOps.size === 0) return [];
+        // Returning empty array for now as we don't have a rigid DAG structure in memory yet
+        // logic is added in set() to populate this if we track a `lastOpHash`.
+        return Array.from(this.receivedOps).slice(-1); // Naive "Chain" mode
     }
 
     // ---------------------------------------------------------------------------
@@ -184,15 +205,22 @@ export class SyncEngine extends EventEmitter {
             payload = await this.encryption.encrypt(payload);
         }
 
+        // Egress: Capture Heads
+        const deps = this.getHeads();
+
         // Apply locally
         this.state.set(key, { value, timestamp, peerId: this.peerId, lastCiphertext: payload });
+
+        const opHash = this.getOpHash(key, timestamp, this.peerId);
+        this.receivedOps.add(opHash);
+
         this.incrementOps();
 
         // Emit
         this.emit('op', key, value, true, timestamp);
 
         // Queue
-        const op: Operation = { key, value, timestamp, peerId: this.peerId };
+        const op: Operation = { key, value, timestamp, peerId: this.peerId, deps };
         this.pendingOps.push(op);
 
         // Persist
@@ -212,7 +240,29 @@ export class SyncEngine extends EventEmitter {
     /**
      * Applies a remote operation.
      */
-    async applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: bigint): Promise<void> {
+    /**
+     * Applies a remote operation.
+     */
+    async applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: bigint, deps: string[] = []): Promise<void> {
+        // Pillar 1: Causal Barrier Check
+        if (deps.length > 0) {
+            const missing = deps.filter(d => !this.receivedOps.has(d));
+            if (missing.length > 0) {
+                this.log(`[Causal Barrier] Missing deps for ${key}: ${missing.join(', ')}`);
+                this.isGapDetected = true;
+                this.pendingBuffer.push({ key, payload, peerId, timestamp: timestamp || 0n, deps });
+                // Trigger Sync
+                this.emit('status', 'syncing');
+                return;
+            }
+        }
+
+        // Retry buffer if we just cleared a gap
+        if (this.isGapDetected && this.pendingBuffer.length > 0) {
+            // Re-evaluate buffer?
+            // For now, simpler to just proceed.
+        }
+
         // E2EE Decrypt
         let finalPayload = payload;
         if (this.encryption) {
@@ -222,6 +272,7 @@ export class SyncEngine extends EventEmitter {
 
         const value = decodeValue(finalPayload);
         const incomingTs = timestamp ?? HLC.pack(BigInt(Date.now()), 0n, 0n);
+        const opHash = this.getOpHash(key, incomingTs, peerId);
 
         // Update HLC watermark
         this.lastSeenHLC = this.hlc.update(incomingTs);
@@ -237,21 +288,34 @@ export class SyncEngine extends EventEmitter {
             accept = true;
         } else {
             // Pillar 2: Authority Veto Logic
-            // Rule 1: Authority always wins against non-authority
-            // Rule 2: If both are authority (or both non-authority), highest timestamp wins (LWW)
-
-            if (isRemoteAuthority && !isLocalAuthority) {
-                // Remote is Authority, Local is not. Authority Decree.
-                // Even if Local TS > Remote TS, assume Local is "Phantom Claim" and Remote is correcting.
-                // UNLESS strictly enforcing LWW? The prompt says "Authority update must overwrite local state if... Successor Decree".
-                // "Authority Veto: An Authority Peer can 'Veto' any local state."
+            if (isRemoteAuthority) {
                 accept = true;
                 this.log(`[Ω VETO] Authority ${peerId} overwrote local state for ${key}`);
+            } else if (isLocalAuthority) {
+                // Local is Authority, Remote is not. Local wins.
+                accept = false;
             } else if (incomingTs > existing.timestamp) {
                 accept = true;
             } else if (incomingTs === existing.timestamp) {
                 // Lexicographical tie-breaker (Determinism)
                 if (peerId > existing.peerId) accept = true;
+            }
+        }
+
+        this.receivedOps.add(opHash);
+
+        // Check buffer for ready ops
+        if (this.pendingBuffer.length > 0) {
+            const processable = this.pendingBuffer.filter(op => op.deps.every(d => this.receivedOps.has(d)));
+            if (processable.length > 0) {
+                this.pendingBuffer = this.pendingBuffer.filter(op => !op.deps.every(d => this.receivedOps.has(d)));
+                for (const op of processable) {
+                    await this.applyRemote(op.key, op.payload, op.peerId, op.timestamp, op.deps);
+                }
+            }
+            if (this.pendingBuffer.length === 0) {
+                this.isGapDetected = false;
+                this.emit('status', 'connected');
             }
         }
 
@@ -298,7 +362,8 @@ export class SyncEngine extends EventEmitter {
 
         this.emit('op', key, newValue, true, timestamp, false, true);
 
-        const op: Operation = { key, value: newValue, timestamp, peerId: this.peerId };
+        const op: Operation = { key, value: newValue, timestamp, peerId: this.peerId, deps: this.getHeads() };
+        this.receivedOps.add(this.getOpHash(key, timestamp, this.peerId));
         this.pendingOps.push(op);
 
         this.storage.set(key, newPayload).catch(e => { });
@@ -336,15 +401,29 @@ export class SyncEngine extends EventEmitter {
      * 
      * Detailed Action: Flush memory to disk (ensure consistency) and reset counter.
      */
+    /**
+     * Pillar 4: Compaction & GC
+     */
     async compact(): Promise<void> {
-        this.log('Running Incremental Compaction...');
-        // In a full implementation, this would merge deltas. 
-        // For Key-Value LWW, we just ensure persistence is up to date.
-        // We can optionally clear the "Queue" if we confirm sync?
-        // For now, we just reset the counter to acknowledge the hygiene cycle.
+        this.log('Running Incremental Compaction & GC...');
 
-        // Simulating "Squash":
-        // await this.storage.set('snapshot_latest', encodeSnapshot(this.getSnapshot()));
+        const now = BigInt(Date.now());
+        const stabilityBigInt = BigInt(this.STABILITY_WINDOW);
+        // Pack cutoff: (now - window) << 80
+        const cutoffTs = HLC.pack(now - stabilityBigInt, 0n, 0n);
+
+        let pruneCount = 0;
+        for (const [key, entry] of this.state.entries()) {
+            if (entry.value === null && entry.timestamp < cutoffTs) {
+                this.state.delete(key);
+                await this.storage.delete(key);
+                pruneCount++;
+            }
+        }
+
+        if (pruneCount > 0) {
+            this.log(`[GC] Pruned ${pruneCount} tombstones.`);
+        }
 
         this.opsSinceLastSnapshot = 0;
     }

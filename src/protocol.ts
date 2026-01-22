@@ -166,9 +166,9 @@ export function encodeCAS(
  * WirePacket.payload = [Binary Op Blob].
  * 
  * Binary Op Format:
- * [UUID(16)] [KeyLen(4)] [KeyBytes] [HLC(16)] [ValLen(4)] [ValBytes]
+ * [UUID(16)] [KeyLen(4)] [KeyBytes] [HLC(16)] [ValLen(4)] [ValBytes] [DepsLen(4)] [Dep1Len(4)] [Dep1Bytes]...
  */
-export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, isEncrypted = false, actorId?: string): Uint8Array {
+export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, isEncrypted = false, actorId?: string, deps: string[] = []): Uint8Array {
     const builder = new Builder(256);
 
     // 1. Construct Manual Binary Op Blob
@@ -185,8 +185,13 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, i
     view.setBigUint64(0, ts & 0xFFFFFFFFFFFFFFFFn, true); // Low 64
     view.setBigUint64(8, ts >> 64n, true);               // High 64
 
+    // Deps pre-calculation
+    const depsEncoded = deps.map(d => new TextEncoder().encode(d));
+    const depsLengthSize = 4;
+    const depsContentSize = depsEncoded.reduce((acc, d) => acc + 4 + d.length, 0);
+
     // Calculate size
-    const totalSize = 16 + 4 + keyBytes.length + 16 + 4 + valBytes.length;
+    const totalSize = 16 + 4 + keyBytes.length + 16 + 4 + valBytes.length + depsLengthSize + depsContentSize;
     const buf = new Uint8Array(totalSize);
     let offset = 0;
 
@@ -203,6 +208,13 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, i
     // Write Value
     new DataView(buf.buffer).setUint32(offset, valBytes.length, true); offset += 4;
     buf.set(valBytes, offset); offset += valBytes.length;
+
+    // Write Deps
+    new DataView(buf.buffer).setUint32(offset, deps.length, true); offset += 4;
+    for (const depBytes of depsEncoded) {
+        new DataView(buf.buffer).setUint32(offset, depBytes.length, true); offset += 4;
+        buf.set(depBytes, offset); offset += depBytes.length;
+    }
 
     // 2. Wrap in WirePacket Flatbuffer
     // We strictly put the binary blob into `WP_PAYLOAD`
@@ -309,6 +321,7 @@ export interface DecodedMessage {
     isEncrypted?: boolean;
     actorId?: string;
     serverTime?: number;    // Legacy Float64 timestamp from envelope
+    deps?: string[];
 }
 
 /** 
@@ -361,12 +374,26 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
             // Value
             const valLen = view.getUint32(offset, true); offset += 4;
             const valBytes = payload.slice(offset, offset + valLen); // Clone slice for safety
+            offset += valLen;
+
+            // Deps
+            const deps: string[] = [];
+            if (offset < payload.byteLength) {
+                const depsCount = view.getUint32(offset, true); offset += 4;
+                for (let i = 0; i < depsCount; i++) {
+                    const dLen = view.getUint32(offset, true); offset += 4;
+                    const dBytes = payload.subarray(offset, offset + dLen);
+                    deps.push(new TextDecoder().decode(dBytes));
+                    offset += dLen;
+                }
+            }
 
             return {
                 ...baseMsg,
                 key,
                 payload: valBytes,
                 timestamp: hlc,
+                deps,
                 // ActorId is implicitly in NodeID inside HLC now
             };
 
