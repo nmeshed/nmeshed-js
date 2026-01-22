@@ -14,6 +14,7 @@ import {
     encodePing,
     encodePong,
     encodeCAS,
+    encodeEncrypted,
     MsgType,
 } from '../src/protocol';
 import * as flatbuffers from 'flatbuffers';
@@ -227,6 +228,35 @@ describe('Protocol', () => {
         });
     });
 
+    describe('encodeEncrypted / decodeMessage Encrypted', () => {
+        it('should encode and decode Encrypted message', () => {
+            const payload = new Uint8Array([1, 2, 3, 4, 5]); // Fake ciphertext
+            const wireBytes = encodeEncrypted(payload);
+            const msg = decodeMessage(wireBytes);
+
+            expect(msg).not.toBeNull();
+            expect(msg?.type).toBe(MsgType.Encrypted);
+            expect(msg?.payload).toEqual(payload);
+        });
+    });
+
+    describe('Op isEncrypted flag', () => {
+        it('should verify isEncrypted flag is preserved', () => {
+            const key = 'secret-key';
+            const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+
+            // Case 1: Encrypted = true
+            const wireTrue = encodeOp(key, payload, Date.now(), true);
+            const msgTrue = decodeMessage(wireTrue);
+            expect(msgTrue?.isEncrypted).toBe(true);
+
+            // Case 2: Encrypted = false
+            const wireFalse = encodeOp(key, payload, Date.now(), false);
+            const msgFalse = decodeMessage(wireFalse);
+            expect(msgFalse?.isEncrypted).toBe(false);
+        });
+    });
+
     describe('MsgType enum', () => {
         it('should have correct SERVER-ALIGNED values', () => {
             expect(MsgType.Unknown).toBe(0);
@@ -237,6 +267,7 @@ describe('Protocol', () => {
             expect(MsgType.Ping).toBe(5);
             expect(MsgType.Pong).toBe(6);
             expect(MsgType.CompareAndSwap).toBe(7);
+            expect(MsgType.Encrypted).toBe(8);
         });
     });
 });

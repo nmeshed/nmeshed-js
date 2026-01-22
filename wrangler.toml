@@ -1,0 +1,21 @@
+
+name = "nmeshed-worker"
+main = "src/index.js"
+compatibility_date = "2024-04-01"
+
+[[durable_objects.bindings]]
+name = "NMESHED_DO"
+class_name = "NMeshedDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["NMeshedDO"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nmeshed-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[[r2_buckets]]
+binding = "SNAPSHOTS"
+bucket_name = "nmeshed-snapshots"

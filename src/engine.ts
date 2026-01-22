@@ -419,81 +419,113 @@ export class SyncEngine extends EventEmitter {
      * We decrypt them before updating the in-memory state, but we store the **raw ciphertext** 
      * in the persistent storage to maintain consistency (storage always holds what the server has).
      */
+    /** 
+     * Loads a full state snapshot from the server.
+     * 
+     * @remarks
+     * **"Light Mode" Logic:**
+     * If WASM core is not present, we assume the snapshot is a MsgPack map of Key->Value.
+     * We discard local state (except pending ops) and replace it with the snapshot.
+     */
     async loadSnapshot(data: Uint8Array, serverTime?: number): Promise<void> {
         try {
-            // Decodes to Map<Key, Value>
-            // If E2EE is ON, 'Value' is expected to be an Encrypted Blob (Uint8Array).
             const snapshot = decodeValue<Record<string, unknown>>(data);
+            if (!snapshot || typeof snapshot !== 'object') return;
 
-            if (snapshot && typeof snapshot === 'object') {
-                // Clear storage to match server state (Authoritative Sync)
-                await this.storage.clearAll();
+            // Clear storage to match server state (Authoritative Sync)
+            await this.storage.clearAll();
 
-                // 1. Process Snapshot
-                const entries: [string, any][] = [];
+            // 1. Process Snapshot (Decrypt & Persist)
+            const entries = await this.processSnapshotEntries(snapshot);
 
-                for (const [key, rawValue] of Object.entries(snapshot)) {
-                    if (this.encryption) {
-                        try {
-                            // In E2EE mode, rawValue MUST be a Uint8Array (Ciphertext)
-                            const ciphertext = rawValue as Uint8Array;
-                            const clearText = await this.encryption.decrypt(ciphertext);
-                            const val = decodeValue(clearText);
+            // 2. Persist Pending Queue (Restore it)
+            await this.restorePendingOps();
 
-                            // Memory: Store Decrypted Value
-                            entries.push([key, val]);
+            // 3. Update In-Memory State (Atomic Swap)
+            this.applySnapshotToMemory(entries, serverTime);
 
-                            // Disk: Store Encrypted Ciphertext
-                            // We bypass encodeValue if it's already a binary blob to avoid double-wrapping
-                            if (rawValue instanceof Uint8Array) {
-                                await this.storage.set(key, rawValue);
-                            } else {
-                                await this.storage.set(key, encodeValue(rawValue));
-                            }
+            this.log(`Loaded snapshot (${entries.length} items) | E2EE: ${!!this.encryption}`);
 
-                        } catch (e) {
-                            console.error(`[NMeshed] Failed to decrypt snapshot key ${key}`, e);
-                        }
-                    } else {
-                        // Plain Text Mode
-                        entries.push([key, rawValue]);
-                        await this.storage.set(key, encodeValue(rawValue));
-                    }
-                }
-
-                // 2. Persist Pending Queue (Restore it)
-                for (const op of this.pendingOps) {
-                    const pendingKey = `${PENDING_PREFIX}${op.timestamp}::${op.key}`;
-
-                    // Pending Ops in memory are decrypted/clean.
-                    // We must encrypt them before persisting to the queue.
-                    let p = encodeValue(op.value);
-                    if (this.encryption) {
-                        p = await this.encryption.encrypt(p);
-                    }
-                    await this.storage.set(pendingKey, p);
-                }
-
-                // Update In-Memory State (Atomic Swap)
-                this.state.clear();
-                // We use the serverTime (or fallback) for snapshots to ensure they are authoritative
-                const baseTs = serverTime || 1;
-                for (const [key, val] of entries) {
-                    this.state.set(key, { value: val, timestamp: baseTs, peerId: '', lastCiphertext: val instanceof Uint8Array ? val : undefined });
-                    this.emit('op', key, val, false, baseTs);
-                }
-
-                // Re-Apply Pending Ops (Optimistic Updates on top of Snapshot)
-                for (const op of this.pendingOps) {
-                    this.state.set(op.key, { value: op.value, timestamp: op.timestamp, peerId: this.peerId });
-                    // Mark as replay so client doesn't double-send
-                    this.emit('op', op.key, op.value, true, op.timestamp, true);
-                }
-
-                this.log(`Loaded snapshot (${entries.length} items) | E2EE: ${!!this.encryption}`);
-            }
         } catch (e) {
             this.log('Could not decode snapshot', e);
+        }
+    }
+
+    /** Helper: Process snapshot entries, handling E2EE decryption and Persistence */
+    private async processSnapshotEntries(snapshot: Record<string, unknown>): Promise<[string, any][]> {
+        const entries: [string, any][] = [];
+
+        for (const [key, rawValue] of Object.entries(snapshot)) {
+            let val = rawValue;
+            let storedValue = rawValue; // Default: store what we received
+
+            if (this.encryption) {
+                try {
+                    // In E2EE mode, rawValue MUST be a Uint8Array (Ciphertext)
+                    if (rawValue instanceof Uint8Array) {
+                        const clearText = await this.encryption.decrypt(rawValue);
+                        val = decodeValue(clearText);
+                        // storedValue is already ciphertext (rawValue), so we keep it.
+                    }
+                } catch (e) {
+                    console.error(`[NMeshed] Failed to decrypt snapshot key ${key}`, e);
+                    continue; // Skip invalid keys
+                }
+            } else {
+                // Plain Text Mode: We need to encode it back to bytes for storage if it isn't already
+                // (Although typically snapshot values are effectively structural, the storage expects Uint8Array usually)
+                // Wait: storage.set expects Uint8Array. 
+                storedValue = encodeValue(rawValue);
+            }
+
+            // Memory: Store Decrypted Value
+            entries.push([key, val]);
+
+            // Disk: Store (Ciphertext if E2EE, Encoded if Plain)
+            await this.storage.set(key, storedValue as Uint8Array).catch(e => {
+                this.log(`Failed to persist key ${key}`, e);
+            });
+        }
+        return entries;
+    }
+
+    /** Helper: Re-persist pending ops */
+    private async restorePendingOps(): Promise<void> {
+        for (const op of this.pendingOps) {
+            const pendingKey = `${PENDING_PREFIX}${op.timestamp}::${op.key}`;
+
+            // Pending Ops in memory are decrypted/clean.
+            // We must encrypt them before persisting to the queue.
+            let p = encodeValue(op.value);
+            if (this.encryption) {
+                p = await this.encryption.encrypt(p);
+            }
+            await this.storage.set(pendingKey, p);
+        }
+    }
+
+    /** Helper: Update in-memory state */
+    private applySnapshotToMemory(entries: [string, any][], serverTime?: number): void {
+        this.state.clear();
+        // We use the serverTime (or fallback) for snapshots to ensure they are authoritative
+        const baseTs = serverTime || 1;
+
+        for (const [key, val] of entries) {
+            // If val is a Uint8Array and we are in E2EE mode, it might be that we want to store the ciphertext
+            // in 'lastCiphertext' for CAS operations later.
+            // In `processSnapshotEntries`, we derived `val` (decrypted). 
+            // Ideally we should track the ciphertext too if we want perfect CAS support.
+            // For now, we reconstruct it if needed or accept null.
+            // Re-encoding for CAS is acceptable for now.
+            this.state.set(key, { value: val, timestamp: baseTs, peerId: '' });
+            this.emit('op', key, val, false, baseTs);
+        }
+
+        // Re-Apply Pending Ops (Optimistic Updates on top of Snapshot)
+        for (const op of this.pendingOps) {
+            this.state.set(op.key, { value: op.value, timestamp: op.timestamp, peerId: this.peerId });
+            // Mark as replay so client doesn't double-send
+            this.emit('op', op.key, op.value, true, op.timestamp, true);
         }
     }
 

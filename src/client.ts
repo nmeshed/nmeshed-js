@@ -136,10 +136,28 @@ export class NMeshedClient implements INMeshedClient {
      * 
      * @private
      */
+    /**
+     * Asynchronous initialization sequence.
+     * 1. Requests persistent storage permission from the browser.
+     * 2. Initializes the storage adapter (IndexedDB).
+     * 3. Loads local state into memory.
+     * 4. Establishes the WebSocket connection.
+     * 
+     * @private
+     */
     private async init() {
-        // 1. Request Persistence (W1-10)
-        // causality: Moden browsers may evict non-persisted IndexedDB data under storage pressure.
-        // We explicitly request persistence to ensure user data survives low-disk-space events.
+        // 1. Request Persistence (Browser)
+        await this.ensurePersistence();
+
+        // 2. Initialize Storage & Load State
+        await this.initializeEngineState();
+
+        // 3. Connect Network
+        this.connect();
+    }
+
+    /** Helper: Request browser storage persistence to prevent eviction */
+    private async ensurePersistence() {
         if (this.config.persist !== false && typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
             try {
                 const persisted = await navigator.storage.persist();
@@ -148,20 +166,16 @@ export class NMeshedClient implements INMeshedClient {
                 this.log('Persistence request failed', e);
             }
         }
+    }
 
-        // 2. Initialize Storage
+    /** Helper: Initialize storage and hydrate engine from disk */
+    private async initializeEngineState() {
         try {
             await this.storage.init();
-
-            // 3. Load Local State (Offline First)
             await this.engine.loadFromStorage();
-
-            // 4. Connect
-            this.connect();
         } catch (e) {
             this.log('Storage initialization failed', e);
-            // Fallback: connect anyway so the app works even if offline storage is broken
-            this.connect();
+            // Non-fatal: Proceed to connect even if storage fails (InMemory fallback usually handles runtime)
         }
     }
 

@@ -28,8 +28,6 @@ export default defineConfig({
                 'src/react/suspense.ts',
                 // Presence hook requires complex mocking of timer-based cleanup
                 'src/react/presence.ts',
-                // Client has WebSocket edge cases that are hard to test (84.9% coverage is acceptable)
-                'src/client.ts',
             ],
             thresholds: {
                 perFile: true,
