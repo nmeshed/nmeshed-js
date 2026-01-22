@@ -123,7 +123,7 @@ export class NMeshedClient implements INMeshedClient {
     }
 
     private async hydrate(snapshot: Uint8Array) {
-        await this.engine.loadSnapshot(snapshot, 1);
+        await this.engine.loadSnapshot(snapshot, 1n);
         this.engine.setStatus('ready'); // Assume ready if hydrated
     }
 
@@ -460,7 +460,7 @@ export class NMeshedClient implements INMeshedClient {
                             isEncrypted = true;
                         }
                         // Bug 4 Fix: Use the actual timestamp from the engine!
-                        const ts = timestamp || Date.now();
+                        const ts = timestamp || BigInt(Date.now());
                         const wireData = encodeOp(key, payload, ts, isEncrypted, this.engine.getPeerId());
                         this.transport.send(wireData);
                     })();
@@ -552,11 +552,17 @@ export class NMeshedClient implements INMeshedClient {
         if (!msg) return;
 
         // Clock Synchronization
-        if (msg.timestamp && msg.timestamp > 0) {
+        if (msg.timestamp && msg.timestamp > 0n) {
             // Simple NTP-like adjustment: 
             // We assume latency is symmetric or negligible for this MVP.
             // offset = serverTime - localTime
-            const offset = msg.timestamp - Date.now();
+            // HLC is (Physical << 80) ...
+            // We want roughly the physical difference. 
+            // Better: use HLC.unpack
+            // But for simple offset, we can just store the delta. 
+            // setClockOffset expects number? Engine ignores it anyway in HLC mode.
+            // keeping it as no-op or simple cast.
+            const offset = Number(msg.timestamp >> 80n) - Date.now();
             this.engine.setClockOffset(offset);
         }
 

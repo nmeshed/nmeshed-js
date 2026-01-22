@@ -155,49 +155,63 @@ export function encodeCAS(
 // Encoder
 // =============================================================================
 
+// =============================================================================
+// Encoder
+// =============================================================================
+
 /** 
  * Encode a standard Operation (Set/Delete).
  * 
- * @param key - The key.
- * @param payload - The encoded value.
- * @param timestamp - Optional timestamp (if re-broadcasting).
- * @param isEncrypted - Whether the payload is encrypted.
+ * Uses strict Manual Binary Encoding for parity with Rust Core `protocol.rs`.
+ * WirePacket.payload = [Binary Op Blob].
+ * 
+ * Binary Op Format:
+ * [UUID(16)] [KeyLen(4)] [KeyBytes] [HLC(16)] [ValLen(4)] [ValBytes]
  */
-export function encodeOp(key: string, payload: Uint8Array, timestamp?: number, isEncrypted = false, actorId?: string): Uint8Array {
+export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, isEncrypted = false, actorId?: string): Uint8Array {
     const builder = new Builder(256);
 
-    // 1. Create Op Table Strings/Vectors
-    const keyOffset = builder.createString(key);
-    const valueOffset = builder.createByteVector(payload);
-    let actorOffset = 0;
-    if (actorId) {
-        actorOffset = builder.createString(actorId);
-    }
+    // 1. Construct Manual Binary Op Blob
+    const keyBytes = new TextEncoder().encode(key);
+    const valBytes = payload;
 
-    // 2. Build Op Table
-    builder.startObject(8); // Op has 8 fields max
-    builder.addFieldOffset(OP_KEY, keyOffset, 0);
-    builder.addFieldOffset(OP_VALUE, valueOffset, 0);
-    if (timestamp && timestamp > 0) {
-        const ts = BigInt(timestamp);
-        builder.addFieldInt64(OP_TIMESTAMP, ts, BigInt(0));
-    }
-    if (actorId) {
-        builder.addFieldOffset(OP_ACTOR_ID, actorOffset, 0);
-    }
-    if (isEncrypted) {
-        builder.addFieldInt8(OP_IS_ENCRYPTED, 1, 0);
-    }
-    const opOffset = builder.endObject();
+    // UUID (16) - Mocking for now, ideally derived from Workspace
+    const uuidBytes = new Uint8Array(16); // Zeros for now in this light SDK
 
-    // 3. Build WirePacket Table
-    builder.startObject(8); // WirePacket has 8 main fields now
+    // HLC (16 bytes LE)
+    const hlcBytes = new Uint8Array(16);
+    const ts = timestamp || 0n;
+    const view = new DataView(hlcBytes.buffer);
+    view.setBigUint64(0, ts & 0xFFFFFFFFFFFFFFFFn, true); // Low 64
+    view.setBigUint64(8, ts >> 64n, true);               // High 64
+
+    // Calculate size
+    const totalSize = 16 + 4 + keyBytes.length + 16 + 4 + valBytes.length;
+    const buf = new Uint8Array(totalSize);
+    let offset = 0;
+
+    // Write UUID
+    buf.set(uuidBytes, offset); offset += 16;
+
+    // Write Key
+    new DataView(buf.buffer).setUint32(offset, keyBytes.length, true); offset += 4;
+    buf.set(keyBytes, offset); offset += keyBytes.length;
+
+    // Write HLC
+    buf.set(hlcBytes, offset); offset += 16;
+
+    // Write Value
+    new DataView(buf.buffer).setUint32(offset, valBytes.length, true); offset += 4;
+    buf.set(valBytes, offset); offset += valBytes.length;
+
+    // 2. Wrap in WirePacket Flatbuffer
+    // We strictly put the binary blob into `WP_PAYLOAD`
+    const payloadOffset = builder.createByteVector(buf);
+
+    builder.startObject(8);
     builder.addFieldInt8(WP_MSG_TYPE, MsgType.Op, 0);
-    builder.addFieldOffset(WP_OP, opOffset, 0);
-    // Redundancy: Write timestamp to envelope as Float64 to avoid Int64 decoding issues
-    if (timestamp && timestamp > 0) {
-        builder.addFieldFloat64(WP_TIMESTAMP, timestamp, 0);
-    }
+    builder.addFieldOffset(WP_PAYLOAD, payloadOffset, 0);
+    // Legacy/Redundant fields unused by Rust in manual mode
     const packet = builder.endObject();
 
     builder.finish(packet);
@@ -291,9 +305,10 @@ export interface DecodedMessage {
     key?: string;
     payload?: Uint8Array;
     expectedValue?: Uint8Array | null; // For CAS
-    timestamp?: number; // Server time or Op timestamp
+    timestamp?: bigint; // Server time or Op timestamp
     isEncrypted?: boolean;
     actorId?: string;
+    serverTime?: number;    // Legacy Float64 timestamp from envelope
 }
 
 /** 
@@ -310,34 +325,51 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
         const rootOffset = buf.readInt32(buf.position()) + buf.position();
 
         const msgType = readFieldInt8(buf, rootOffset, WP_MSG_TYPE, MsgType.Unknown);
-        const timestamp = readFieldFloat64(buf, rootOffset, WP_TIMESTAMP, 0);
+        const serverTime = readFieldFloat64(buf, rootOffset, WP_TIMESTAMP, 0);
 
         if (msgType === MsgType.Unknown) return null;
 
-        const baseMsg: DecodedMessage = { type: msgType as MsgType };
-        if (timestamp > 0) baseMsg.timestamp = timestamp;
+        const baseMsg: DecodedMessage = { type: msgType as MsgType, serverTime };
 
         if (msgType === MsgType.Op) {
-            const opOffset = readFieldTable(buf, rootOffset, WP_OP);
-            if (!opOffset) return null;
-            const key = readFieldString(buf, opOffset, OP_KEY);
-            const payload = readFieldBytes(buf, opOffset, OP_VALUE);
-            // Read timestamp from OP table (Int64)
-            const opTs = readFieldInt64(buf, opOffset, OP_TIMESTAMP, BigInt(0));
-            // Convert back to number for JS compatibility (safe for next few thousand years)
-            const finalTs = Number(opTs) || timestamp;  // Fallback to server sync time if 0
+            // Updated: Decode from Payload Blob (Manual Binary)
+            const payload = readFieldBytes(buf, rootOffset, WP_PAYLOAD);
+            if (!payload || payload.length < 16 + 4 + 8 + 4) {
+                console.warn("Invalid binary op payload");
+                return null;
+            }
 
-            const isEncrypted = readFieldInt8(buf, opOffset, OP_IS_ENCRYPTED, 0) === 1;
-            const actorId = readFieldString(buf, opOffset, OP_ACTOR_ID);
+            // Manual Decode
+            // Format: [UUID(16)] [KeyLen(4)] [Key] [HLC(16)] [ValLen(4)] [Val]
+            const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+            let offset = 0;
+
+            // Skip UUID (16)
+            offset += 16;
+
+            // Key
+            const keyLen = view.getUint32(offset, true); offset += 4;
+            const keyBytes = payload.subarray(offset, offset + keyLen);
+            const key = new TextDecoder().decode(keyBytes); offset += keyLen;
+
+            // HLC (16 bytes)
+            const low = view.getBigUint64(offset, true);
+            const high = view.getBigUint64(offset + 8, true);
+            const hlc = (high << 64n) | low;
+            offset += 16;
+
+            // Value
+            const valLen = view.getUint32(offset, true); offset += 4;
+            const valBytes = payload.slice(offset, offset + valLen); // Clone slice for safety
 
             return {
                 ...baseMsg,
-                key: key || '',
-                payload: payload || new Uint8Array(),
-                timestamp: finalTs,
-                isEncrypted,
-                actorId: actorId || undefined
+                key,
+                payload: valBytes,
+                timestamp: hlc,
+                // ActorId is implicitly in NodeID inside HLC now
             };
+
         } else if (msgType === MsgType.Init) {
             const snapOffset = readFieldTable(buf, rootOffset, WP_SNAPSHOT);
             if (snapOffset) {
@@ -364,7 +396,7 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
                 key: key || '',
                 payload: newValue || new Uint8Array(),
                 expectedValue: expected,
-                timestamp: Number(casTs) || baseMsg.timestamp,
+                timestamp: casTs || BigInt(baseMsg.serverTime || 0),
                 actorId: actorId || undefined
             };
         } else if (msgType === MsgType.Encrypted) {

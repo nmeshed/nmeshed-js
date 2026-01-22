@@ -28,12 +28,12 @@ class NoopTransport {
 class MockWasmCore {
     private store = new Map<string, Uint8Array>();
 
-    applyLocalOp(key: string, value: Uint8Array, _timestamp: number, _isDelete: boolean) {
+    applyLocalOp(key: string, value: Uint8Array, _timestamp: bigint, _isDelete: boolean) {
         this.store.set(key, value);
         return new Uint8Array([1, 2, 3]);
     }
 
-    applyRemoteOp(_key: string, _binary: Uint8Array, _timestamp: number) { }
+    applyRemoteOp(_key: string, _binary: Uint8Array, _timestamp: bigint) { }
 
     getValue(key: string): Uint8Array | null {
         return this.store.get(key) || null;

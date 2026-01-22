@@ -98,7 +98,7 @@ export interface ConnectionState {
 export interface Operation {
     key: string;
     value: unknown;
-    timestamp: number;
+    timestamp: bigint;
     peerId: string;
 }
 
@@ -106,7 +106,7 @@ export interface Operation {
 export interface WireOp {
     key: string;
     payload: Uint8Array;
-    timestamp: number;
+    timestamp: bigint;
 }
 
 // =============================================================================
@@ -116,7 +116,7 @@ export interface WireOp {
 /** Event types emitted by the client */
 export interface ClientEvents {
     /** Fired when a key's value changes (local or remote) */
-    op: (key: string, value: unknown, isLocal: boolean, timestamp?: number, isReplay?: boolean, isCAS?: boolean) => void;
+    op: (key: string, value: unknown, isLocal: boolean, timestamp?: bigint, isReplay?: boolean, isCAS?: boolean) => void;
     /** Fired when connection status changes */
     status: (status: ConnectionStatus) => void;
     /** Fired on error */
