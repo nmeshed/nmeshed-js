@@ -10,5 +10,10 @@ export enum MsgType {
   Init = 4,
   ActorRegistry = 5,
   ColumnarBatch = 6,
-  CompareAndSwap = 7
+  CompareAndSwap = 7,
+  Encrypted = 8,
+  SyncRequest = 9,
+  Snapshot = 10,
+  Ping = 11,
+  Pong = 12
 }
