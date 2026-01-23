@@ -52,24 +52,36 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, i
     const keyOffset = builder.createString(key);
     const valVector = builder.createByteVector(payload);
     const actorOffset = actorId ? builder.createString(actorId) : 0;
-    const wsOffset = builder.createString(""); // Default empty for now, or pass in?
+    const wsOffset = builder.createString("");
 
     // 2. Encode HLC (Timestamp)
     const ts = timestamp || BigInt(Date.now());
     const lower = ts & 0xFFFFFFFFFFFFFFFFn;
     const upper = ts >> 64n;
 
-    // Create Hlc Struct
-    const hlcOffset = Hlc.createHlc(builder, upper, lower);
-
     FBS.Op.startOp(builder);
+
+    // HACK: FlatBuffers JS Builder define inline structs logic strictly.
+    // fieldStruct requires the struct to be at the current offset.
+    // We must write the struct bytes HERE, inside the table construction.
+    // However, createHlc calls builder.prep(), which throws if isNested is true.
+    // We momentarily disable the check to write the struct inline.
+
+    // @ts-ignore
+    builder.isNested = false;
+    const hlcOffset = Hlc.createHlc(builder, upper, lower);
+    // @ts-ignore
+    builder.isNested = true;
+
+    FBS.Op.addTimestamp(builder, hlcOffset);
+
     FBS.Op.addKey(builder, keyOffset);
     FBS.Op.addValue(builder, valVector);
-    FBS.Op.addTimestamp(builder, hlcOffset);
     if (actorOffset) FBS.Op.addActorId(builder, actorOffset);
 
     FBS.Op.addIsDelete(builder, false);
     FBS.Op.addSeq(builder, 0n); // Default seq
+    FBS.Op.addIsEncrypted(builder, isEncrypted);
 
     const opOffset = FBS.Op.endOp(builder);
 
@@ -115,6 +127,31 @@ export function encodePing(): Uint8Array {
     return builder.asUint8Array();
 }
 
+/** Encode Pong */
+export function encodePong(serverTime: number): Uint8Array {
+    const builder = new Builder(32);
+    FBS.WirePacket.startWirePacket(builder);
+    FBS.WirePacket.addMsgType(builder, FBS.MsgType.Pong);
+    FBS.WirePacket.addTimestamp(builder, serverTime);
+    const packet = FBS.WirePacket.endWirePacket(builder);
+    builder.finish(packet);
+    return builder.asUint8Array();
+}
+
+/** Encode Encrypted Packet */
+export function encodeEncrypted(payload: Uint8Array): Uint8Array {
+    const builder = new Builder(256 + payload.length);
+    const payloadOffset = builder.createByteVector(payload);
+
+    FBS.WirePacket.startWirePacket(builder);
+    FBS.WirePacket.addMsgType(builder, FBS.MsgType.Encrypted);
+    FBS.WirePacket.addEncryptedPayload(builder, payloadOffset);
+
+    const packet = FBS.WirePacket.endWirePacket(builder);
+    builder.finish(packet);
+    return builder.asUint8Array();
+}
+
 /** Encode CAS */
 export function encodeCAS(key: string, expected: Uint8Array | null, newValue: Uint8Array, actorId: string): Uint8Array {
     const builder = new Builder(256);
@@ -144,10 +181,11 @@ export function encodeCAS(key: string, expected: Uint8Array | null, newValue: Ui
     return builder.asUint8Array();
 }
 
-// =============================================================================
-// Decoder (Satori: Zero-Arithmetic)
-// =============================================================================
+// Snapshot helpers (MsgPack wrappers for consistency)
+export const encodeSnapshot = encodeValue;
+export const decodeSnapshot = decodeValue;
 
+// Decoder
 export interface DecodedMessage {
     type: FBS.MsgType;
     key?: string;
@@ -166,6 +204,8 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
         const packet = FBS.WirePacket.getRootAsWirePacket(buf);
 
         const type = packet.msgType();
+        if (type === FBS.MsgType.Unknown) return null;
+
         const baseMsg: DecodedMessage = { type, serverTime: packet.timestamp() };
 
         switch (type) {
@@ -186,6 +226,7 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
                     payload: valArray || new Uint8Array(),
                     timestamp: ts,
                     actorId: op.actorId() || undefined,
+                    isEncrypted: op.isEncrypted()
                 };
             }
             case FBS.MsgType.Init: {
@@ -212,11 +253,12 @@ export function decodeMessage(data: Uint8Array): DecodedMessage | null {
                 const payload = packet.encryptedPayloadArray();
                 return { ...baseMsg, payload: payload || new Uint8Array() };
             }
+            // Ping/Pong/Signal/etc
             default:
                 return baseMsg;
         }
     } catch (e) {
-        console.error('[Protocol] Decode Error', e);
+        // console.error('[Protocol] Decode Error', e);
         return null;
     }
 }

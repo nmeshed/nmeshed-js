@@ -4,10 +4,15 @@
 
 import * as flatbuffers from 'flatbuffers';
 
+import { Answer, AnswerT } from '../nmeshed/answer.js';
+import { Candidate, CandidateT } from '../nmeshed/candidate.js';
+import { Join, JoinT } from '../nmeshed/join.js';
+import { Offer, OfferT } from '../nmeshed/offer.js';
+import { Relay, RelayT } from '../nmeshed/relay.js';
 import { SignalData, unionToSignalData, unionListToSignalData } from '../nmeshed/signal-data.js';
 
 
-export class Signal {
+export class Signal implements flatbuffers.IUnpackableObject<SignalT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Signal {
@@ -81,5 +86,53 @@ static createSignal(builder:flatbuffers.Builder, toPeerOffset:flatbuffers.Offset
   Signal.addDataType(builder, dataType);
   Signal.addData(builder, dataOffset);
   return Signal.endSignal(builder);
+}
+
+unpack(): SignalT {
+  return new SignalT(
+    this.toPeer(),
+    this.fromPeer(),
+    this.dataType(),
+    (() => {
+      const temp = unionToSignalData(this.dataType(), this.data.bind(this));
+      if(temp === null) { return null; }
+      return temp.unpack()
+  })()
+  );
+}
+
+
+unpackTo(_o: SignalT): void {
+  _o.toPeer = this.toPeer();
+  _o.fromPeer = this.fromPeer();
+  _o.dataType = this.dataType();
+  _o.data = (() => {
+      const temp = unionToSignalData(this.dataType(), this.data.bind(this));
+      if(temp === null) { return null; }
+      return temp.unpack()
+  })();
+}
+}
+
+export class SignalT implements flatbuffers.IGeneratedObject {
+constructor(
+  public toPeer: string|Uint8Array|null = null,
+  public fromPeer: string|Uint8Array|null = null,
+  public dataType: SignalData = SignalData.NONE,
+  public data: AnswerT|CandidateT|JoinT|OfferT|RelayT|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const toPeer = (this.toPeer !== null ? builder.createString(this.toPeer!) : 0);
+  const fromPeer = (this.fromPeer !== null ? builder.createString(this.fromPeer!) : 0);
+  const data = builder.createObjectOffset(this.data);
+
+  return Signal.createSignal(builder,
+    toPeer,
+    fromPeer,
+    this.dataType,
+    data
+  );
 }
 }

@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class ValueBlob {
+
+
+export class ValueBlob implements flatbuffers.IUnpackableObject<ValueBlobT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):ValueBlob {
@@ -66,5 +68,31 @@ static createValueBlob(builder:flatbuffers.Builder, dataOffset:flatbuffers.Offse
   ValueBlob.startValueBlob(builder);
   ValueBlob.addData(builder, dataOffset);
   return ValueBlob.endValueBlob(builder);
+}
+
+unpack(): ValueBlobT {
+  return new ValueBlobT(
+    this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength())
+  );
+}
+
+
+unpackTo(_o: ValueBlobT): void {
+  _o.data = this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength());
+}
+}
+
+export class ValueBlobT implements flatbuffers.IGeneratedObject {
+constructor(
+  public data: (number)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const data = ValueBlob.createDataVector(builder, this.data);
+
+  return ValueBlob.createValueBlob(builder,
+    data
+  );
 }
 }

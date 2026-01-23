@@ -4,11 +4,11 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { StateVectorEntry } from '../nmeshed/state-vector-entry.js';
-import { VersionVector } from '../nmeshed/version-vector.js';
+import { StateVectorEntry, StateVectorEntryT } from '../nmeshed/state-vector-entry.js';
+import { VersionVector, VersionVectorT } from '../nmeshed/version-vector.js';
 
 
-export class SyncPacket {
+export class SyncPacket implements flatbuffers.IUnpackableObject<SyncPacketT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):SyncPacket {
@@ -110,4 +110,45 @@ static endSyncPacket(builder:flatbuffers.Builder):flatbuffers.Offset {
   return offset;
 }
 
+
+unpack(): SyncPacketT {
+  return new SyncPacketT(
+    this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength()),
+    this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength()),
+    this.ackSeq(),
+    (this.currentVector() !== null ? this.currentVector()!.unpack() : null)
+  );
+}
+
+
+unpackTo(_o: SyncPacketT): void {
+  _o.stateVector = this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.stateVector.bind(this), this.stateVectorLength());
+  _o.snapshot = this.bb!.createScalarList<number>(this.snapshot.bind(this), this.snapshotLength());
+  _o.ackSeq = this.ackSeq();
+  _o.currentVector = (this.currentVector() !== null ? this.currentVector()!.unpack() : null);
+}
+}
+
+export class SyncPacketT implements flatbuffers.IGeneratedObject {
+constructor(
+  public stateVector: (StateVectorEntryT)[] = [],
+  public snapshot: (number)[] = [],
+  public ackSeq: bigint = BigInt('0'),
+  public currentVector: VersionVectorT|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const stateVector = SyncPacket.createStateVectorVector(builder, builder.createObjectOffsetList(this.stateVector));
+  const snapshot = SyncPacket.createSnapshotVector(builder, this.snapshot);
+  const currentVector = (this.currentVector !== null ? this.currentVector!.pack(builder) : 0);
+
+  SyncPacket.startSyncPacket(builder);
+  SyncPacket.addStateVector(builder, stateVector);
+  SyncPacket.addSnapshot(builder, snapshot);
+  SyncPacket.addAckSeq(builder, this.ackSeq);
+  SyncPacket.addCurrentVector(builder, currentVector);
+
+  return SyncPacket.endSyncPacket(builder);
+}
 }

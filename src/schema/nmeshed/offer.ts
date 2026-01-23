@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class Offer {
+
+
+export class Offer implements flatbuffers.IUnpackableObject<OfferT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Offer {
@@ -46,5 +48,31 @@ static createOffer(builder:flatbuffers.Builder, sdpOffset:flatbuffers.Offset):fl
   Offer.startOffer(builder);
   Offer.addSdp(builder, sdpOffset);
   return Offer.endOffer(builder);
+}
+
+unpack(): OfferT {
+  return new OfferT(
+    this.sdp()
+  );
+}
+
+
+unpackTo(_o: OfferT): void {
+  _o.sdp = this.sdp();
+}
+}
+
+export class OfferT implements flatbuffers.IGeneratedObject {
+constructor(
+  public sdp: string|Uint8Array|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const sdp = (this.sdp !== null ? builder.createString(this.sdp!) : 0);
+
+  return Offer.createOffer(builder,
+    sdp
+  );
 }
 }

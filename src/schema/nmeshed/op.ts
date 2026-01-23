@@ -3,135 +3,193 @@
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 import * as flatbuffers from 'flatbuffers';
-import { Hlc } from './hlc.js';
 
-export class Op {
-  bb: flatbuffers.ByteBuffer | null = null;
+import { Hlc, HlcT } from '../nmeshed/hlc.js';
+
+
+export class Op implements flatbuffers.IUnpackableObject<OpT> {
+  bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
-  __init(i: number, bb: flatbuffers.ByteBuffer): Op {
-    this.bb_pos = i;
-    this.bb = bb;
-    return this;
-  }
+  __init(i:number, bb:flatbuffers.ByteBuffer):Op {
+  this.bb_pos = i;
+  this.bb = bb;
+  return this;
+}
 
-  static getRootAsOp(bb: flatbuffers.ByteBuffer, obj?: Op): Op {
-    return (obj || new Op()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
-  }
+static getRootAsOp(bb:flatbuffers.ByteBuffer, obj?:Op):Op {
+  return (obj || new Op()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+}
 
-  static getSizePrefixedRootAsOp(bb: flatbuffers.ByteBuffer, obj?: Op): Op {
-    bb.setPosition(bb.position() + flatbuffers.SIZE_PREFIX_LENGTH);
-    return (obj || new Op()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
-  }
+static getSizePrefixedRootAsOp(bb:flatbuffers.ByteBuffer, obj?:Op):Op {
+  bb.setPosition(bb.position() + flatbuffers.SIZE_PREFIX_LENGTH);
+  return (obj || new Op()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+}
 
-  workspaceId(): string | null
-  workspaceId(optionalEncoding: flatbuffers.Encoding): string | Uint8Array | null
-  workspaceId(optionalEncoding?: any): string | Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 4);
-    return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
-  }
+workspaceId():string|null
+workspaceId(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+workspaceId(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 4);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
 
-  key(): string | null
-  key(optionalEncoding: flatbuffers.Encoding): string | Uint8Array | null
-  key(optionalEncoding?: any): string | Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 6);
-    return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
-  }
+key():string|null
+key(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+key(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 6);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
 
-  timestamp(obj?: Hlc): Hlc | null {
-    const offset = this.bb!.__offset(this.bb_pos, 8);
-    return offset ? (obj || new Hlc()).__init(this.bb_pos + offset, this.bb!) : null;
-  }
+timestamp(obj?:Hlc):Hlc|null {
+  const offset = this.bb!.__offset(this.bb_pos, 8);
+  return offset ? (obj || new Hlc()).__init(this.bb_pos + offset, this.bb!) : null;
+}
 
-  value(index: number): number | null {
-    const offset = this.bb!.__offset(this.bb_pos, 10);
-    return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
-  }
+value(index: number):number|null {
+  const offset = this.bb!.__offset(this.bb_pos, 10);
+  return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
+}
 
-  valueLength(): number {
-    const offset = this.bb!.__offset(this.bb_pos, 10);
-    return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
-  }
+valueLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 10);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
 
-  valueArray(): Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 10);
-    return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
-  }
+valueArray():Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 10);
+  return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
 
-  actorId(): string | null
-  actorId(optionalEncoding: flatbuffers.Encoding): string | Uint8Array | null
-  actorId(optionalEncoding?: any): string | Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 12);
-    return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
-  }
+actorId():string|null
+actorId(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+actorId(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
 
-  seq(): bigint {
-    const offset = this.bb!.__offset(this.bb_pos, 14);
-    return offset ? this.bb!.readInt64(this.bb_pos + offset) : BigInt('0');
-  }
+seq():bigint {
+  const offset = this.bb!.__offset(this.bb_pos, 14);
+  return offset ? this.bb!.readInt64(this.bb_pos + offset) : BigInt('0');
+}
 
-  isDelete(): boolean {
-    const offset = this.bb!.__offset(this.bb_pos, 16);
-    return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
-  }
+isDelete():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
 
-  static startOp(builder: flatbuffers.Builder) {
-    builder.startObject(7);
-  }
+isEncrypted():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
 
-  static addWorkspaceId(builder: flatbuffers.Builder, workspaceIdOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(0, workspaceIdOffset, 0);
-  }
+static startOp(builder:flatbuffers.Builder) {
+  builder.startObject(8);
+}
 
-  static addKey(builder: flatbuffers.Builder, keyOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(1, keyOffset, 0);
-  }
+static addWorkspaceId(builder:flatbuffers.Builder, workspaceIdOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(0, workspaceIdOffset, 0);
+}
 
-  static addTimestamp(builder: flatbuffers.Builder, timestampOffset: flatbuffers.Offset) {
-    builder.addFieldStruct(2, timestampOffset, 0);
-  }
+static addKey(builder:flatbuffers.Builder, keyOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(1, keyOffset, 0);
+}
 
-  static addValue(builder: flatbuffers.Builder, valueOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(3, valueOffset, 0);
-  }
+static addTimestamp(builder:flatbuffers.Builder, timestampOffset:flatbuffers.Offset) {
+  builder.addFieldStruct(2, timestampOffset, 0);
+}
 
-  static createValueVector(builder: flatbuffers.Builder, data: number[] | Uint8Array): flatbuffers.Offset {
-    builder.startVector(1, data.length, 1);
-    for (let i = data.length - 1; i >= 0; i--) {
-      builder.addInt8(data[i]!);
-    }
-    return builder.endVector();
-  }
+static addValue(builder:flatbuffers.Builder, valueOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(3, valueOffset, 0);
+}
 
-  static startValueVector(builder: flatbuffers.Builder, numElems: number) {
-    builder.startVector(1, numElems, 1);
+static createValueVector(builder:flatbuffers.Builder, data:number[]|Uint8Array):flatbuffers.Offset {
+  builder.startVector(1, data.length, 1);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt8(data[i]!);
   }
+  return builder.endVector();
+}
 
-  static addActorId(builder: flatbuffers.Builder, actorIdOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(4, actorIdOffset, 0);
-  }
+static startValueVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(1, numElems, 1);
+}
 
-  static addSeq(builder: flatbuffers.Builder, seq: bigint) {
-    builder.addFieldInt64(5, seq, BigInt('0'));
-  }
+static addActorId(builder:flatbuffers.Builder, actorIdOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(4, actorIdOffset, 0);
+}
 
-  static addIsDelete(builder: flatbuffers.Builder, isDelete: boolean) {
-    builder.addFieldInt8(6, +isDelete, +false);
-  }
+static addSeq(builder:flatbuffers.Builder, seq:bigint) {
+  builder.addFieldInt64(5, seq, BigInt('0'));
+}
 
-  static endOp(builder: flatbuffers.Builder): flatbuffers.Offset {
-    const offset = builder.endObject();
-    return offset;
-  }
+static addIsDelete(builder:flatbuffers.Builder, isDelete:boolean) {
+  builder.addFieldInt8(6, +isDelete, +false);
+}
 
-  static createOp(builder: flatbuffers.Builder, workspaceIdOffset: flatbuffers.Offset, keyOffset: flatbuffers.Offset, timestampOffset: flatbuffers.Offset, valueOffset: flatbuffers.Offset, actorIdOffset: flatbuffers.Offset, seq: bigint, isDelete: boolean): flatbuffers.Offset {
-    Op.startOp(builder);
-    Op.addWorkspaceId(builder, workspaceIdOffset);
-    Op.addKey(builder, keyOffset);
-    Op.addTimestamp(builder, timestampOffset);
-    Op.addValue(builder, valueOffset);
-    Op.addActorId(builder, actorIdOffset);
-    Op.addSeq(builder, seq);
-    Op.addIsDelete(builder, isDelete);
-    return Op.endOp(builder);
-  }
+static addIsEncrypted(builder:flatbuffers.Builder, isEncrypted:boolean) {
+  builder.addFieldInt8(7, +isEncrypted, +false);
+}
+
+static endOp(builder:flatbuffers.Builder):flatbuffers.Offset {
+  const offset = builder.endObject();
+  return offset;
+}
+
+
+unpack(): OpT {
+  return new OpT(
+    this.workspaceId(),
+    this.key(),
+    (this.timestamp() !== null ? this.timestamp()!.unpack() : null),
+    this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength()),
+    this.actorId(),
+    this.seq(),
+    this.isDelete(),
+    this.isEncrypted()
+  );
+}
+
+
+unpackTo(_o: OpT): void {
+  _o.workspaceId = this.workspaceId();
+  _o.key = this.key();
+  _o.timestamp = (this.timestamp() !== null ? this.timestamp()!.unpack() : null);
+  _o.value = this.bb!.createScalarList<number>(this.value.bind(this), this.valueLength());
+  _o.actorId = this.actorId();
+  _o.seq = this.seq();
+  _o.isDelete = this.isDelete();
+  _o.isEncrypted = this.isEncrypted();
+}
+}
+
+export class OpT implements flatbuffers.IGeneratedObject {
+constructor(
+  public workspaceId: string|Uint8Array|null = null,
+  public key: string|Uint8Array|null = null,
+  public timestamp: HlcT|null = null,
+  public value: (number)[] = [],
+  public actorId: string|Uint8Array|null = null,
+  public seq: bigint = BigInt('0'),
+  public isDelete: boolean = false,
+  public isEncrypted: boolean = false
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
+  const key = (this.key !== null ? builder.createString(this.key!) : 0);
+  const value = Op.createValueVector(builder, this.value);
+  const actorId = (this.actorId !== null ? builder.createString(this.actorId!) : 0);
+
+  Op.startOp(builder);
+  Op.addWorkspaceId(builder, workspaceId);
+  Op.addKey(builder, key);
+  Op.addTimestamp(builder, (this.timestamp !== null ? this.timestamp!.pack(builder) : 0));
+  Op.addValue(builder, value);
+  Op.addActorId(builder, actorId);
+  Op.addSeq(builder, this.seq);
+  Op.addIsDelete(builder, this.isDelete);
+  Op.addIsEncrypted(builder, this.isEncrypted);
+
+  return Op.endOp(builder);
+}
 }

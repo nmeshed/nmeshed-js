@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { StateVectorEntry } from '../nmeshed/state-vector-entry.js';
+import { StateVectorEntry, StateVectorEntryT } from '../nmeshed/state-vector-entry.js';
 
 
-export class VersionVector {
+export class VersionVector implements flatbuffers.IUnpackableObject<VersionVectorT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):VersionVector {
@@ -64,5 +64,31 @@ static createVersionVector(builder:flatbuffers.Builder, itemsOffset:flatbuffers.
   VersionVector.startVersionVector(builder);
   VersionVector.addItems(builder, itemsOffset);
   return VersionVector.endVersionVector(builder);
+}
+
+unpack(): VersionVectorT {
+  return new VersionVectorT(
+    this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.items.bind(this), this.itemsLength())
+  );
+}
+
+
+unpackTo(_o: VersionVectorT): void {
+  _o.items = this.bb!.createObjList<StateVectorEntry, StateVectorEntryT>(this.items.bind(this), this.itemsLength());
+}
+}
+
+export class VersionVectorT implements flatbuffers.IGeneratedObject {
+constructor(
+  public items: (StateVectorEntryT)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const items = VersionVector.createItemsVector(builder, builder.createObjectOffsetList(this.items));
+
+  return VersionVector.createVersionVector(builder,
+    items
+  );
 }
 }

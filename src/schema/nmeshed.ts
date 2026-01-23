@@ -2,22 +2,24 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
-export { ActorMapping } from './nmeshed/actor-mapping.js';
-export { ActorRegistry } from './nmeshed/actor-registry.js';
-export { Answer } from './nmeshed/answer.js';
-export { Candidate } from './nmeshed/candidate.js';
-export { ColumnarOpBatch } from './nmeshed/columnar-op-batch.js';
-export { CompareAndSwap } from './nmeshed/compare-and-swap.js';
-export { Join } from './nmeshed/join.js';
+export { ActorMapping, ActorMappingT } from './nmeshed/actor-mapping.js';
+export { ActorRegistry, ActorRegistryT } from './nmeshed/actor-registry.js';
+export { Answer, AnswerT } from './nmeshed/answer.js';
+export { Candidate, CandidateT } from './nmeshed/candidate.js';
+export { ColumnarOpBatch, ColumnarOpBatchT } from './nmeshed/columnar-op-batch.js';
+export { CompareAndSwap, CompareAndSwapT } from './nmeshed/compare-and-swap.js';
+export { Hlc, HlcT } from './nmeshed/hlc.js';
+export { Join, JoinT } from './nmeshed/join.js';
 export { MsgType } from './nmeshed/msg-type.js';
-export { Offer } from './nmeshed/offer.js';
-export { Op } from './nmeshed/op.js';
-export { Relay } from './nmeshed/relay.js';
-export { Signal } from './nmeshed/signal.js';
+export { Offer, OfferT } from './nmeshed/offer.js';
+export { Op, OpT } from './nmeshed/op.js';
+export { Relay, RelayT } from './nmeshed/relay.js';
+export { Signal, SignalT } from './nmeshed/signal.js';
 export { SignalData } from './nmeshed/signal-data.js';
-export { Snapshot } from './nmeshed/snapshot.js';
-export { StateVectorEntry } from './nmeshed/state-vector-entry.js';
-export { SyncPacket } from './nmeshed/sync-packet.js';
-export { ValueBlob } from './nmeshed/value-blob.js';
-export { VersionVector } from './nmeshed/version-vector.js';
-export { WirePacket } from './nmeshed/wire-packet.js';
+export { Snapshot, SnapshotT } from './nmeshed/snapshot.js';
+export { StateVectorEntry, StateVectorEntryT } from './nmeshed/state-vector-entry.js';
+export { SyncPacket, SyncPacketT } from './nmeshed/sync-packet.js';
+export { SyncRequest, SyncRequestT } from './nmeshed/sync-request.js';
+export { ValueBlob, ValueBlobT } from './nmeshed/value-blob.js';
+export { VersionVector, VersionVectorT } from './nmeshed/version-vector.js';
+export { WirePacket, WirePacketT } from './nmeshed/wire-packet.js';

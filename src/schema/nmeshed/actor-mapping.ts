@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class ActorMapping {
+
+
+export class ActorMapping implements flatbuffers.IUnpackableObject<ActorMappingT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):ActorMapping {
@@ -56,5 +58,35 @@ static createActorMapping(builder:flatbuffers.Builder, idx:number, idOffset:flat
   ActorMapping.addIdx(builder, idx);
   ActorMapping.addId(builder, idOffset);
   return ActorMapping.endActorMapping(builder);
+}
+
+unpack(): ActorMappingT {
+  return new ActorMappingT(
+    this.idx(),
+    this.id()
+  );
+}
+
+
+unpackTo(_o: ActorMappingT): void {
+  _o.idx = this.idx();
+  _o.id = this.id();
+}
+}
+
+export class ActorMappingT implements flatbuffers.IGeneratedObject {
+constructor(
+  public idx: number = 0,
+  public id: string|Uint8Array|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const id = (this.id !== null ? builder.createString(this.id!) : 0);
+
+  return ActorMapping.createActorMapping(builder,
+    this.idx,
+    id
+  );
 }
 }

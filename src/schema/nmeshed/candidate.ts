@@ -4,7 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class Candidate {
+
+
+export class Candidate implements flatbuffers.IUnpackableObject<CandidateT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Candidate {
@@ -68,5 +70,40 @@ static createCandidate(builder:flatbuffers.Builder, candidateOffset:flatbuffers.
   Candidate.addSdpMid(builder, sdpMidOffset);
   Candidate.addSdpMLineIndex(builder, sdpMLineIndex);
   return Candidate.endCandidate(builder);
+}
+
+unpack(): CandidateT {
+  return new CandidateT(
+    this.candidate(),
+    this.sdpMid(),
+    this.sdpMLineIndex()
+  );
+}
+
+
+unpackTo(_o: CandidateT): void {
+  _o.candidate = this.candidate();
+  _o.sdpMid = this.sdpMid();
+  _o.sdpMLineIndex = this.sdpMLineIndex();
+}
+}
+
+export class CandidateT implements flatbuffers.IGeneratedObject {
+constructor(
+  public candidate: string|Uint8Array|null = null,
+  public sdpMid: string|Uint8Array|null = null,
+  public sdpMLineIndex: number = 0
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const candidate = (this.candidate !== null ? builder.createString(this.candidate!) : 0);
+  const sdpMid = (this.sdpMid !== null ? builder.createString(this.sdpMid!) : 0);
+
+  return Candidate.createCandidate(builder,
+    candidate,
+    sdpMid,
+    this.sdpMLineIndex
+  );
 }
 }

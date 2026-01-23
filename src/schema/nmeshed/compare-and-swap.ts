@@ -4,7 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class CompareAndSwap {
+import { Hlc, HlcT } from '../nmeshed/hlc.js';
+
+
+export class CompareAndSwap implements flatbuffers.IUnpackableObject<CompareAndSwapT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):CompareAndSwap {
@@ -66,9 +69,9 @@ actorId(optionalEncoding?:any):string|Uint8Array|null {
   return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
 }
 
-timestamp():number {
+timestamp(obj?:Hlc):Hlc|null {
   const offset = this.bb!.__offset(this.bb_pos, 12);
-  return offset ? this.bb!.readFloat64(this.bb_pos + offset) : 0.0;
+  return offset ? (obj || new Hlc()).__init(this.bb_pos + offset, this.bb!) : null;
 }
 
 static startCompareAndSwap(builder:flatbuffers.Builder) {
@@ -115,8 +118,8 @@ static addActorId(builder:flatbuffers.Builder, actorIdOffset:flatbuffers.Offset)
   builder.addFieldOffset(3, actorIdOffset, 0);
 }
 
-static addTimestamp(builder:flatbuffers.Builder, timestamp:number) {
-  builder.addFieldFloat64(4, timestamp, 0.0);
+static addTimestamp(builder:flatbuffers.Builder, timestampOffset:flatbuffers.Offset) {
+  builder.addFieldStruct(4, timestampOffset, 0);
 }
 
 static endCompareAndSwap(builder:flatbuffers.Builder):flatbuffers.Offset {
@@ -124,13 +127,50 @@ static endCompareAndSwap(builder:flatbuffers.Builder):flatbuffers.Offset {
   return offset;
 }
 
-static createCompareAndSwap(builder:flatbuffers.Builder, keyOffset:flatbuffers.Offset, expectedValueOffset:flatbuffers.Offset, newValueOffset:flatbuffers.Offset, actorIdOffset:flatbuffers.Offset, timestamp:number):flatbuffers.Offset {
+
+unpack(): CompareAndSwapT {
+  return new CompareAndSwapT(
+    this.key(),
+    this.bb!.createScalarList<number>(this.expectedValue.bind(this), this.expectedValueLength()),
+    this.bb!.createScalarList<number>(this.newValue.bind(this), this.newValueLength()),
+    this.actorId(),
+    (this.timestamp() !== null ? this.timestamp()!.unpack() : null)
+  );
+}
+
+
+unpackTo(_o: CompareAndSwapT): void {
+  _o.key = this.key();
+  _o.expectedValue = this.bb!.createScalarList<number>(this.expectedValue.bind(this), this.expectedValueLength());
+  _o.newValue = this.bb!.createScalarList<number>(this.newValue.bind(this), this.newValueLength());
+  _o.actorId = this.actorId();
+  _o.timestamp = (this.timestamp() !== null ? this.timestamp()!.unpack() : null);
+}
+}
+
+export class CompareAndSwapT implements flatbuffers.IGeneratedObject {
+constructor(
+  public key: string|Uint8Array|null = null,
+  public expectedValue: (number)[] = [],
+  public newValue: (number)[] = [],
+  public actorId: string|Uint8Array|null = null,
+  public timestamp: HlcT|null = null
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const key = (this.key !== null ? builder.createString(this.key!) : 0);
+  const expectedValue = CompareAndSwap.createExpectedValueVector(builder, this.expectedValue);
+  const newValue = CompareAndSwap.createNewValueVector(builder, this.newValue);
+  const actorId = (this.actorId !== null ? builder.createString(this.actorId!) : 0);
+
   CompareAndSwap.startCompareAndSwap(builder);
-  CompareAndSwap.addKey(builder, keyOffset);
-  CompareAndSwap.addExpectedValue(builder, expectedValueOffset);
-  CompareAndSwap.addNewValue(builder, newValueOffset);
-  CompareAndSwap.addActorId(builder, actorIdOffset);
-  CompareAndSwap.addTimestamp(builder, timestamp);
+  CompareAndSwap.addKey(builder, key);
+  CompareAndSwap.addExpectedValue(builder, expectedValue);
+  CompareAndSwap.addNewValue(builder, newValue);
+  CompareAndSwap.addActorId(builder, actorId);
+  CompareAndSwap.addTimestamp(builder, (this.timestamp !== null ? this.timestamp!.pack(builder) : 0));
+
   return CompareAndSwap.endCompareAndSwap(builder);
 }
 }

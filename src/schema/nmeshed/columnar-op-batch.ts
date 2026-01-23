@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ValueBlob } from '../nmeshed/value-blob.js';
+import { ValueBlob, ValueBlobT } from '../nmeshed/value-blob.js';
 
 
-export class ColumnarOpBatch {
+export class ColumnarOpBatch implements flatbuffers.IUnpackableObject<ColumnarOpBatchT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):ColumnarOpBatch {
@@ -260,5 +260,66 @@ static createColumnarOpBatch(builder:flatbuffers.Builder, workspaceIdOffset:flat
   ColumnarOpBatch.addSeqs(builder, seqsOffset);
   ColumnarOpBatch.addIsDeletes(builder, isDeletesOffset);
   return ColumnarOpBatch.endColumnarOpBatch(builder);
+}
+
+unpack(): ColumnarOpBatchT {
+  return new ColumnarOpBatchT(
+    this.workspaceId(),
+    this.bb!.createScalarList<string>(this.keys.bind(this), this.keysLength()),
+    this.bb!.createScalarList<bigint>(this.timestamps.bind(this), this.timestampsLength()),
+    this.bb!.createScalarList<number>(this.values.bind(this), this.valuesLength()),
+    this.bb!.createObjList<ValueBlob, ValueBlobT>(this.valueBlobs.bind(this), this.valueBlobsLength()),
+    this.bb!.createScalarList<number>(this.actorIdxs.bind(this), this.actorIdxsLength()),
+    this.bb!.createScalarList<bigint>(this.seqs.bind(this), this.seqsLength()),
+    this.bb!.createScalarList<boolean>(this.isDeletes.bind(this), this.isDeletesLength())
+  );
+}
+
+
+unpackTo(_o: ColumnarOpBatchT): void {
+  _o.workspaceId = this.workspaceId();
+  _o.keys = this.bb!.createScalarList<string>(this.keys.bind(this), this.keysLength());
+  _o.timestamps = this.bb!.createScalarList<bigint>(this.timestamps.bind(this), this.timestampsLength());
+  _o.values = this.bb!.createScalarList<number>(this.values.bind(this), this.valuesLength());
+  _o.valueBlobs = this.bb!.createObjList<ValueBlob, ValueBlobT>(this.valueBlobs.bind(this), this.valueBlobsLength());
+  _o.actorIdxs = this.bb!.createScalarList<number>(this.actorIdxs.bind(this), this.actorIdxsLength());
+  _o.seqs = this.bb!.createScalarList<bigint>(this.seqs.bind(this), this.seqsLength());
+  _o.isDeletes = this.bb!.createScalarList<boolean>(this.isDeletes.bind(this), this.isDeletesLength());
+}
+}
+
+export class ColumnarOpBatchT implements flatbuffers.IGeneratedObject {
+constructor(
+  public workspaceId: string|Uint8Array|null = null,
+  public keys: (string)[] = [],
+  public timestamps: (bigint)[] = [],
+  public values: (number)[] = [],
+  public valueBlobs: (ValueBlobT)[] = [],
+  public actorIdxs: (number)[] = [],
+  public seqs: (bigint)[] = [],
+  public isDeletes: (boolean)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const workspaceId = (this.workspaceId !== null ? builder.createString(this.workspaceId!) : 0);
+  const keys = ColumnarOpBatch.createKeysVector(builder, builder.createObjectOffsetList(this.keys));
+  const timestamps = ColumnarOpBatch.createTimestampsVector(builder, this.timestamps);
+  const values = ColumnarOpBatch.createValuesVector(builder, this.values);
+  const valueBlobs = ColumnarOpBatch.createValueBlobsVector(builder, builder.createObjectOffsetList(this.valueBlobs));
+  const actorIdxs = ColumnarOpBatch.createActorIdxsVector(builder, this.actorIdxs);
+  const seqs = ColumnarOpBatch.createSeqsVector(builder, this.seqs);
+  const isDeletes = ColumnarOpBatch.createIsDeletesVector(builder, this.isDeletes);
+
+  return ColumnarOpBatch.createColumnarOpBatch(builder,
+    workspaceId,
+    keys,
+    timestamps,
+    values,
+    valueBlobs,
+    actorIdxs,
+    seqs,
+    isDeletes
+  );
 }
 }

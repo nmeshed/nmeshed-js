@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { VersionVector } from '../nmeshed/version-vector.js';
+import { VersionVector, VersionVectorT } from '../nmeshed/version-vector.js';
 
 
-export class Snapshot {
+export class Snapshot implements flatbuffers.IUnpackableObject<SnapshotT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):Snapshot {
@@ -55,8 +55,13 @@ checksum():number {
   return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
 }
 
+isEncrypted():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
+
 static startSnapshot(builder:flatbuffers.Builder) {
-  builder.startObject(4);
+  builder.startObject(5);
 }
 
 static addData(builder:flatbuffers.Builder, dataOffset:flatbuffers.Offset) {
@@ -87,9 +92,57 @@ static addChecksum(builder:flatbuffers.Builder, checksum:number) {
   builder.addFieldInt32(3, checksum, 0);
 }
 
+static addIsEncrypted(builder:flatbuffers.Builder, isEncrypted:boolean) {
+  builder.addFieldInt8(4, +isEncrypted, +false);
+}
+
 static endSnapshot(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
+
+unpack(): SnapshotT {
+  return new SnapshotT(
+    this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength()),
+    (this.vectorClock() !== null ? this.vectorClock()!.unpack() : null),
+    this.schemaVersion(),
+    this.checksum(),
+    this.isEncrypted()
+  );
+}
+
+
+unpackTo(_o: SnapshotT): void {
+  _o.data = this.bb!.createScalarList<number>(this.data.bind(this), this.dataLength());
+  _o.vectorClock = (this.vectorClock() !== null ? this.vectorClock()!.unpack() : null);
+  _o.schemaVersion = this.schemaVersion();
+  _o.checksum = this.checksum();
+  _o.isEncrypted = this.isEncrypted();
+}
+}
+
+export class SnapshotT implements flatbuffers.IGeneratedObject {
+constructor(
+  public data: (number)[] = [],
+  public vectorClock: VersionVectorT|null = null,
+  public schemaVersion: number = 0,
+  public checksum: number = 0,
+  public isEncrypted: boolean = false
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const data = Snapshot.createDataVector(builder, this.data);
+  const vectorClock = (this.vectorClock !== null ? this.vectorClock!.pack(builder) : 0);
+
+  Snapshot.startSnapshot(builder);
+  Snapshot.addData(builder, data);
+  Snapshot.addVectorClock(builder, vectorClock);
+  Snapshot.addSchemaVersion(builder, this.schemaVersion);
+  Snapshot.addChecksum(builder, this.checksum);
+  Snapshot.addIsEncrypted(builder, this.isEncrypted);
+
+  return Snapshot.endSnapshot(builder);
+}
 }

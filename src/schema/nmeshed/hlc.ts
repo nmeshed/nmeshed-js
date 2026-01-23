@@ -4,28 +4,62 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class Hlc {
-    bb: flatbuffers.ByteBuffer | null = null;
-    bb_pos = 0;
-    __init(i: number, bb: flatbuffers.ByteBuffer): Hlc {
-        this.bb_pos = i;
-        this.bb = bb;
-        return this;
-    }
 
-    upper(): bigint {
-        return this.bb!.readInt64(this.bb_pos);
-    }
 
-    lower(): bigint {
-        return this.bb!.readInt64(this.bb_pos + 8);
-    }
+export class Hlc implements flatbuffers.IUnpackableObject<HlcT> {
+  bb: flatbuffers.ByteBuffer|null = null;
+  bb_pos = 0;
+  __init(i:number, bb:flatbuffers.ByteBuffer):Hlc {
+  this.bb_pos = i;
+  this.bb = bb;
+  return this;
+}
 
-    static createHlc(builder: flatbuffers.Builder, upper: bigint, lower: bigint): flatbuffers.Offset {
-        builder.prep(8, 16);
-        builder.writeInt64(lower);
-        builder.writeInt64(upper);
-        return builder.offset();
-    }
+upper():bigint {
+  return this.bb!.readUint64(this.bb_pos);
+}
 
+lower():bigint {
+  return this.bb!.readUint64(this.bb_pos + 8);
+}
+
+static sizeOf():number {
+  return 16;
+}
+
+static createHlc(builder:flatbuffers.Builder, upper: bigint, lower: bigint):flatbuffers.Offset {
+  builder.prep(8, 16);
+  builder.writeInt64(BigInt(lower ?? 0));
+  builder.writeInt64(BigInt(upper ?? 0));
+  return builder.offset();
+}
+
+
+unpack(): HlcT {
+  return new HlcT(
+    this.upper(),
+    this.lower()
+  );
+}
+
+
+unpackTo(_o: HlcT): void {
+  _o.upper = this.upper();
+  _o.lower = this.lower();
+}
+}
+
+export class HlcT implements flatbuffers.IGeneratedObject {
+constructor(
+  public upper: bigint = BigInt('0'),
+  public lower: bigint = BigInt('0')
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  return Hlc.createHlc(builder,
+    this.upper,
+    this.lower
+  );
+}
 }

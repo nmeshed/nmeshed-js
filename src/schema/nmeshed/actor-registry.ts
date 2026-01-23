@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ActorMapping } from '../nmeshed/actor-mapping.js';
+import { ActorMapping, ActorMappingT } from '../nmeshed/actor-mapping.js';
 
 
-export class ActorRegistry {
+export class ActorRegistry implements flatbuffers.IUnpackableObject<ActorRegistryT> {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
   __init(i:number, bb:flatbuffers.ByteBuffer):ActorRegistry {
@@ -64,5 +64,31 @@ static createActorRegistry(builder:flatbuffers.Builder, mappingsOffset:flatbuffe
   ActorRegistry.startActorRegistry(builder);
   ActorRegistry.addMappings(builder, mappingsOffset);
   return ActorRegistry.endActorRegistry(builder);
+}
+
+unpack(): ActorRegistryT {
+  return new ActorRegistryT(
+    this.bb!.createObjList<ActorMapping, ActorMappingT>(this.mappings.bind(this), this.mappingsLength())
+  );
+}
+
+
+unpackTo(_o: ActorRegistryT): void {
+  _o.mappings = this.bb!.createObjList<ActorMapping, ActorMappingT>(this.mappings.bind(this), this.mappingsLength());
+}
+}
+
+export class ActorRegistryT implements flatbuffers.IGeneratedObject {
+constructor(
+  public mappings: (ActorMappingT)[] = []
+){}
+
+
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const mappings = ActorRegistry.createMappingsVector(builder, builder.createObjectOffsetList(this.mappings));
+
+  return ActorRegistry.createActorRegistry(builder,
+    mappings
+  );
 }
 }

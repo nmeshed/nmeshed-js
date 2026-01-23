@@ -32,7 +32,7 @@ describe('SyncEngine', () => {
 
             engine.set('key', 'value');
 
-            expect(handler).toHaveBeenCalledWith('key', 'value', true, expect.any(Number));
+            expect(handler).toHaveBeenCalledWith('key', 'value', true, expect.anything());
         });
 
         it('should return Uint8Array payload', async () => {
@@ -61,7 +61,7 @@ describe('SyncEngine', () => {
 
             engine.delete('key');
 
-            expect(handler).toHaveBeenCalledWith('key', null, true, expect.any(Number));
+            expect(handler).toHaveBeenCalledWith('key', null, true, expect.anything());
         });
 
         it('should return Uint8Array payload', async () => {
@@ -85,7 +85,7 @@ describe('SyncEngine', () => {
             const payload = encodeValue('value');
             engine.applyRemote('key', payload, 'peer-123');
 
-            expect(handler).toHaveBeenCalledWith('key', 'value', false, expect.any(Number));
+            expect(handler).toHaveBeenCalledWith('key', 'value', false, expect.anything());
         });
 
         it('should handle complex remote values', () => {
@@ -103,7 +103,7 @@ describe('SyncEngine', () => {
             const localTs = entry.timestamp;
 
             const oldPayload = encodeValue('stale-value');
-            engine.applyRemote('key', oldPayload, 'peer-old', localTs - 100);
+            engine.applyRemote('key', oldPayload, 'peer-old', localTs - 100n);
 
             // Should still be local value
             expect(engine.get('key')).toBe('local-value');
@@ -115,7 +115,7 @@ describe('SyncEngine', () => {
             const localTs = entry.timestamp;
 
             const newPayload = encodeValue('new-remote-value');
-            engine.applyRemote('key', newPayload, 'peer-new', localTs + 100);
+            engine.applyRemote('key', newPayload, 'peer-new', localTs + 100n);
 
             expect(engine.get('key')).toBe('new-remote-value');
         });
@@ -123,7 +123,7 @@ describe('SyncEngine', () => {
         it('should use PeerId tiebreaker for SAME timestamp', () => {
             // peer-A vs peer-B. 'peer-B' > 'peer-A' lexicographically.
             // So peer-B should win if it's already there and we try to write peer-A
-            const ts = 1000;
+            const ts = 1000n;
             const valA = encodeValue('val-A');
             const valB = encodeValue('val-B');
 
@@ -147,7 +147,7 @@ describe('SyncEngine', () => {
             // This test catches bugs where timestamps are decoded incorrectly,
             // resulting in garbage like -6764191668607386000 being rejected
             const payload = encodeValue({ step: 42, active_agents: 500 });
-            const validTimestamp = 1767950000000; // ~2026 in milliseconds
+            const validTimestamp = 1767950000000n; // ~2026 in milliseconds
 
             engine.applyRemote('metrics', payload, 'agent-py', validTimestamp);
 
@@ -161,7 +161,7 @@ describe('SyncEngine', () => {
 
             // Try to apply with garbage negative timestamp (like the bug produced)
             const payload = encodeValue('corrupted-value');
-            const corruptedTimestamp = -6764191668607386000;
+            const corruptedTimestamp = -6764191668607386000n;
 
             engine.applyRemote('key', payload, 'corrupt-peer', corruptedTimestamp);
 
@@ -744,8 +744,8 @@ describe('SyncEngine', () => {
 
     describe('Regression Tests (Aggressive Bug Hunting)', () => {
         it('should encrypt CAS payload when E2EE is enabled', async () => {
-            const encryption = new (await import('../src/encryption')).AESGCMAdapter();
-            await encryption.init('test-key-32-chars-long-exactly-!!!');
+            const encryption = new (await import('../src/encryption')).AESGCMAdapter('test-key-32-chars-long-exactly-!!!');
+            await encryption.init();
 
             const e2eeEngine = new SyncEngine('peer-1', new InMemoryAdapter(), false, encryption);
             const casEvents: any[] = [];
@@ -785,20 +785,20 @@ describe('SyncEngine', () => {
             // 1. authoritative snapshot from server at t=1000
             const { encodeValue } = await import('../src/protocol');
             const snapshot = encodeValue({ 'status': 'OFFLINE' });
-            await engine.loadSnapshot(snapshot, 1000);
+            await engine.loadSnapshot(snapshot, 1000n);
 
             expect(engine.get('status')).toBe('OFFLINE');
 
             // 2. Receive an OLD remote op with timestamp 500
             const oldVal = encodeValue('STALE');
-            await engine.applyRemote('status', oldVal, 'peer-remote', 500);
+            await engine.applyRemote('status', oldVal, 'peer-remote', 500n);
 
             // Should STILL be OFFLINE because 1000 > 500
             expect(engine.get('status')).toBe('OFFLINE');
 
             // 3. Receive a NEW remote op with timestamp 1500
             const newVal = encodeValue('ONLINE');
-            await engine.applyRemote('status', newVal, 'peer-remote', 1500);
+            await engine.applyRemote('status', newVal, 'peer-remote', 1500n);
             expect(engine.get('status')).toBe('ONLINE');
         });
     });

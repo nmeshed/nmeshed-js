@@ -4,193 +4,282 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ActorRegistry } from '../nmeshed/actor-registry.js';
-import { ColumnarOpBatch } from '../nmeshed/columnar-op-batch.js';
-import { CompareAndSwap } from '../nmeshed/compare-and-swap.js';
+import { ActorRegistry, ActorRegistryT } from '../nmeshed/actor-registry.js';
+import { ColumnarOpBatch, ColumnarOpBatchT } from '../nmeshed/columnar-op-batch.js';
+import { CompareAndSwap, CompareAndSwapT } from '../nmeshed/compare-and-swap.js';
 import { MsgType } from '../nmeshed/msg-type.js';
-import { Op } from '../nmeshed/op.js';
-import { Signal } from '../nmeshed/signal.js';
-import { Snapshot } from '../nmeshed/snapshot.js';
-import { SyncPacket } from '../nmeshed/sync-packet.js';
+import { Op, OpT } from '../nmeshed/op.js';
+import { Signal, SignalT } from '../nmeshed/signal.js';
+import { Snapshot, SnapshotT } from '../nmeshed/snapshot.js';
+import { SyncPacket, SyncPacketT } from '../nmeshed/sync-packet.js';
+import { SyncRequest, SyncRequestT } from '../nmeshed/sync-request.js';
 
 
-export class WirePacket {
-  bb: flatbuffers.ByteBuffer | null = null;
+export class WirePacket implements flatbuffers.IUnpackableObject<WirePacketT> {
+  bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
-  __init(i: number, bb: flatbuffers.ByteBuffer): WirePacket {
-    this.bb_pos = i;
-    this.bb = bb;
-    return this;
+  __init(i:number, bb:flatbuffers.ByteBuffer):WirePacket {
+  this.bb_pos = i;
+  this.bb = bb;
+  return this;
+}
+
+static getRootAsWirePacket(bb:flatbuffers.ByteBuffer, obj?:WirePacket):WirePacket {
+  return (obj || new WirePacket()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+}
+
+static getSizePrefixedRootAsWirePacket(bb:flatbuffers.ByteBuffer, obj?:WirePacket):WirePacket {
+  bb.setPosition(bb.position() + flatbuffers.SIZE_PREFIX_LENGTH);
+  return (obj || new WirePacket()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+}
+
+msgType():MsgType {
+  const offset = this.bb!.__offset(this.bb_pos, 4);
+  return offset ? this.bb!.readInt8(this.bb_pos + offset) : MsgType.Unknown;
+}
+
+op(obj?:Op):Op|null {
+  const offset = this.bb!.__offset(this.bb_pos, 6);
+  return offset ? (obj || new Op()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+payload(index: number):number|null {
+  const offset = this.bb!.__offset(this.bb_pos, 8);
+  return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
+}
+
+payloadLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 8);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
+payloadArray():Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 8);
+  return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
+
+signal(obj?:Signal):Signal|null {
+  const offset = this.bb!.__offset(this.bb_pos, 10);
+  return offset ? (obj || new Signal()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+timestamp():number {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? this.bb!.readFloat64(this.bb_pos + offset) : 0.0;
+}
+
+sync(obj?:SyncPacket):SyncPacket|null {
+  const offset = this.bb!.__offset(this.bb_pos, 14);
+  return offset ? (obj || new SyncPacket()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+actorRegistry(obj?:ActorRegistry):ActorRegistry|null {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? (obj || new ActorRegistry()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+batch(obj?:ColumnarOpBatch):ColumnarOpBatch|null {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? (obj || new ColumnarOpBatch()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+snapshot(obj?:Snapshot):Snapshot|null {
+  const offset = this.bb!.__offset(this.bb_pos, 20);
+  return offset ? (obj || new Snapshot()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+cas(obj?:CompareAndSwap):CompareAndSwap|null {
+  const offset = this.bb!.__offset(this.bb_pos, 22);
+  return offset ? (obj || new CompareAndSwap()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+encryptedPayload(index: number):number|null {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
+}
+
+encryptedPayloadLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
+encryptedPayloadArray():Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
+
+syncRequest(obj?:SyncRequest):SyncRequest|null {
+  const offset = this.bb!.__offset(this.bb_pos, 26);
+  return offset ? (obj || new SyncRequest()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
+}
+
+static startWirePacket(builder:flatbuffers.Builder) {
+  builder.startObject(12);
+}
+
+static addMsgType(builder:flatbuffers.Builder, msgType:MsgType) {
+  builder.addFieldInt8(0, msgType, MsgType.Unknown);
+}
+
+static addOp(builder:flatbuffers.Builder, opOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(1, opOffset, 0);
+}
+
+static addPayload(builder:flatbuffers.Builder, payloadOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(2, payloadOffset, 0);
+}
+
+static createPayloadVector(builder:flatbuffers.Builder, data:number[]|Uint8Array):flatbuffers.Offset {
+  builder.startVector(1, data.length, 1);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt8(data[i]!);
   }
+  return builder.endVector();
+}
 
-  static getRootAsWirePacket(bb: flatbuffers.ByteBuffer, obj?: WirePacket): WirePacket {
-    return (obj || new WirePacket()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+static startPayloadVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(1, numElems, 1);
+}
+
+static addSignal(builder:flatbuffers.Builder, signalOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(3, signalOffset, 0);
+}
+
+static addTimestamp(builder:flatbuffers.Builder, timestamp:number) {
+  builder.addFieldFloat64(4, timestamp, 0.0);
+}
+
+static addSync(builder:flatbuffers.Builder, syncOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(5, syncOffset, 0);
+}
+
+static addActorRegistry(builder:flatbuffers.Builder, actorRegistryOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(6, actorRegistryOffset, 0);
+}
+
+static addBatch(builder:flatbuffers.Builder, batchOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(7, batchOffset, 0);
+}
+
+static addSnapshot(builder:flatbuffers.Builder, snapshotOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(8, snapshotOffset, 0);
+}
+
+static addCas(builder:flatbuffers.Builder, casOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(9, casOffset, 0);
+}
+
+static addEncryptedPayload(builder:flatbuffers.Builder, encryptedPayloadOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(10, encryptedPayloadOffset, 0);
+}
+
+static createEncryptedPayloadVector(builder:flatbuffers.Builder, data:number[]|Uint8Array):flatbuffers.Offset {
+  builder.startVector(1, data.length, 1);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt8(data[i]!);
   }
+  return builder.endVector();
+}
 
-  static getSizePrefixedRootAsWirePacket(bb: flatbuffers.ByteBuffer, obj?: WirePacket): WirePacket {
-    bb.setPosition(bb.position() + flatbuffers.SIZE_PREFIX_LENGTH);
-    return (obj || new WirePacket()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
-  }
+static startEncryptedPayloadVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(1, numElems, 1);
+}
 
-  msgType(): MsgType {
-    const offset = this.bb!.__offset(this.bb_pos, 4);
-    return offset ? this.bb!.readInt8(this.bb_pos + offset) : MsgType.Unknown;
-  }
+static addSyncRequest(builder:flatbuffers.Builder, syncRequestOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(11, syncRequestOffset, 0);
+}
 
-  op(obj?: Op): Op | null {
-    const offset = this.bb!.__offset(this.bb_pos, 6);
-    return offset ? (obj || new Op()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
+static endWirePacket(builder:flatbuffers.Builder):flatbuffers.Offset {
+  const offset = builder.endObject();
+  return offset;
+}
 
-  payload(index: number): number | null {
-    const offset = this.bb!.__offset(this.bb_pos, 8);
-    return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
-  }
+static finishWirePacketBuffer(builder:flatbuffers.Builder, offset:flatbuffers.Offset) {
+  builder.finish(offset);
+}
 
-  payloadLength(): number {
-    const offset = this.bb!.__offset(this.bb_pos, 8);
-    return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
-  }
-
-  payloadArray(): Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 8);
-    return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
-  }
-
-  signal(obj?: Signal): Signal | null {
-    const offset = this.bb!.__offset(this.bb_pos, 10);
-    return offset ? (obj || new Signal()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  timestamp(): number {
-    const offset = this.bb!.__offset(this.bb_pos, 12);
-    return offset ? this.bb!.readFloat64(this.bb_pos + offset) : 0.0;
-  }
-
-  sync(obj?: SyncPacket): SyncPacket | null {
-    const offset = this.bb!.__offset(this.bb_pos, 14);
-    return offset ? (obj || new SyncPacket()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  actorRegistry(obj?: ActorRegistry): ActorRegistry | null {
-    const offset = this.bb!.__offset(this.bb_pos, 16);
-    return offset ? (obj || new ActorRegistry()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  batch(obj?: ColumnarOpBatch): ColumnarOpBatch | null {
-    const offset = this.bb!.__offset(this.bb_pos, 18);
-    return offset ? (obj || new ColumnarOpBatch()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  snapshot(obj?: Snapshot): Snapshot | null {
-    const offset = this.bb!.__offset(this.bb_pos, 20);
-    return offset ? (obj || new Snapshot()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  cas(obj?: CompareAndSwap): CompareAndSwap | null {
-    const offset = this.bb!.__offset(this.bb_pos, 22);
-    return offset ? (obj || new CompareAndSwap()).__init(this.bb!.__indirect(this.bb_pos + offset), this.bb!) : null;
-  }
-
-  encryptedPayload(index: number): number | null {
-    const offset = this.bb!.__offset(this.bb_pos, 24);
-    return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
-  }
-
-  encryptedPayloadLength(): number {
-    const offset = this.bb!.__offset(this.bb_pos, 24);
-    return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
-  }
-
-  encryptedPayloadArray(): Uint8Array | null {
-    const offset = this.bb!.__offset(this.bb_pos, 24);
-    return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
-  }
+static finishSizePrefixedWirePacketBuffer(builder:flatbuffers.Builder, offset:flatbuffers.Offset) {
+  builder.finish(offset, undefined, true);
+}
 
 
-  static startWirePacket(builder: flatbuffers.Builder) {
-    builder.startObject(10);
-  }
+unpack(): WirePacketT {
+  return new WirePacketT(
+    this.msgType(),
+    (this.op() !== null ? this.op()!.unpack() : null),
+    this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength()),
+    (this.signal() !== null ? this.signal()!.unpack() : null),
+    this.timestamp(),
+    (this.sync() !== null ? this.sync()!.unpack() : null),
+    (this.actorRegistry() !== null ? this.actorRegistry()!.unpack() : null),
+    (this.batch() !== null ? this.batch()!.unpack() : null),
+    (this.snapshot() !== null ? this.snapshot()!.unpack() : null),
+    (this.cas() !== null ? this.cas()!.unpack() : null),
+    this.bb!.createScalarList<number>(this.encryptedPayload.bind(this), this.encryptedPayloadLength()),
+    (this.syncRequest() !== null ? this.syncRequest()!.unpack() : null)
+  );
+}
 
-  static addMsgType(builder: flatbuffers.Builder, msgType: MsgType) {
-    builder.addFieldInt8(0, msgType, MsgType.Unknown);
-  }
 
-  static addOp(builder: flatbuffers.Builder, opOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(1, opOffset, 0);
-  }
+unpackTo(_o: WirePacketT): void {
+  _o.msgType = this.msgType();
+  _o.op = (this.op() !== null ? this.op()!.unpack() : null);
+  _o.payload = this.bb!.createScalarList<number>(this.payload.bind(this), this.payloadLength());
+  _o.signal = (this.signal() !== null ? this.signal()!.unpack() : null);
+  _o.timestamp = this.timestamp();
+  _o.sync = (this.sync() !== null ? this.sync()!.unpack() : null);
+  _o.actorRegistry = (this.actorRegistry() !== null ? this.actorRegistry()!.unpack() : null);
+  _o.batch = (this.batch() !== null ? this.batch()!.unpack() : null);
+  _o.snapshot = (this.snapshot() !== null ? this.snapshot()!.unpack() : null);
+  _o.cas = (this.cas() !== null ? this.cas()!.unpack() : null);
+  _o.encryptedPayload = this.bb!.createScalarList<number>(this.encryptedPayload.bind(this), this.encryptedPayloadLength());
+  _o.syncRequest = (this.syncRequest() !== null ? this.syncRequest()!.unpack() : null);
+}
+}
 
-  static addPayload(builder: flatbuffers.Builder, payloadOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(2, payloadOffset, 0);
-  }
+export class WirePacketT implements flatbuffers.IGeneratedObject {
+constructor(
+  public msgType: MsgType = MsgType.Unknown,
+  public op: OpT|null = null,
+  public payload: (number)[] = [],
+  public signal: SignalT|null = null,
+  public timestamp: number = 0.0,
+  public sync: SyncPacketT|null = null,
+  public actorRegistry: ActorRegistryT|null = null,
+  public batch: ColumnarOpBatchT|null = null,
+  public snapshot: SnapshotT|null = null,
+  public cas: CompareAndSwapT|null = null,
+  public encryptedPayload: (number)[] = [],
+  public syncRequest: SyncRequestT|null = null
+){}
 
-  static createPayloadVector(builder: flatbuffers.Builder, data: number[] | Uint8Array): flatbuffers.Offset {
-    builder.startVector(1, data.length, 1);
-    for (let i = data.length - 1; i >= 0; i--) {
-      builder.addInt8(data[i]!);
-    }
-    return builder.endVector();
-  }
 
-  static startPayloadVector(builder: flatbuffers.Builder, numElems: number) {
-    builder.startVector(1, numElems, 1);
-  }
+pack(builder:flatbuffers.Builder): flatbuffers.Offset {
+  const op = (this.op !== null ? this.op!.pack(builder) : 0);
+  const payload = WirePacket.createPayloadVector(builder, this.payload);
+  const signal = (this.signal !== null ? this.signal!.pack(builder) : 0);
+  const sync = (this.sync !== null ? this.sync!.pack(builder) : 0);
+  const actorRegistry = (this.actorRegistry !== null ? this.actorRegistry!.pack(builder) : 0);
+  const batch = (this.batch !== null ? this.batch!.pack(builder) : 0);
+  const snapshot = (this.snapshot !== null ? this.snapshot!.pack(builder) : 0);
+  const cas = (this.cas !== null ? this.cas!.pack(builder) : 0);
+  const encryptedPayload = WirePacket.createEncryptedPayloadVector(builder, this.encryptedPayload);
+  const syncRequest = (this.syncRequest !== null ? this.syncRequest!.pack(builder) : 0);
 
-  static addSignal(builder: flatbuffers.Builder, signalOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(3, signalOffset, 0);
-  }
+  WirePacket.startWirePacket(builder);
+  WirePacket.addMsgType(builder, this.msgType);
+  WirePacket.addOp(builder, op);
+  WirePacket.addPayload(builder, payload);
+  WirePacket.addSignal(builder, signal);
+  WirePacket.addTimestamp(builder, this.timestamp);
+  WirePacket.addSync(builder, sync);
+  WirePacket.addActorRegistry(builder, actorRegistry);
+  WirePacket.addBatch(builder, batch);
+  WirePacket.addSnapshot(builder, snapshot);
+  WirePacket.addCas(builder, cas);
+  WirePacket.addEncryptedPayload(builder, encryptedPayload);
+  WirePacket.addSyncRequest(builder, syncRequest);
 
-  static addTimestamp(builder: flatbuffers.Builder, timestamp: number) {
-    builder.addFieldFloat64(4, timestamp, 0.0);
-  }
-
-  static addSync(builder: flatbuffers.Builder, syncOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(5, syncOffset, 0);
-  }
-
-  static addActorRegistry(builder: flatbuffers.Builder, actorRegistryOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(6, actorRegistryOffset, 0);
-  }
-
-  static addBatch(builder: flatbuffers.Builder, batchOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(7, batchOffset, 0);
-  }
-
-  static addSnapshot(builder: flatbuffers.Builder, snapshotOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(8, snapshotOffset, 0);
-  }
-
-  static addCas(builder: flatbuffers.Builder, casOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(9, casOffset, 0);
-  }
-
-  static addEncryptedPayload(builder: flatbuffers.Builder, encryptedPayloadOffset: flatbuffers.Offset) {
-    builder.addFieldOffset(10, encryptedPayloadOffset, 0);
-  }
-
-  static createEncryptedPayloadVector(builder: flatbuffers.Builder, data: number[] | Uint8Array): flatbuffers.Offset {
-    builder.startVector(1, data.length, 1);
-    for (let i = data.length - 1; i >= 0; i--) {
-      builder.addInt8(data[i]!);
-    }
-    return builder.endVector();
-  }
-
-  static startEncryptedPayloadVector(builder: flatbuffers.Builder, numElems: number) {
-    builder.startVector(1, numElems, 1);
-  }
-
-  static endWirePacket(builder: flatbuffers.Builder): flatbuffers.Offset {
-    const offset = builder.endObject();
-    return offset;
-  }
-
-  static finishWirePacketBuffer(builder: flatbuffers.Builder, offset: flatbuffers.Offset) {
-    builder.finish(offset);
-  }
-
-  static finishSizePrefixedWirePacketBuffer(builder: flatbuffers.Builder, offset: flatbuffers.Offset) {
-    builder.finish(offset, undefined, true);
-  }
-
+  return WirePacket.endWirePacket(builder);
+}
 }

@@ -243,14 +243,14 @@ export class SyncEngine extends EventEmitter {
     /**
      * Applies a remote operation.
      */
-    async applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: bigint, deps: string[] = []): Promise<void> {
+    async applyRemote(key: string, payload: Uint8Array, peerId: string, timestamp?: bigint | number, deps: string[] = []): Promise<void> {
         // Pillar 1: Causal Barrier Check
         if (deps.length > 0) {
             const missing = deps.filter(d => !this.receivedOps.has(d));
             if (missing.length > 0) {
                 this.log(`[Causal Barrier] Missing deps for ${key}: ${missing.join(', ')}`);
                 this.isGapDetected = true;
-                this.pendingBuffer.push({ key, payload, peerId, timestamp: timestamp || 0n, deps });
+                this.pendingBuffer.push({ key, payload, peerId, timestamp: BigInt(timestamp || 0), deps });
                 // Trigger Sync
                 this.emit('status', 'syncing');
                 return;
@@ -271,7 +271,7 @@ export class SyncEngine extends EventEmitter {
         }
 
         const value = decodeValue(finalPayload);
-        const incomingTs = timestamp ?? HLC.pack(BigInt(Date.now()), 0n, 0n);
+        const incomingTs = timestamp != null ? BigInt(timestamp) : HLC.pack(BigInt(Date.now()), 0n, 0n);
         const opHash = this.getOpHash(key, incomingTs, peerId);
 
         // Update HLC watermark
