@@ -72,8 +72,14 @@ export const StateInspector: React.FC<StateInspectorProps> = ({
 
                 // Record History
                 setHistory(h => {
+                    let ts = Date.now();
+                    if (typeof timestamp === 'number') ts = timestamp;
+                    else if (typeof timestamp === 'bigint') ts = Number(timestamp >> 80n); // Assuming HLC format (physical << 80)
+                    // Fallback if assumption fails or simple conversion
+                    if (ts === 0 || isNaN(ts)) ts = Date.now();
+
                     const snap: HistorySnap = {
-                        timestamp: timestamp || Date.now(),
+                        timestamp: ts,
                         state: next,
                         opKey: key
                     };

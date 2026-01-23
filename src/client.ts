@@ -152,8 +152,12 @@ export class NMeshedClient implements INMeshedClient {
         // 2. Initialize Storage & Load State
         await this.initializeEngineState();
 
-        // 3. Connect Network
-        this.connect();
+        // 3. Connect Network (with Thundering Herd Mitigation)
+        // Add random jitter (0-500ms) to prevent all clients connecting simultaneously
+        const jitter = Math.floor(Math.random() * 500);
+        setTimeout(() => {
+            this.connect();
+        }, jitter);
     }
 
     /** Helper: Request browser storage persistence to prevent eviction */
