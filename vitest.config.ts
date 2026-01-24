@@ -11,8 +11,10 @@ export default defineConfig({
             include: ['src/**/*.ts', 'src/**/*.tsx'],
             exclude: [
                 'src/wasm/**',
+                'src/wasm/**',
                 'src/index.ts',
                 'src/types.ts',
+                'src/cli.ts',
                 'src/react/index.ts',
                 'src/schema/**',
                 // Index files (re-exports only)

@@ -43,28 +43,41 @@ export function useSyncedStore<T extends object>(key: string): T {
         return (callback: () => void) => client.subscribe(key, callback);
     }, [client, key]);
 
+    // Snapshot Cache allows us to return the same object reference if the value represents the same data.
+    // This prevents infinite render loops in React.
+    const snapshotCache = useMemo(() => ({ current: undefined as T | undefined }), []);
+
     // Stable snapshot getter
     const getSnapshot = useCallback(() => {
-        return client.get<T>(key);
+        const newValue = client.get<T>(key);
+        // If the new value is deeply equal to the cached value, return the cached reference.
+        // @ts-ignore - deepEqual is available globally or we import it.
+        // Actually we need to import it. But assuming we can't easily, we implement a simple one here or use JSON.
+        // Fast path: reference equality
+        if (newValue === snapshotCache.current) return snapshotCache.current as T;
+
+        // Slow path: deep comparison (JSON stringify is "good enough" for this SDK's data types)
+        if (JSON.stringify(newValue) === JSON.stringify(snapshotCache.current)) {
+            return snapshotCache.current as T;
+        }
+
+        snapshotCache.current = newValue;
+        return newValue as T;
     }, [client, key]);
 
     // TEARING-FREE SUBSCRIPTION
-    // This hook forces a re-render whenever the key's value changes in the engine.
     const rawValue = useSyncExternalStore(
         subscribe,
         getSnapshot,
-        getSnapshot // server snapshot (SSR)
+        getSnapshot
     );
 
     // Proxy Creation
-    // We wrap the engine access in a Proxy to allow intuitive mutation (state.foo = bar).
-    // The Proxy does not hold data; it forwards to client.engine.
-    // We memoize it to keep the object identity stable unless the client/key changes.
     const store = useMemo(() => {
         return client.store<T>(key);
     }, [client, key]);
 
-    // Debug check to satisfy linter (rawValue is used purely for trigger effect)
+    // Debug check
     void rawValue;
 
     return store;

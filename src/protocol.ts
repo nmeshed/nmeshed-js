@@ -55,7 +55,15 @@ export function encodeOp(key: string, payload: Uint8Array, timestamp?: bigint, i
     const wsOffset = builder.createString("");
 
     // 2. Encode HLC (Timestamp)
-    const ts = timestamp || BigInt(Date.now());
+    // 2. Encode HLC (Timestamp)
+    let ts: bigint;
+    if (typeof timestamp === 'bigint') {
+        ts = timestamp;
+    } else if (typeof timestamp === 'number') {
+        ts = BigInt(timestamp);
+    } else {
+        ts = BigInt(Date.now());
+    }
     const lower = ts & 0xFFFFFFFFFFFFFFFFn;
     const upper = ts >> 64n;
 

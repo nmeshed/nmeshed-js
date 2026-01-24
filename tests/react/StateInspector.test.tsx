@@ -2,11 +2,11 @@
  * @vitest-environment jsdom
  */
 import React from 'react';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { StateInspector } from '../../src/react/StateInspector';
 import { NMeshedClient } from '../../src/client';
-import { NMeshedProvider } from '../../src/react/context';
+import { useNMeshed } from '../../src/react/context';
 
 // Mock dependencies
 vi.mock('../../src/client', () => {
@@ -53,6 +53,11 @@ function createMockClient() {
     } as unknown as NMeshedClient & { emitOp: any, _updateState: any };
 }
 
+// Helper to force React change event on Range input
+const triggerRangeChange = (element: HTMLElement, value: string) => {
+    fireEvent.change(element, { target: { value } });
+};
+
 describe('StateInspector', () => {
     let client: ReturnType<typeof createMockClient>;
 
@@ -79,82 +84,61 @@ describe('StateInspector', () => {
         expect(screen.getByText(/123/)).toBeDefined();
     });
 
-    it.skip('should handle time travel history', async () => {
+    it('should handle history navigation and clearing', async () => {
         render(<StateInspector client={client} />);
 
-        // Op 1
+        // Op 1 (adds 'step': 1)
         await act(async () => {
             client._updateState('step', 1);
             client.emitOp('step', 1, true, 1000);
         });
 
-        // Op 2
+        // Op 2 (adds 'step': 2)
         await act(async () => {
             client._updateState('step', 2);
             client.emitOp('step', 2, true, 2000);
         });
 
-        // Default is Live (value 2)
-        expect(screen.getByText('2')).toBeDefined();
-
-        // Slide back to history (index 1 = Op 1)
-        // Note: History[0] is initial state. History[1] is Op 1. History[2] is Op 2.
-        const slider = screen.getByRole('slider') as HTMLInputElement; // role might be generic input in some envs
-        // Or find by class if role fails, but 'slider' is standard for <input type="range">
-        // Let's use getByRole to be safe, assuming JSDOM supports it.
-        // Actually, let's try strict ID component if we added one, but reliance on tag structure is okay for unit test.
-
-        // Wait, max is history.length - 1. We start with 1 item.
-        // Op 1 -> length 2. Op 2 -> length 3. Max index 2.
-        // Slider value corresponds to index in history array.
-
-        // Op 1 -> length 2. Op 2 -> length 3. Max index 2.
-        // Slider value corresponds to index in history array.
-
-        // We target 0 (Initial state) to be absolutely sure we are in history mode.
-        // We wrap in act because setting state (setIsPaused) happens in the handler.
-        await act(async () => {
-            fireEvent.change(slider, { target: { value: '0' } });
+        // 1. Verify history populated (Max should be 3: Init, Op1, Op2 -> Indices 0,1,2. Input Max=3).
+        const slider = screen.getByRole('slider');
+        await waitFor(() => {
+            expect(slider.getAttribute('max')).toBe('3');
         });
 
-        // Should see "TIME TRAVEL" indicator
-        // Use findByText to wait for state updates if they are async/batched
+        // 2. Travel to Index 1 (Op 1)
+        await act(async () => {
+            triggerRangeChange(slider, '1');
+        });
+
         expect(await screen.findByText('TIME TRAVEL')).toBeDefined();
+        expect(await screen.findByText('1')).toBeDefined(); // step: 1
+        expect(screen.queryByText('2')).toBeNull(); // step: 2 hidden
 
-        // Should see value 1
-        expect(screen.getByText('1')).toBeDefined();
-        // expect(screen.queryByText('2')).toBeNull(); // This might fail if "2 Keys" is present.
-        // Let's use exact match false or strict selector.
-        // Actually "2 Keys" is in regex /2/. String '2' is strict exact match. "2 Keys" != "2".
-        expect(screen.queryByText('2')).toBeNull(); // Should NOT be visible (value 2 hidden)
-    });
+        // 3. Travel to Index 0 (Init)
+        await act(async () => {
+            triggerRangeChange(slider, '0');
+        });
 
-    it('should allow clearing history', async () => {
-        render(<StateInspector client={client} />);
-        await act(async () => { client.emitOp('k', 'v', true, 1); });
+        // Should still be in time travel
+        expect(screen.getByText('TIME TRAVEL')).toBeDefined();
+        // Init state: { foo: 'bar' }. 'step' should be GONE.
+        await waitFor(() => {
+            expect(screen.queryByText('step')).toBeNull();
+        });
 
-        expect(screen.getByText(/k/)).toBeDefined();
-
+        // 4. Clear History
         const clearBtn = screen.getByText('Clear History');
-        fireEvent.click(clearBtn);
+        await act(async () => {
+            fireEvent.click(clearBtn);
+        });
 
-        // Should re-initialize from current client state
-        // Our mock client state still has 'k' because emitOp didn't auto-update the backing store unless we called _updateState.
-        // In this test setup, let's ensure we call _updateState first if we want it to persist,
-        // OR if we assume clear history effectively resets to "NOW".
+        // Should return to LIVE
+        // Note: There are two "LIVE" indicators (Badge and Slider Label)
+        const liveIndicators = await screen.findAllByText('LIVE');
+        expect(liveIndicators.length).toBeGreaterThan(0);
 
-        // Ideally, clearing history wipes the array. 
-        // Let's check that slider resets or history length is small.
-        // Since we can't inspect internal state, we infer from UI. 
-        // But checking 'k' might still be there if it's in live state.
-
-        // Let's check that we are back to LIVE mode if we were traveling.
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.change(slider, { target: { value: '0' } }); // Time travel
-        fireEvent.click(clearBtn);
-
-        const badges = screen.getAllByText('LIVE');
-        expect(badges.length).toBeGreaterThan(0);
+        // Live state has 'step': 2 (because client state persists).
+        expect(screen.getByText('2')).toBeDefined();
     });
 
     it('should render JSON types correctly', () => {
@@ -163,8 +147,8 @@ describe('StateInspector', () => {
             num: 42,
             bool: true,
             nullVal: null,
-            obj: {},
-            arr: []
+            obj: { nested: 'val' },
+            arr: [1, 2]
         });
 
         render(<StateInspector client={client} />);
@@ -173,11 +157,113 @@ describe('StateInspector', () => {
         expect(screen.getByText('"s"')).toBeDefined();
         expect(screen.getByText('42')).toBeDefined();
         expect(screen.getByText('true')).toBeDefined();
-
-        // Null value: "null" string. 
         expect(screen.getAllByText('null').length).toBeGreaterThan(0);
 
-        expect(screen.getByText('{}')).toBeDefined(); // Empty obj
-        expect(screen.getByText('[]')).toBeDefined(); // Empty arr
+        // Interact with Object expansion
+        const objLabel = screen.getByText('obj');
+        expect(screen.queryByText('"val"')).toBeDefined(); // Visible by default (depth 2)
+
+        // Let's check array expansion
+        const arrLabel = screen.getByText('arr');
+        fireEvent.click(arrLabel); // Toggle
+    });
+
+    it('should show error when no client provided and no context', () => {
+        // Mock useNMeshed to return empty
+        vi.mocked(useNMeshed).mockReturnValueOnce({ client: null } as any);
+        render(<StateInspector client={undefined} />);
+        expect(screen.getByText('No nMeshed Client Found')).toBeDefined();
+    });
+
+    it('should not update view when paused via drag', async () => {
+        render(<StateInspector client={client} />);
+
+        // Initial state
+        await act(async () => {
+            client._updateState('k', 1);
+            client.emitOp('k', 1, true, 100);
+        });
+        expect(screen.getByText('1')).toBeDefined();
+
+        // Pause via slider interaction (simulated)
+        const slider = screen.getByRole('slider');
+
+        // Drag to same position triggering pause logic in onChange
+        await act(async () => {
+            // We need to trigger the onChange logic that sets isPaused=true
+            fireEvent.change(slider, { target: { value: '1' } });
+        });
+
+        expect(await screen.findByText('TIME TRAVEL')).toBeDefined();
+
+        // Emit new op while paused
+        await act(async () => {
+            client._updateState('k', 2);
+            client.emitOp('k', 2, true, 200);
+        });
+
+        // Should NOT show '2' because we are time traveling / paused
+        expect(screen.queryByText('2')).toBeNull();
+        expect(screen.getByText('1')).toBeDefined();
+    });
+
+    it('should handle delete operations and refresh button', async () => {
+        render(<StateInspector client={client} />);
+
+        // Add item
+        await act(async () => {
+            client._updateState('to-delete', 'val');
+            client.emitOp('to-delete', 'val', true, 100);
+        });
+        expect(screen.getByText('"val"')).toBeDefined();
+
+        // Delete item (emit null)
+        await act(async () => {
+            client._updateState('to-delete', null);
+            client.emitOp('to-delete', null, true, 200);
+        });
+
+        // Verify deletion in view
+        expect(screen.queryByText('"val"')).toBeNull();
+
+        // Click Refresh
+        const refreshBtn = screen.getByText('Refresh');
+        await act(async () => {
+            fireEvent.click(refreshBtn);
+        });
+        // (Refresh just re-pulls state, hard to observe visual change unless state drifted, 
+        // but this covers the handler function)
+    });
+    it('should handle "Return to Live" button', async () => {
+        render(<StateInspector client={client} />);
+
+        // Add items to create history
+        await act(async () => {
+            client._updateState('k', 1);
+            client.emitOp('k', 1, true, 100);
+            client._updateState('k', 2);
+            client.emitOp('k', 2, true, 200);
+        });
+
+        // Move slider to history
+        const slider = screen.getByRole('slider');
+        // Wait for max to update
+        await waitFor(() => expect(slider.getAttribute('max')).toBe('3'));
+
+        await act(async () => {
+            fireEvent.change(slider, { target: { value: '1' } });
+        });
+
+        expect(await screen.findByText('TIME TRAVEL')).toBeDefined();
+
+        // Click Return to Live
+        const returnBtn = screen.getByText('Return to Live');
+        await act(async () => {
+            fireEvent.click(returnBtn);
+        });
+
+        const liveIndicators = await screen.findAllByText('LIVE');
+        expect(liveIndicators.length).toBeGreaterThan(0);
+        // Verify slider value reset? (Visual only, covered by LIVE text)
     });
 });

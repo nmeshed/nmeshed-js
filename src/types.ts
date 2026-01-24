@@ -62,6 +62,16 @@ export interface NMeshedConfig {
      */
     encryption?: EncryptionAdapter;
     /**
+     * Custom Transport adapter.
+     * Useful for testing or non-WebSocket environments.
+     */
+    transport?: Transport;
+    /**
+     * Max jitter in milliseconds for initial connection delay.
+     * Defaults to 500ms. Set to 0 for deterministic testing.
+     */
+    connectJitter?: number;
+    /**
      * W3C Trace Context (traceparent) for distributed tracing.
      * If not provided, one will be generated for the session.
      */

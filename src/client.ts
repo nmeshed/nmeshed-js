@@ -23,7 +23,7 @@
  */
 
 import { z } from 'zod';
-import type { NMeshedConfig, ConnectionStatus, ClientEvents, EventHandler, INMeshedClient, IStorage } from './types';
+import type { NMeshedConfig, ConnectionStatus, ClientEvents, EventHandler, INMeshedClient, IStorage, Transport } from './types';
 import { SyncEngine } from './engine';
 import { WebSocketTransport } from './transport';
 import { encodeOp, decodeMessage, MsgType, encodeValue, encodePing, encodeCAS, encodeInit } from './protocol';
@@ -52,7 +52,7 @@ import { InMemoryAdapter } from './adapters/InMemoryAdapter';
 export class NMeshedClient implements INMeshedClient {
     private config: NMeshedConfig;
     private engine: SyncEngine;
-    private transport: WebSocketTransport;
+    private transport: Transport;
     private debug: boolean;
     private unsubscribers: (() => void)[] = [];
     private storage: IStorage;
@@ -105,7 +105,7 @@ export class NMeshedClient implements INMeshedClient {
             config.traceparent = this.generateTraceParent();
         }
 
-        this.transport = new WebSocketTransport(config);
+        this.transport = config.transport || new WebSocketTransport(config);
 
         // Wire up transport to engine
         this.wireTransport();
@@ -136,15 +136,6 @@ export class NMeshedClient implements INMeshedClient {
      * 
      * @private
      */
-    /**
-     * Asynchronous initialization sequence.
-     * 1. Requests persistent storage permission from the browser.
-     * 2. Initializes the storage adapter (IndexedDB).
-     * 3. Loads local state into memory.
-     * 4. Establishes the WebSocket connection.
-     * 
-     * @private
-     */
     private async init() {
         // 1. Request Persistence (Browser)
         await this.ensurePersistence();
@@ -154,10 +145,16 @@ export class NMeshedClient implements INMeshedClient {
 
         // 3. Connect Network (with Thundering Herd Mitigation)
         // Add random jitter (0-500ms) to prevent all clients connecting simultaneously
-        const jitter = Math.floor(Math.random() * 500);
-        setTimeout(() => {
+        const maxJitter = this.config.connectJitter ?? 500;
+        const jitter = maxJitter > 0 ? Math.floor(Math.random() * maxJitter) : 0;
+
+        if (jitter > 0) {
+            setTimeout(() => {
+                this.connect();
+            }, jitter);
+        } else {
             this.connect();
-        }, jitter);
+        }
     }
 
     /** Helper: Request browser storage persistence to prevent eviction */
@@ -557,16 +554,12 @@ export class NMeshedClient implements INMeshedClient {
 
         // Clock Synchronization
         if (msg.timestamp && msg.timestamp > 0n) {
-            // Simple NTP-like adjustment: 
-            // We assume latency is symmetric or negligible for this MVP.
-            // offset = serverTime - localTime
-            // HLC is (Physical << 80) ...
-            // We want roughly the physical difference. 
-            // Better: use HLC.unpack
-            // But for simple offset, we can just store the delta. 
-            // setClockOffset expects number? Engine ignores it anyway in HLC mode.
-            // keeping it as no-op or simple cast.
+            // HLC Timestamp
             const offset = Number(msg.timestamp >> 80n) - Date.now();
+            this.engine.setClockOffset(offset);
+        } else if (msg.serverTime && msg.serverTime > 0) {
+            // Standard Wall Clock (e.g. Pong)
+            const offset = msg.serverTime - Date.now();
             this.engine.setClockOffset(offset);
         }
 

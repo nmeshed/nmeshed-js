@@ -48,6 +48,12 @@ export const StateInspector: React.FC<StateInspectorProps> = ({
     const [isPaused, setIsPaused] = useState(false);
 
     // 3. Subscription (Session Recording)
+    // Use ref for isPaused to avoid restarting effect (which resets history) when pausing
+    const isPausedRef = useRef(false);
+    useEffect(() => {
+        isPausedRef.current = isPaused;
+    }, [isPaused]);
+
     useEffect(() => {
         if (!client) return;
 
@@ -59,7 +65,7 @@ export const StateInspector: React.FC<StateInspectorProps> = ({
 
         // Listen for ops
         const unsub = client.on('op', (key, value, isLocal, timestamp) => {
-            if (isPaused) return;
+            if (isPausedRef.current) return;
 
             setLiveState((prev) => {
                 // Construct new state immutably for the history snapshot
@@ -98,7 +104,7 @@ export const StateInspector: React.FC<StateInspectorProps> = ({
         return () => {
             unsub();
         };
-    }, [client, isPaused]);
+    }, [client]); // Remove isPaused from deps
 
     // 4. Derived View State
     const activeState = useMemo(() => {
@@ -144,6 +150,7 @@ export const StateInspector: React.FC<StateInspectorProps> = ({
                             setHistory([]);
                             setLiveState(client.getAllValues());
                             setSliderIndex(-1);
+                            setIsPaused(false); // Resume live updates
                         }}
                         className="px-2 py-1 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-600 dark:text-gray-300"
                     >

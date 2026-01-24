@@ -445,7 +445,9 @@ export class SyncEngine extends EventEmitter {
                 const value = decodeValue(finalPayload);
                 // BigInt timestamp 0
                 this.state.set(key, { value, timestamp: 0n, peerId: '', lastCiphertext: payload });
-            } catch (e) { }
+            } catch (e) {
+                this.log(`Failed to decode stored key ${key}`, e);
+            }
         }
 
         queueItems.sort((a, b) => a.key.localeCompare(b.key));
@@ -463,7 +465,9 @@ export class SyncEngine extends EventEmitter {
                     const value = decodeValue(finalPayload);
 
                     this.pendingOps.push({ key: realKey, value, timestamp: ts, peerId: this.peerId });
-                } catch (e) { }
+                } catch (e) {
+                    this.log(`Failed to rehydrate queued op ${item.key}`, e);
+                }
             }
         }
     }
@@ -486,7 +490,7 @@ export class SyncEngine extends EventEmitter {
             this.isGapDetected = false;
 
             this.log(`Loaded snapshot (${entries.length} items)`);
-        } catch (e) { this.log('Snapshot error', e); }
+        } catch (e) { this.log('Could not decode snapshot', e); }
     }
 
     private async processSnapshotEntries(snapshot: Record<string, unknown>): Promise<[string, any][]> {
@@ -519,7 +523,8 @@ export class SyncEngine extends EventEmitter {
     private applySnapshotToMemory(entries: [string, any][], baseTs: bigint): void {
         this.state.clear();
         for (const [key, val] of entries) {
-            this.state.set(key, { value: val, timestamp: baseTs, peerId: 'Ω_SNAPSHOT' });
+            // Use 'SNAPSHOT' instead of 'Ω_SNAPSHOT' to prevent Authority Veto on subsequent updates
+            this.state.set(key, { value: val, timestamp: baseTs, peerId: 'SNAPSHOT' });
             this.emit('op', key, val, false, baseTs);
         }
         for (const op of this.pendingOps) {
@@ -551,7 +556,18 @@ export class SyncEngine extends EventEmitter {
     }
     destroy() { this.clear(); this.state.clear(); this.pendingOps = []; }
     attachCore(core: CRDTCore) { this.core = core; }
-    setClockOffset(offset: number) { }
+    setClockOffset(offset: number) {
+        // We accumulate offset into HLC if possible, but HLC is monotonic.
+        // For now, we can simple trigger an update with the adjusted time?
+        // Or better, HLC doesn't expose offset adjustment directly.
+        // But we can `update` it with `now + offset`.
+        // However, `update` expects a packed HLC timestamp.
+        // `offset` is milliseconds.
+        // HLC.pack(BigInt(Date.now() + offset), 0n, 0n)
+        const adjustedTime = BigInt(Date.now() + offset);
+        const remoteTs = HLC.pack(adjustedTime, 0n, 0n);
+        this.hlc.update(remoteTs);
+    }
     private log(...args: unknown[]) { if (this.debug) console.log('[NMeshed Engine]', ...args); }
 }
 

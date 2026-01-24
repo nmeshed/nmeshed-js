@@ -447,8 +447,9 @@ describe('SyncEngine', () => {
 
             // Drain pending to check timestamp
             const ops = engine.drainPending();
-            expect(ops[0].timestamp).toBeGreaterThanOrEqual(now + offset);
-            expect(ops[0].timestamp).toBeLessThan(now + offset + 1000); // 1s tolerance
+            const wall = Number(ops[0].timestamp >> 80n);
+            expect(wall).toBeGreaterThanOrEqual(now + offset);
+            expect(wall).toBeLessThan(now + offset + 1000); // 1s tolerance
         });
     });
 
